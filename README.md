@@ -1,94 +1,134 @@
 # JStack
 
-A small, intentional collection of Claude Code skills, rules, and system architecture docs that work across machines and domains.
-
-The promise: edit a skill or rule here, push, pull on another machine, both updated. No render layer, no token substitution — files drop in as-is.
-
-## What's in here
-
-- `skills/` — actual skill files (`.md`). Install: symlink or copy into `~/.claude/commands/` on each machine.
-- `rules/` — actual rule files (`.md`). Install: symlink or copy into `~/.claude/rules/` on each machine.
-- `systems/` — architecture docs for systems too coupled to a specific machine's infra to ship as code. Reader builds against the pattern.
-
-## Conventions
-
-JStack assumes these on every adopting machine. Skills depend on them.
-
-1. **Agent root** — `~/Agents/{Name}/`
-2. **Identity** — `~/Agents/{Name}/CLAUDE.md` (Claude Code walk-up auto-loads on any session inside the tree)
-3. **Cross-mode state** — `~/Agents/{Name}/state.md` (optional)
-4. **In-progress items** — `~/Agents/{Name}/active/{slug}.md` (one .md per item, frontmatter format defined in `skills/active.md`)
-5. **Sub-modes** — subdirectories of the agent root. Same identity, different operational context. Walk-up handles inheritance.
-
-## Per-machine helper scripts
-
-Anything OS-specific (terminal launch, editor open, OS notification) is NOT shipped in JStack. JStack defines the contract; each machine implements.
-
-Conventional location: `~/Agents/bin/`. Each machine ships its own implementations. NOT in this repo.
-
-### Required helpers
-
-| Script | Signature | What it does |
-|---|---|---|
-| `open-terminal-here` | `<cwd> [extra-claude-args...]` | Opens a new terminal window at `cwd`, runs `claude` with the extra args appended. macOS example uses iTerm + AppleScript; Linux gnome-terminal; Windows wt.exe. |
-
-### Optional helpers (skills check for existence)
-
-| Script | Signature | Used by |
-|---|---|---|
-| `open-file` | `<path>` | Editor-open skills (none yet — placeholder) |
-| `notify` | `<title> <body>` | Skills that want OS notifications (none yet — placeholder) |
-
-If an optional helper doesn't exist on a given machine, the skill that wants it skips that step cleanly — no error.
-
-## Per-machine config (parameters)
-
-Non-OS parameters that vary per machine live in `~/Agents/config.local.json`, NOT in this repo. Skills read it where they need it. Empty keys = skill skips that behavior.
-
-```json
-{
-  "owner": "<your name or label used in skill prose>",
-  "default_editor": "code",
-  "reminders_backend": null
-}
-```
-
-Keep this file out of the repo. Each machine sets its own.
+A Claude Code marketplace + plugin for cross-machine agent workflows. Skills work on any machine that adopts the conventions; per-machine adapters at `~/Agents/bin/` plug in environment-specific behavior (terminal launch, follow-up filing, etc.) without forking the skill.
 
 ## Install
 
-On any machine that adopts JStack:
-
 ```bash
-git clone <jstack-remote> ~/JStack
-ln -s ~/JStack/skills ~/.claude/commands/jstack
-ln -s ~/JStack/rules  ~/.claude/rules/jstack
-# write your ~/Agents/bin/open-terminal-here
-# write your ~/Agents/config.local.json
+# Add the marketplace (one of these)
+claude plugin marketplace add github:Jarvis-and-J/JStack    # from GitHub
+claude plugin marketplace add ~/JStack                       # from a local clone
+
+# Install the plugin
+claude plugin install jstack@JStack
+
+# Optional: install bundled rules into ~/.claude/rules/
+# (Rules aren't auto-installed by the plugin system; this skill does it.)
+/jstack:install-rules
 ```
 
-The directory-name approach (`~/.claude/commands/jstack/`) keeps JStack-shipped skills separate from machine-local ones — easy to see what's vendored vs custom. Claude Code picks them up either way.
+## Update
 
-Update: `cd ~/JStack && git pull`. Done.
+```bash
+claude plugin marketplace update JStack && claude plugin update jstack
+```
 
-## What's NOT in here
+## What's in the plugin
 
-JStack is intentionally light. Things that DON'T belong:
+Skills (slash commands, namespaced as `/jstack:<name>`):
 
-- Daemons, dashboards, backend code (these are machine-specific implementations — patterns go in `systems/`)
+- `/jstack:active` — list or load in-progress items from `~/Agents/{Name}/active/`
+- `/jstack:save` — file the current conversation as a new active item
+- `/jstack:handoff` — hand off this session to a fresh terminal with context preserved
+- `/jstack:install-rules` — symlink bundled rules into `~/.claude/rules/`
+
+Bundled rules (staged at `plugins/jstack/rules-stage/`, installed via the skill above):
+
+- `canvas`, `claude-md-editing`, `claude-sessions`, `code-review`, `execution-gates`, `ios-screens`, `ios-sheets`, `ios-style`, `rules`, `visual-assets`, `x-compound-tools`
+
+Architecture docs (reference reading, not installed anywhere):
+
+- `docs/agents-dashboard.md` — spec for a local agents dashboard
+- `docs/post-session-review.md` — spec for an automatic post-session review pass
+
+## Conventions
+
+The skills assume:
+
+1. **Agent root** — `~/Agents/{Name}/`
+2. **Identity** — `~/Agents/{Name}/CLAUDE.md` (Claude Code walk-up auto-loads it)
+3. **Cross-mode state** — `~/Agents/{Name}/state.md` (optional)
+4. **In-progress items** — `~/Agents/{Name}/active/{slug}.md` (format defined in `save` skill)
+5. **Sub-modes** — subdirectories of the agent root, same identity in a different context
+
+If your machine has these, skills work out of the box.
+
+## Per-machine adapters
+
+OS-specific or org-specific behavior lives at `~/Agents/bin/`, NOT in the plugin. Each machine implements its own. Skills check for existence and degrade cleanly when an adapter isn't there.
+
+### Required (for full functionality)
+
+| Adapter | Used by | Signature |
+|---|---|---|
+| `~/Agents/bin/open-terminal-here` | `/jstack:handoff` | `<cwd> [extra-claude-args...]` — open a new terminal at cwd, run `claude` with extra args appended |
+
+### Optional
+
+| Adapter | Used by | Signature |
+|---|---|---|
+| `~/Agents/bin/file-followup` | `/jstack:save` | `<title> <body>` — file a follow-up reminder (Apple Reminders, todo file, Slack, whatever you wire up). Exit 0 = success. |
+
+### Reference: macOS iTerm `open-terminal-here`
+
+```bash
+#!/usr/bin/env bash
+CWD="$1"; shift
+ARGS="$*"
+osascript <<EOF
+tell application "iTerm"
+    activate
+    create window with default profile
+    tell current session of current window
+        write text "cd \"$CWD\" && claude $ARGS"
+    end tell
+end tell
+EOF
+```
+
+## What this plugin doesn't ship
+
+Intentional exclusions to keep the plugin cross-domain:
+
+- Daemons, dashboards, backend code (these are machine-specific; patterns go in `docs/`)
 - Project-specific rules (anything that names a particular product, app, repo)
 - Personal identity (owner name, agent personas, voice prose — those live on each machine)
-- Credentials, configs with secrets
-- Reminder-list names, OS-tool tool integrations, daemon-tool integrations
-- Things that only work on one OS without falling back gracefully
+- Credentials, secrets
+- OS-tool integrations beyond the adapter contract
+- Anything that only works on one OS without a documented adapter fallback
 
-If a piece of knowledge depends on infra that doesn't exist on every adopting machine, it goes in `systems/` as an architecture doc — not in `skills/` or `rules/`.
+If a piece of knowledge depends on infra that doesn't exist on every adopting machine, it goes in `docs/` as an architecture spec — not in the skills.
 
-## v1 contents
+## Repository layout
 
-- `skills/active.md` — list/load in-progress items
-- `skills/save.md` — file the current conversation as an active item
-- `skills/handoff.md` — hand off this session to a fresh terminal with context preserved
-- `rules/` — 12 generic rules covering Claude Code editing patterns, code review, execution gates, iOS UI patterns
-- `systems/agents-dashboard.md` — architecture for a local agents dashboard
-- `systems/post-session-review.md` — architecture for an automatic post-session review pass
+```
+JStack/
+├── .claude-plugin/
+│   └── marketplace.json          # marketplace manifest (Claude Code reads this)
+├── plugins/
+│   └── jstack/
+│       ├── .claude-plugin/
+│       │   └── plugin.json       # plugin manifest
+│       ├── skills/
+│       │   ├── active/SKILL.md
+│       │   ├── save/SKILL.md
+│       │   ├── handoff/SKILL.md
+│       │   └── install-rules/SKILL.md
+│       └── rules-stage/          # rules waiting to be installed via /jstack:install-rules
+│           ├── canvas.md
+│           ├── claude-md-editing.md
+│           └── ...
+├── docs/                         # architecture docs (reference, not installed)
+│   ├── agents-dashboard.md
+│   └── post-session-review.md
+└── README.md                     # this file
+```
+
+## Dogfood (verified)
+
+This plugin was installed locally from `~/JStack` via:
+```bash
+claude plugin marketplace add ~/JStack
+claude plugin install jstack@JStack
+```
+Both `claude plugin validate` calls returned `✔ Validation passed`. The install registered under user scope; commands available as `/jstack:*` after session restart.

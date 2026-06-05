@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "JStack",
+  "description": "Cross-machine Claude Code skills and rules for agent workflows.",
+  "owner": {
+    "name": "Jarvis-and-J"
+  },
+  "plugins": [
+    {
+      "name": "jstack",
+      "description": "Agent workflow skills: /active, /save, /handoff, /install-rules. Environment-aware via adapter pattern.",
+      "source": "./plugins/jstack",
+      "category": "productivity"
+    }
+  ]
+}

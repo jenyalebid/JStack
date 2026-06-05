@@ -1,0 +1,8 @@
+{
+  "name": "jstack",
+  "description": "Agent workflow skills: file/load active items, hand off sessions, install bundled rules. Environment-aware — calls per-machine adapters at ~/Agents/bin/ when present, otherwise degrades to the base behavior.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Jarvis-and-J"
+  }
+}

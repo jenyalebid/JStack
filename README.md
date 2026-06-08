@@ -12,9 +12,9 @@ Five slash commands (all namespaced as `/jstack:*`):
 | `/jstack:save` | File the current conversation as an active item under the agent's `active/` |
 | `/jstack:handoff` | Hand off the session to a fresh terminal with context preserved |
 | `/jstack:push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
-| `/jstack:install-rules` | Symlink the 11 bundled rules into `~/.claude/rules/` |
+| `/jstack:install-rules` | Symlink the 16 bundled rules into `~/.claude/rules/` |
 
-Plus 11 path-scoped rule files (Claude Code auto-loads them by glob match after install), two bundled `bin/` adapters (terminal-open + follow-up filer), and two architecture docs in `docs/` for building larger systems (agents dashboard, post-session review).
+Plus 16 path-scoped rule files (Claude Code auto-loads them by glob match after install), two bundled `bin/` adapters (terminal-open + follow-up filer), and two architecture docs in `docs/` for building larger systems (agents dashboard, post-session review).
 
 ---
 
@@ -92,7 +92,7 @@ After restarting Claude Code so the plugin loads:
 /jstack:install-rules
 ```
 
-Confirms and symlinks 11 rules into `~/.claude/rules/` (canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-screens, ios-sheets, ios-style, rules, visual-assets, x-compound-tools). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
+Confirms and symlinks 16 rules into `~/.claude/rules/` (canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-charts, ios-forms, ios-lists, ios-modifiers, ios-screens, ios-services, ios-sheets, ios-style, rules, visual-assets, x-compound-tools). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
 
 ### 6. Verify end-to-end
 

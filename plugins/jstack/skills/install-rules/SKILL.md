@@ -39,7 +39,12 @@ Installing N rules into ~/.claude/rules/:
   - claude-sessions.md
   - code-review.md
   - execution-gates.md
+  - ios-charts.md
+  - ios-forms.md
+  - ios-lists.md
+  - ios-modifiers.md
   - ios-screens.md
+  - ios-services.md
   - ios-sheets.md
   - ios-style.md
   - rules.md
@@ -48,6 +53,8 @@ Installing N rules into ~/.claude/rules/:
 
 Mode: symlink (use --copy for copies, --force to overwrite existing)
 ```
+
+The skill enumerates `${CLAUDE_PLUGIN_ROOT}/rules-stage/*.md` at runtime — the list above is illustrative; whatever is in `rules-stage/` is what gets installed.
 
 Wait for user confirmation (one word: `yes` / `y` / `go`) unless `--force` was passed.
 

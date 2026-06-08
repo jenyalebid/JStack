@@ -4,13 +4,14 @@ Cross-machine Claude Code skills for agent workflows. Built around the `{agent_r
 
 ## What this gives you
 
-Four slash commands (all namespaced as `/jstack:*`):
+Five slash commands (all namespaced as `/jstack:*`):
 
 | Command | What it does |
 |---|---|
 | `/jstack:active` | List active items for the current agent, or load one to resume |
 | `/jstack:save` | File the current conversation as an active item under the agent's `active/` |
 | `/jstack:handoff` | Hand off the session to a fresh terminal with context preserved |
+| `/jstack:push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
 | `/jstack:install-rules` | Symlink the 11 bundled rules into `~/.claude/rules/` |
 
 Plus 11 path-scoped rule files (Claude Code auto-loads them by glob match after install), two bundled `bin/` adapters (terminal-open + follow-up filer), and two architecture docs in `docs/` for building larger systems (agents dashboard, post-session review).

@@ -21,14 +21,12 @@ Claude Code plugins don't natively ship `~/.claude/rules/*.md` content (rules au
 The plugin's rule stage lives at:
 
 ```
-<plugin_install_path>/rules-stage/*.md
+${CLAUDE_PLUGIN_ROOT}/rules-stage/*.md
 ```
 
-Where `<plugin_install_path>` is typically `~/.claude/plugins/cache/<marketplace>/jstack/<version>/`. Resolve it by inspecting `~/.claude/plugins/installed_plugins.json` — find the `jstack@<marketplace>` entry, read its `installPath`.
+`${CLAUDE_PLUGIN_ROOT}` is substituted to this plugin's install directory at runtime — no need to parse `installed_plugins.json`. Use it directly as the symlink/copy source.
 
-If the entry isn't found, tell the user:
-
-> JStack plugin not installed via marketplace. Rules are at `~/JStack/plugins/jstack/rules-stage/` if you cloned the repo directly.
+If `${CLAUDE_PLUGIN_ROOT}/rules-stage/` doesn't exist (e.g. running from a raw clone without the plugin enabled), fall back to the `rules-stage/` directory next to this skill, or tell the user where their clone lives.
 
 ### Step 2 — Confirm with the user
 
@@ -55,21 +53,24 @@ Wait for user confirmation (one word: `yes` / `y` / `go`) unless `--force` was p
 
 ### Step 3 — Install
 
-For each `<rule>.md` in `rules-stage/`:
+For each `<rule>.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/`:
 
 ```bash
+SRC="${CLAUDE_PLUGIN_ROOT}/rules-stage"
+mkdir -p ~/.claude/rules
 DEST=~/.claude/rules/<rule>.md
 if [ -e "$DEST" ] && [ -z "$FORCE" ]; then
   echo "skip: $DEST exists"
   continue
 fi
-mkdir -p ~/.claude/rules
 if [ "$MODE" = "copy" ]; then
-  cp <source>/<rule>.md "$DEST"
+  cp "$SRC/<rule>.md" "$DEST"
 else
-  ln -sf <source>/<rule>.md "$DEST"
+  ln -sf "$SRC/<rule>.md" "$DEST"
 fi
 ```
+
+Symlinks point into the plugin cache, so they auto-track plugin updates. Note the install path changes on version bumps (old version is cleaned up ~7 days later) — re-run `/jstack:install-rules --force` after a major update to re-point symlinks, or use `--copy` for update-independent local copies.
 
 ### Step 4 — Report
 
@@ -83,15 +84,11 @@ Plugins don't have a post-install hook surface (yet). And rules are a user-scope
 
 ## Uninstall
 
-To remove the symlinks later, the user runs:
+To remove the symlinks later, the user runs (removes only rule symlinks that still point into a jstack plugin install):
 
 ```bash
-for f in ~/JStack/plugins/jstack/rules-stage/*.md; do
-  name=$(basename "$f")
-  target=~/.claude/rules/$name
-  if [ -L "$target" ] && [ "$(readlink "$target")" = "$f" ]; then
-    rm "$target"
-  fi
+for f in ~/.claude/rules/*.md; do
+  [ -L "$f" ] && readlink "$f" | grep -q "jstack/rules-stage" && rm "$f"
 done
 ```
 

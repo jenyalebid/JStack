@@ -15,15 +15,15 @@ User invoked save. They want this conversation captured so a future session can 
 - `--paused` — file as `status: paused` (default is `in-progress`).
 - `--resume "<trigger>"` — resume condition, required when `--paused` is set.
 
-## Step 1 — Identify the agent
+## Step 1 — Resolve agent root and current agent
 
-The walk-up has loaded `~/Agents/{Name}/CLAUDE.md`. Active folder is `~/Agents/{Name}/active/`.
+Agent workspaces live under `${user_config.agent_root}` (set per-machine in the plugin config). The **current agent** is the `{Name}` subdirectory the working directory sits inside — the one whose `CLAUDE.md` the walk-up loaded. Active folder is `${user_config.agent_root}/{Name}/active/`.
 
-If no agent root in the walk-up, ask where to file before writing.
+If the working directory isn't inside any agent under `${user_config.agent_root}`, ask where to file before writing.
 
 ## Step 2 — Check active count
 
-Count `*.md` files under `~/Agents/{Name}/active/`. Convention: max 3 per agent. If already 3:
+Count `*.md` files under `${user_config.agent_root}/{Name}/active/`. Convention: max 3 per agent. If already 3:
 
 > Already 3 active items. Close one first, or run `/jstack:save <slug>` to overwrite a specific slug.
 
@@ -52,7 +52,7 @@ Get current timestamp via `date`.
 
 ## Step 5 — Write the doc
 
-Path: `~/Agents/{Name}/active/{slug}.md`. Format:
+Path: `${user_config.agent_root}/{Name}/active/{slug}.md`. Format:
 
 ```markdown
 ---
@@ -92,7 +92,7 @@ If `--paused`: set `status: paused`, add `resume_trigger:` to frontmatter. Ask f
 
 ## Step 6 — Mirror to state.md (if it exists)
 
-If `~/Agents/{Name}/state.md` exists, find or create `## Active items` section near the top. Append:
+If `${user_config.agent_root}/{Name}/state.md` exists, find or create `## Active items` section near the top. Append:
 
 ```markdown
 - **<title>** (`<slug>`) — <status> — <one-sentence current state>. Doc: `active/<slug>.md`.
@@ -100,18 +100,16 @@ If `~/Agents/{Name}/state.md` exists, find or create `## Active items` section n
 
 If state.md doesn't exist on this agent, skip. Active doc is the canonical record.
 
-## Step 7 — Pair to per-machine follow-up adapter (if present)
+## Step 7 — File a follow-up
 
-If `~/Agents/bin/file-followup` exists, invoke it:
+Invoke the bundled adapter (it's on PATH while jstack is enabled):
 
 ```bash
-~/Agents/bin/file-followup "<active title>" "<one-line WHY from Goal / Where I am now>
-Doc: ~/Agents/{Name}/active/{slug}.md"
+file-followup "<active title>" "<one-line WHY from Goal / Where I am now>
+Doc: ${user_config.agent_root}/{Name}/active/{slug}.md"
 ```
 
-The adapter is per-machine — it can wire into Apple Reminders, a todo file, Slack, whatever. Contract: takes `<title> <body>` as positional args, exit 0 = success, exit nonzero = failure (silent skip on failure).
-
-If the adapter doesn't exist, skip this step silently. The active doc is enough.
+The adapter routes by the `followup_backend` plugin config (`none` | `todo` | `reminders` | `slack`). With the default `none` it's a silent no-op, so call it unconditionally — no existence check needed. Contract: `<title> <body>` positional args, exit 0 = filed or intentionally skipped, nonzero = failure (treat as non-fatal; the active doc is the canonical record).
 
 ## Step 8 — Confirm
 

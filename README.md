@@ -1,6 +1,6 @@
 # JStack
 
-Cross-machine Claude Code skills for agent workflows. Install on any machine that uses the `~/Agents/{Name}/` convention. Skills are environment-aware via per-machine adapter scripts — same plugin behaves richly where adapters are wired, minimally where they aren't.
+Cross-machine Claude Code skills for agent workflows. Built around the `{agent_root}/{Name}/` workspace convention, where `agent_root` is **configured per machine** (no hardcoded paths). Adapters ship inside the plugin and self-detect the environment, so the same plugin behaves richly everywhere with zero per-machine scripting.
 
 ## What this gives you
 
@@ -13,11 +13,11 @@ Four slash commands (all namespaced as `/jstack:*`):
 | `/jstack:handoff` | Hand off the session to a fresh terminal with context preserved |
 | `/jstack:install-rules` | Symlink the 11 bundled rules into `~/.claude/rules/` |
 
-Plus 11 path-scoped rule files (Claude Code auto-loads them by glob match after install). And two architecture docs in `docs/` for building larger systems (agents dashboard, post-session review).
+Plus 11 path-scoped rule files (Claude Code auto-loads them by glob match after install), two bundled `bin/` adapters (terminal-open + follow-up filer), and two architecture docs in `docs/` for building larger systems (agents dashboard, post-session review).
 
 ---
 
-## Setup (run these exactly)
+## Setup
 
 ### 1. Verify prerequisites
 
@@ -31,7 +31,7 @@ If `claude` is missing, install Claude Code first (`brew install --cask claude-c
 ### 2. Register the marketplace and install the plugin
 
 ```bash
-claude plugin marketplace add github:jenyalebid/JStack
+claude plugin marketplace add jenyalebid/JStack
 claude plugin install jstack@JStack
 ```
 
@@ -41,22 +41,49 @@ Verify:
 claude plugin list   # should show jstack@JStack as enabled
 ```
 
-### 3. Set up the agent root convention
+### 3. Configure the agent root (and optional follow-up backend)
 
-JStack skills assume agents live under `~/Agents/{Name}/`. Create at least one agent dir before using the skills:
+JStack reads its paths from **plugin config** — no path is hardcoded. Three options (declared in `plugin.json` `userConfig`):
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `agent_root` | directory | `~/Agents` | Directory that contains your per-agent workspaces (`{Name}/CLAUDE.md`, `{Name}/active/`). |
+| `followup_backend` | string | `none` | How `/jstack:save` files a reminder: `none` \| `todo` \| `reminders` \| `slack`. |
+| `followup_target` | string | _(empty)_ | For `todo`: a file path (default `<agent_root>/followups.md`). For `reminders`: the macOS Reminders list name (default `Follow-ups`). |
+
+Set them in Claude Code's plugin config UI, or directly in `settings.json`:
+
+```jsonc
+// ~/.claude/settings.json  (or .claude/settings.json for a project)
+{
+  "pluginConfigs": {
+    "jstack@JStack": {
+      "options": {
+        "agent_root": "/Users/you/Desktop/MyStuff/Agents",
+        "followup_backend": "reminders",
+        "followup_target": "Follow-ups"
+      }
+    }
+  }
+}
+```
+
+If you leave `agent_root` at the default, JStack uses `~/Agents/`.
+
+### 4. Create at least one agent workspace
 
 ```bash
-mkdir -p ~/Agents/{YourAgentName}/active
-cat > ~/Agents/{YourAgentName}/CLAUDE.md <<'EOF'
+mkdir -p "$AGENT_ROOT"/{YourAgentName}/active     # $AGENT_ROOT = whatever you set above
+cat > "$AGENT_ROOT"/{YourAgentName}/CLAUDE.md <<'EOF'
 # {YourAgentName}
 
 (your agent identity here — what this agent does, voice, durable rules)
 EOF
 ```
 
-The walk-up will auto-load this CLAUDE.md whenever a session runs inside `~/Agents/{YourAgentName}/` or any of its subdirectories.
+The walk-up auto-loads this CLAUDE.md whenever a session runs inside that agent dir or any subdirectory.
 
-### 4. (Optional) Install the bundled rules
+### 5. (Optional) Install the bundled rules
 
 After restarting Claude Code so the plugin loads:
 
@@ -64,151 +91,61 @@ After restarting Claude Code so the plugin loads:
 /jstack:install-rules
 ```
 
-Confirms and symlinks 11 rules into `~/.claude/rules/` (canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-screens, ios-sheets, ios-style, rules, visual-assets, x-compound-tools). Skips files that already exist; pass `--force` to overwrite.
-
-### 5. (Optional but recommended) Write the per-machine adapters
-
-JStack skills check for two adapter scripts at `~/Agents/bin/`. If they exist, skills use them for richer behavior. If they don't, skills degrade cleanly to base behavior.
-
-```bash
-mkdir -p ~/Agents/bin
-```
-
-#### Adapter A — `~/Agents/bin/open-terminal-here`
-
-Used by `/jstack:handoff` to open a new Claude Code terminal at a given directory.
-
-**Contract:** `~/Agents/bin/open-terminal-here <cwd> [extra-claude-args...]` — open a new terminal window at `<cwd>` and run `claude` with the extra args appended.
-
-**Reference implementation (macOS + iTerm):**
-
-```bash
-#!/usr/bin/env bash
-# ~/Agents/bin/open-terminal-here
-# JStack adapter — open a new iTerm window at $1, run claude with $2..N appended.
-set -euo pipefail
-CWD="$1"; shift
-ARGS="$*"
-osascript <<EOF
-tell application "iTerm"
-    activate
-    create window with default profile
-    tell current session of current window
-        write text "cd \"$CWD\" && claude $ARGS"
-    end tell
-end tell
-EOF
-```
-
-**Reference implementation (Linux + gnome-terminal):**
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-CWD="$1"; shift
-gnome-terminal --working-directory="$CWD" -- claude "$@"
-```
-
-**Reference implementation (macOS + Terminal.app, no iTerm needed):**
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-CWD="$1"; shift
-ARGS="$*"
-osascript <<EOF
-tell application "Terminal"
-    activate
-    do script "cd \"$CWD\" && claude $ARGS"
-end tell
-EOF
-```
-
-After writing, make executable:
-
-```bash
-chmod +x ~/Agents/bin/open-terminal-here
-```
-
-#### Adapter B — `~/Agents/bin/file-followup`
-
-Used by `/jstack:save` to pair each new active item with a follow-up notification (so you don't lose track of it). Optional — if absent, `/jstack:save` just files the active doc.
-
-**Contract:** `~/Agents/bin/file-followup <title> <body>` — file a follow-up reminder. Exit 0 = success.
-
-**Reference implementation (Apple Reminders via macOS):**
-
-```bash
-#!/usr/bin/env bash
-# ~/Agents/bin/file-followup
-# JStack adapter — file follow-ups into the "Follow-ups" Apple Reminders list.
-set -euo pipefail
-TITLE="$1"
-BODY="$2"
-osascript <<EOF
-tell application "Reminders"
-    set targetList to list "Follow-ups"
-    make new reminder at end of targetList with properties {name:"$TITLE", body:"$BODY"}
-end tell
-EOF
-```
-
-(Adjust `"Follow-ups"` to whichever Apple Reminders list you use.)
-
-**Reference implementation (plain text todo file):**
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-echo "- [ ] $1 — $2" >> ~/todo.md
-```
-
-**Reference implementation (Slack via webhook):**
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-curl -s -X POST -H 'Content-Type: application/json' \
-    --data "{\"text\":\"*$1*\n$2\"}" \
-    "$SLACK_FOLLOWUP_WEBHOOK"
-```
-
-After writing, make executable:
-
-```bash
-chmod +x ~/Agents/bin/file-followup
-```
+Confirms and symlinks 11 rules into `~/.claude/rules/` (canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-screens, ios-sheets, ios-style, rules, visual-assets, x-compound-tools). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
 
 ### 6. Verify end-to-end
 
-Restart Claude Code (so plugin + adapters are picked up), then in a session inside an agent directory:
+Restart Claude Code, then in a session inside an agent directory:
 
 ```bash
-cd ~/Agents/{YourAgentName}
+cd "$AGENT_ROOT"/{YourAgentName}
 claude
 ```
 
-In the session, run:
+In the session, run `/jstack:active`. It should list your active items (or report an empty list). If it says you're "not inside an agent tree," check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists.
 
-```
-/jstack:active
-```
+---
 
-Should respond with either an empty active list or your existing items. If it errors with "not inside an agent tree," check that `~/Agents/{YourAgentName}/CLAUDE.md` exists.
+## Adapters (bundled — usually nothing to do)
+
+JStack ships two adapter scripts in the plugin's `bin/`, which Claude Code auto-adds to the Bash `PATH` while the plugin is enabled. Skills call them as bare commands.
+
+### `open-terminal-here` — used by `/jstack:handoff`
+
+Opens a new Claude Code terminal at a directory. Self-detects the terminal:
+
+- **macOS:** iTerm if installed, else Terminal.app
+- **Linux:** gnome-terminal → konsole → x-terminal-emulator → xterm
+- **Windows:** Windows Terminal (`wt.exe`)
+
+**Contract:** `open-terminal-here <cwd> [extra-claude-args...]`. To override on a machine, put your own `open-terminal-here` earlier in `PATH`.
+
+### `file-followup` — used by `/jstack:save`
+
+Files a follow-up reminder, routed by the `followup_backend` config:
+
+- `none` (default) — silent no-op
+- `todo` — appends `- [ ] <title> — <body>` to `followup_target` (default `<agent_root>/followups.md`)
+- `reminders` — adds to the macOS Reminders list named in `followup_target` (default `Follow-ups`)
+- `slack` — POSTs to the webhook in env var `SLACK_FOLLOWUP_WEBHOOK`
+
+**Contract:** `file-followup <title> <body>`, exit 0 = filed or intentionally skipped.
 
 ---
 
 ## How the skills work (so you can predict behavior)
 
+`{root}` below = the configured `agent_root`.
+
 ### `/jstack:active [n|last|oldest]`
 
-- No arg: lists every `*.md` under `~/Agents/{Name}/active/`, sorted by `filed:` date ascending. Up to 3 items.
+- No arg: lists every `*.md` under `{root}/{Name}/active/`, sorted by `filed:` date ascending. Up to 3 items.
 - Numeric arg: loads that item (1 = oldest) and briefs on its Goal / Where I am now / Next moves / Reference.
 - `last` / `oldest`: aliases.
 
 ### `/jstack:save [slug] [--title "..."] [--paused] [--resume "..."]`
 
-Reads the current conversation, distills it into an active doc, writes to `~/Agents/{Name}/active/{slug}.md` with this frontmatter:
+Reads the current conversation, distills it into an active doc, writes to `{root}/{Name}/active/{slug}.md` with this frontmatter:
 
 ```yaml
 ---
@@ -223,19 +160,19 @@ resume_trigger: <only if paused>
 ```
 
 Then:
-1. If `~/Agents/{Name}/state.md` exists with a `## Active items` section, appends a one-liner pointer there.
-2. If `~/Agents/bin/file-followup` exists, calls it with `<title>` and `<body>` (the body includes a one-line "why" + path to the active doc).
+1. If `{root}/{Name}/state.md` exists with a `## Active items` section, appends a one-liner pointer there.
+2. Calls `file-followup` with `<title>` and `<body>` (body includes a one-line "why" + path to the active doc). With `followup_backend: none` this is a silent no-op.
 3. Confirms with a one-line receipt.
 
 ### `/jstack:handoff [focus]`
 
 1. Walks this conversation, writes a `handoff-context.md` to the current working directory with Current Work / In Progress / Still To Do / Key Decisions / Context sections.
 2. Shows the summary.
-3. Calls `~/Agents/bin/open-terminal-here "$(pwd)" --append-system-prompt-file handoff-context.md`. If the adapter doesn't exist, prints instructions for opening the new session manually.
+3. Calls `open-terminal-here "$(pwd)" --append-system-prompt-file handoff-context.md`. If no terminal can be opened, prints instructions for opening the new session manually.
 
 ### `/jstack:install-rules [--copy] [--force]`
 
-Symlinks every `.md` in the plugin's `rules-stage/` directory into `~/.claude/rules/`. Default mode is symlink (edits to the source file affect the live rule). `--copy` makes independent local copies. `--force` overwrites existing files.
+Symlinks every `.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/` into `~/.claude/rules/`. Default mode is symlink (edits to the source affect the live rule, and updates track automatically). `--copy` makes update-independent local copies. `--force` overwrites existing files.
 
 ---
 
@@ -246,7 +183,7 @@ claude plugin marketplace update JStack
 claude plugin update jstack
 ```
 
-After updating, if new rules were added you may want to re-run `/jstack:install-rules`. Existing symlinks already track the new content automatically.
+Symlinked rules track new content automatically. The plugin install path changes on version bumps (old version cleaned up ~7 days later), so if symlinks ever go stale, re-run `/jstack:install-rules --force`.
 
 ---
 
@@ -257,30 +194,26 @@ claude plugin uninstall jstack
 claude plugin marketplace remove JStack
 ```
 
-Remove any rule symlinks manually (only those still pointing into the plugin cache):
+Remove any rule symlinks still pointing into a jstack install:
 
 ```bash
 for f in ~/.claude/rules/*.md; do
-    if [ -L "$f" ] && readlink "$f" | grep -q "JStack/jstack"; then rm "$f"; fi
+    [ -L "$f" ] && readlink "$f" | grep -q "jstack/rules-stage" && rm "$f"
 done
 ```
-
-Adapters at `~/Agents/bin/` are your files — leave or delete as you wish.
 
 ---
 
 ## Convention summary
 
-JStack skills assume:
-
-1. **Agent root** — `~/Agents/{Name}/`
-2. **Identity** — `~/Agents/{Name}/CLAUDE.md` (auto-loaded by walk-up)
-3. **Cross-mode state** — `~/Agents/{Name}/state.md` (optional; if present, `save` mirrors to its `## Active items` section)
-4. **In-progress items** — `~/Agents/{Name}/active/{slug}.md` (format defined above)
+1. **Agent root** — `{agent_root}/{Name}/` (configured, not hardcoded)
+2. **Identity** — `{agent_root}/{Name}/CLAUDE.md` (auto-loaded by walk-up)
+3. **Cross-mode state** — `{agent_root}/{Name}/state.md` (optional; if present, `save` mirrors to its `## Active items` section)
+4. **In-progress items** — `{agent_root}/{Name}/active/{slug}.md` (format defined above)
 5. **Sub-modes** — subdirectories of the agent root, same identity in a different context (walk-up handles inheritance)
-6. **Per-machine adapters** — `~/Agents/bin/{open-terminal-here, file-followup}` (optional, enable richer behavior)
+6. **Adapters** — bundled in the plugin's `bin/`, configured via `followup_backend` / `followup_target`
 
-If these match your machine, JStack works out of the box. If not, adjust the agent root path in your own CLAUDE.md walk-up — skills follow the walk-up's agent directory.
+Set `agent_root` to wherever your workspaces live and JStack works out of the box on any machine.
 
 ---
 
@@ -301,13 +234,16 @@ Both are docs (not skills) because the implementations are environment-specific.
 JStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
-│   ├── .claude-plugin/plugin.json         # plugin manifest
+│   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
 │   ├── skills/                            # the four slash commands
 │   │   ├── active/SKILL.md
 │   │   ├── save/SKILL.md
 │   │   ├── handoff/SKILL.md
 │   │   └── install-rules/SKILL.md
-│   └── rules-stage/                       # rules waiting to be installed via /jstack:install-rules
+│   ├── bin/                               # bundled adapters (auto-added to PATH)
+│   │   ├── open-terminal-here
+│   │   └── file-followup
+│   └── rules-stage/                       # rules installed via /jstack:install-rules
 │       └── *.md
 ├── docs/                                  # architecture specs (not installed)
 └── README.md                              # this file
@@ -317,6 +253,6 @@ JStack/
 
 ## For a model setting this up
 
-If you're a Claude session being told to set this up on a fresh machine, execute steps 1-6 above in order. Steps 1-4 are mechanical; step 5 (writing adapters) requires choosing which reference implementation matches the machine's OS and preferred reminder backend. After step 6 returns a successful `/jstack:active` listing, JStack is fully installed and verified.
+If you're a Claude session setting this up on a fresh machine, execute steps 1–6 in order. All steps are mechanical now: there are no adapters to hand-write (they're bundled and self-detecting). The only choices are the `agent_root` path and, optionally, the `followup_backend`. After step 6 returns a successful `/jstack:active` listing, JStack is installed and verified.
 
-If `/jstack:install-rules` would overwrite anything important on the target machine, ask the user first (default behavior is to skip existing files, so this is only relevant with `--force`).
+If `/jstack:install-rules` would overwrite anything important on the target machine, ask the user first (default behavior skips existing files, so this only matters with `--force`).

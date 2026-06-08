@@ -64,22 +64,22 @@ Output the summary to the user.
 
 ## Step 4 — Open the new session
 
-Call the per-machine terminal-open adapter. Contract:
+Call the bundled terminal-open adapter (on PATH while jstack is enabled). Contract:
 
 ```
-~/Agents/bin/open-terminal-here <cwd> [extra-claude-args...]
+open-terminal-here <cwd> [extra-claude-args...]
 ```
 
 Invocation:
 
 ```bash
-bash ~/Agents/bin/open-terminal-here "$(pwd)" --append-system-prompt-file "$(pwd)/handoff-context.md"
+open-terminal-here "$(pwd)" --append-system-prompt-file "$(pwd)/handoff-context.md"
 ```
 
-The adapter is per-machine. macOS example: iTerm + AppleScript. Linux: gnome-terminal. Windows: wt.exe. JStack's README documents the contract.
+The adapter self-detects the terminal (iTerm → Terminal.app on macOS; gnome-terminal/konsole/xterm on Linux; Windows Terminal on Windows). Put your own `open-terminal-here` earlier in PATH to override.
 
-**If the adapter doesn't exist** on this machine, tell the user:
+**If the adapter exits nonzero** (no supported terminal found, or an unsupported platform), tell the user:
 
-> Terminal-open adapter not found at `~/Agents/bin/open-terminal-here`. Handoff doc is at `<cwd>/handoff-context.md`. Open a new Claude session there manually with `--append-system-prompt-file handoff-context.md`.
+> Couldn't open a new terminal automatically. Handoff doc is at `<cwd>/handoff-context.md`. Open a new Claude session there manually with `--append-system-prompt-file handoff-context.md`.
 
 The handoff file lives in the workspace so each agent keeps its own. New session loads the same CLAUDE.md walk-up from the same cwd.

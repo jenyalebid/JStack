@@ -17,15 +17,15 @@ Lists in-progress items for the running agent, or loads one for resumption.
 
 Items numbered by `filed:` date ascending — **active 1 = oldest**. Numbering is stable as long as the set is stable.
 
-## Step 1 — Identify the agent
+## Step 1 — Resolve agent root and current agent
 
-The walk-up has loaded `~/Agents/{Name}/CLAUDE.md`. That's the agent. Active folder is `~/Agents/{Name}/active/`.
+Agent workspaces live under `${user_config.agent_root}` (set per-machine in the plugin config). The **current agent** is the `{Name}` subdirectory of that root the working directory sits inside — the one whose `CLAUDE.md` the walk-up loaded. Its active folder is `${user_config.agent_root}/{Name}/active/`.
 
-If there's no agent root in the walk-up, tell the user and stop — `/jstack:active` only runs inside an agent tree.
+If the working directory isn't inside any agent under `${user_config.agent_root}`, tell the user and stop — `/jstack:active` only runs inside an agent tree.
 
 ## Step 2 — List mode (no argument)
 
-Read every `*.md` under `~/Agents/{Name}/active/`. Sort by `filed:` ascending. For each, output one line:
+Read every `*.md` under `${user_config.agent_root}/{Name}/active/`. Sort by `filed:` ascending. For each, output one line:
 
 ```
 {n}. {title}  — {status}{·N days idle if last_touched > 7d ago}  — {first line of "Where I am now"}
@@ -55,4 +55,4 @@ Keep it tight.
 
 ## Active item format
 
-Files at `~/Agents/{Name}/active/{slug}.md` use the format defined by `save`. The two skills share it.
+Files at `${user_config.agent_root}/{Name}/active/{slug}.md` use the format defined by `save`. The two skills share it.

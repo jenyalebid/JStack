@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# JStack adapter — file a follow-up reminder when /jstack:save runs.
+#
+# Contract:  file-followup <title> <body>
+# Backend:   chosen by userConfig `followup_backend`, exported here as
+#            CLAUDE_PLUGIN_OPTION_FOLLOWUP_BACKEND. One of:
+#              none      (default) — silent no-op, exit 0
+#              todo      — append to CLAUDE_PLUGIN_OPTION_FOLLOWUP_TARGET file
+#                          (default <agent_root>/followups.md)
+#              reminders — macOS Reminders list named in FOLLOWUP_TARGET
+#                          (default "Follow-ups")
+#              slack     — POST to $SLACK_FOLLOWUP_WEBHOOK
+#
+# Shipped in the plugin's bin/ (auto on PATH). Skills call it unconditionally;
+# 'none' makes it a safe no-op. Exit 0 = filed (or intentionally skipped).
+set -euo pipefail
+
+TITLE="${1:-}"
+BODY="${2:-}"
+
+BACKEND="${CLAUDE_PLUGIN_OPTION_FOLLOWUP_BACKEND:-none}"
+TARGET="${CLAUDE_PLUGIN_OPTION_FOLLOWUP_TARGET:-}"
+AGENT_ROOT="${CLAUDE_PLUGIN_OPTION_AGENT_ROOT:-$HOME/Agents}"
+
+# Expand a leading ~ to $HOME (env-var values are not shell-expanded).
+expand_tilde() {
+  case "$1" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+AGENT_ROOT="$(expand_tilde "$AGENT_ROOT")"
+
+case "$BACKEND" in
+  none|"")
+    exit 0
+    ;;
+  todo)
+    FILE="$(expand_tilde "${TARGET:-$AGENT_ROOT/followups.md}")"
+    mkdir -p "$(dirname "$FILE")"
+    printf -- '- [ ] %s — %s\n' "$TITLE" "${BODY//$'\n'/ }" >> "$FILE"
+    ;;
+  reminders)
+    LIST="${TARGET:-Follow-ups}"
+    osascript <<EOF
+tell application "Reminders"
+    set targetList to list "$LIST"
+    make new reminder at end of targetList with properties {name:"$TITLE", body:"$BODY"}
+end tell
+EOF
+    ;;
+  slack)
+    : "${SLACK_FOLLOWUP_WEBHOOK:?file-followup: slack backend needs SLACK_FOLLOWUP_WEBHOOK}"
+    payload=$(printf '{"text":"*%s*\n%s"}' "$TITLE" "$BODY")
+    curl -fsS -X POST -H 'Content-Type: application/json' --data "$payload" "$SLACK_FOLLOWUP_WEBHOOK" >/dev/null
+    ;;
+  *)
+    echo "file-followup: unknown backend '$BACKEND' (use none|todo|reminders|slack)" >&2
+    exit 64
+    ;;
+esac

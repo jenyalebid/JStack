@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# JStack adapter — open a new Claude Code terminal at a directory.
+#
+# Contract:  open-terminal-here <cwd> [extra-claude-args...]
+# Behavior:  opens a new terminal window at <cwd> and runs `claude <extra-args>`.
+#
+# Shipped in the plugin's bin/ (auto-added to PATH while jstack is enabled), so
+# skills call it as a bare command. Self-detects the terminal — no per-machine
+# adapter to hand-write. Override by putting your own `open-terminal-here`
+# earlier in PATH.
+set -euo pipefail
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: open-terminal-here <cwd> [claude-args...]" >&2
+  exit 64
+fi
+
+CWD="$1"; shift
+ARGS="$*"
+
+# Build the command the new shell runs. Quote CWD; ARGS is pre-tokenized by caller.
+launch_cmd="cd \"$CWD\" && claude $ARGS"
+
+case "$(uname -s)" in
+  Darwin)
+    if [ -d "/Applications/iTerm.app" ]; then
+      osascript <<EOF
+tell application "iTerm"
+    activate
+    create window with default profile
+    tell current session of current window
+        write text "$launch_cmd"
+    end tell
+end tell
+EOF
+    else
+      osascript <<EOF
+tell application "Terminal"
+    activate
+    do script "$launch_cmd"
+end tell
+EOF
+    fi
+    ;;
+  Linux)
+    if command -v gnome-terminal >/dev/null 2>&1; then
+      gnome-terminal --working-directory="$CWD" -- bash -lc "claude $ARGS; exec bash"
+    elif command -v konsole >/dev/null 2>&1; then
+      konsole --workdir "$CWD" -e bash -lc "claude $ARGS; exec bash"
+    elif command -v x-terminal-emulator >/dev/null 2>&1; then
+      x-terminal-emulator -e bash -lc "$launch_cmd; exec bash"
+    elif command -v xterm >/dev/null 2>&1; then
+      xterm -e bash -lc "$launch_cmd; exec bash"
+    else
+      echo "open-terminal-here: no supported Linux terminal found (gnome-terminal/konsole/xterm)" >&2
+      exit 69
+    fi
+    ;;
+  *)
+    # Windows / MSYS / Cygwin: try Windows Terminal, then plain cmd.
+    if command -v wt.exe >/dev/null 2>&1; then
+      wt.exe -d "$CWD" cmd /k "claude $ARGS"
+    else
+      echo "open-terminal-here: unsupported platform $(uname -s); open a terminal at $CWD and run: claude $ARGS" >&2
+      exit 69
+    fi
+    ;;
+esac

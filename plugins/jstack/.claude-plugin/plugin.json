@@ -1,8 +1,28 @@
 {
   "name": "jstack",
-  "description": "Agent workflow skills: file/load active items, hand off sessions, install bundled rules. Environment-aware — calls per-machine adapters at ~/Agents/bin/ when present, otherwise degrades to the base behavior.",
-  "version": "0.1.0",
+  "description": "Agent workflow skills: file/load active items, hand off sessions, install bundled rules. Portable across machines via userConfig — no hardcoded paths.",
+  "version": "0.2.0",
   "author": {
     "name": "Jarvis-and-J"
+  },
+  "userConfig": {
+    "agent_root": {
+      "type": "directory",
+      "title": "Agent workspaces root",
+      "description": "Directory that contains your per-agent workspaces — each as {Name}/ with a CLAUDE.md and an active/ folder. JStack resolves every agent path under here. Example: ~/Agents or /Users/you/Projects/Agents.",
+      "default": "~/Agents"
+    },
+    "followup_backend": {
+      "type": "string",
+      "title": "Follow-up backend",
+      "description": "How /jstack:save files a follow-up reminder. One of: none | todo | reminders | slack. 'todo' appends to the followup_target file; 'reminders' adds to the macOS Reminders list named in followup_target; 'slack' POSTs to the webhook in env var SLACK_FOLLOWUP_WEBHOOK. Default: none.",
+      "default": "none"
+    },
+    "followup_target": {
+      "type": "string",
+      "title": "Follow-up target",
+      "description": "Backend-specific target. For 'todo': a file path (default <agent_root>/followups.md). For 'reminders': the Reminders list name (default 'Follow-ups'). Ignored for 'slack' and 'none'.",
+      "default": ""
+    }
   }
 }

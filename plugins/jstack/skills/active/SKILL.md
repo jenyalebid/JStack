@@ -53,6 +53,24 @@ Read the item's full markdown. Brief the user:
 
 Keep it tight.
 
+## Step 4 — Post-brief work tracking
+
+After the brief, the user may give a directive to actually work on the item ("ok, let's do next move 1" / "update Where I am now to say X"). If they do, execute the work AND keep the active doc honest as you go:
+
+- Overwrite `## Where I am now` with the new snapshot
+- Append one line to `## Progress log` with the current timestamp (`date`) and a one-sentence summary of what changed
+- Revise `## Next moves` — check off completed boxes, add new ones, drop obsolete
+- Bump `last_touched` in frontmatter
+- If `${user_config.agent_root}/{Name}/state.md` mirrors active items in `## Active items`, update the one-sentence "current state" on the matching row
+
+This is the same touch protocol any review skill should use. Run it inline as you work — don't batch updates until end of session.
+
 ## Active item format
 
 Files at `${user_config.agent_root}/{Name}/active/{slug}.md` use the format defined by `save`. The two skills share it.
+
+## Edge cases
+
+- **State.md `## Active items` count doesn't match the folder** — use the folder as source of truth for numbering; flag the mismatch in the list output. Reconcile state.md inline (add missing rows, remove orphans).
+- **A file has no frontmatter or invalid frontmatter** — call it out as malformed; still number it by filename mtime fallback.
+- **User invokes `/jstack:active` then immediately gives a directive in the same message** (e.g. `/jstack:active 2 — let's ship next move 1`) — brief on 2 first, then execute the directive without waiting.

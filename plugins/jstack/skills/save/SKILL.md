@@ -111,11 +111,17 @@ Doc: ${user_config.agent_root}/{Name}/active/{slug}.md"
 
 The adapter routes by the `followup_backend` plugin config (`none` | `todo` | `reminders` | `slack`). With the default `none` it's a silent no-op, so call it unconditionally — no existence check needed. Contract: `<title> <body>` positional args, exit 0 = filed or intentionally skipped, nonzero = failure (treat as non-fatal; the active doc is the canonical record).
 
+Capture the adapter's exit code. If nonzero, note it in the confirmation (Step 8) so the user knows the follow-up didn't land.
+
 ## Step 8 — Confirm
 
-One line:
+One line. If the follow-up adapter succeeded (or backend is `none`):
 
 > Filed as active: `{slug}`. Status {status}. {N} next moves: {a} / {b} / {c}.
+
+If `file-followup` exited nonzero:
+
+> Filed as active: `{slug}`. Status {status}. **Follow-up filing failed** (`<one-line reason>`) — file manually if you want a glanceable entry. {N} next moves: {a} / {b} / {c}.
 
 The user invoked it; the confirmation is a receipt.
 

@@ -1,0 +1,142 @@
+{
+  "_doc": "JStack systems registry — every system bundled by the JStack plugin (hooks, skills, runtime mechanisms) that must be tracked, documented, and live-testable. The host registry (e.g. ~/Operations/Infrastructure/config/systems.json on the Jarvis machine) federates this file via its `imports:` field and stamps each entry with `origin: \"jstack\"` + the resolved plugin version at read time. Maintenance rule: every entry lives where its code lives — edit JStack systems in JStack, host systems in the host registry, never both. Every entry MUST declare a `test` so verification is callable on demand from any surface (CLI, dashboard, work-Claude debugging).",
+  "_schema": {
+    "kind": "hook | skill | system | subsystem — 'hook' = Claude Code lifecycle hook (PreToolUse, SessionStart, etc.). 'skill' = invocable slash-command skill shipped under skills/. 'system' = composite mechanism (rules-injection pipeline, install flow). 'subsystem' = nested sub-feature inside a parent.",
+    "id": "string — stable identifier, kebab-case",
+    "name": "string — display name",
+    "status": "live | partial | down | deprecated",
+    "description": "one-line summary",
+    "code": "array of code paths (relative to plugin root)",
+    "config": "array of config paths (relative to plugin root unless ~/-prefixed)",
+    "docs": "array of doc paths inside the plugin (typically docs/systems/{id}.md)",
+    "test": {
+      "type": "script | endpoint — 'script' = CLI executable, runs in-place, exit 0 = pass. 'endpoint' = HTTP POST handled by a host process (reserved for host-side wrappers).",
+      "path": "string — for type=script, path relative to plugin root. for type=endpoint, URL path.",
+      "description": "string — one-line description of what the test verifies"
+    },
+    "subsystems": "array of nested entries",
+    "notes": "free-form operator notes"
+  },
+  "systems": [
+    {
+      "id": "path-rule-injection",
+      "kind": "hook",
+      "name": "Cross-Tree Rule Injection",
+      "status": "live",
+      "description": "PreToolUse hook that injects path-matched ~/.claude/rules/*.md bodies into Edit/Write/MultiEdit/NotebookEdit calls — works regardless of session launch CWD, so cross-tree agents pick up the right conventions on every file mutation.",
+      "code": [
+        "hooks/inject-path-rules.py",
+        "hooks/hooks.json"
+      ],
+      "config": [],
+      "docs": [
+        "docs/systems/path-rule-injection.md"
+      ],
+      "test": {
+        "type": "script",
+        "path": "tests/path-rule-injection.sh",
+        "description": "Live test of the real hook script via its PreToolUse JSON stdin contract: cold-fire (matches rule + emits additionalContext on first call), consecutive-dedup (same session, no transcript growth → no re-inject), threshold re-fire (transcript grown past JSTACK_RULE_REINJECT_BYTES → re-inject). Runs hermetically against a temp fixture via JSTACK_RULES_DIR + JSTACK_CACHE_ROOT overrides — never touches real markers or shipped rules."
+      },
+      "subsystems": [],
+      "notes": "Registered in hooks/hooks.json — Claude Code auto-loads when the plugin is installed. Kill switch: JSTACK_PATH_RULES_DISABLED=1. Re-fire threshold: JSTACK_RULE_REINJECT_BYTES (default 400000 ≈ 100K tokens). Defensive: any exception → silent exit 0, never blocks the tool. Marker files live at /tmp/jstack-rule-cache/<session_id>/<rule>.marker storing the transcript byte offset at last injection."
+    },
+    {
+      "id": "install-rules",
+      "kind": "skill",
+      "name": "Install Rules",
+      "status": "live",
+      "description": "Symlinks (or copies, with --copy) every rule under rules-stage/ into ~/.claude/rules/ so the rule bodies auto-load by glob match on every Claude Code session.",
+      "code": [
+        "skills/install-rules/SKILL.md",
+        "rules-stage/"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
+      },
+      "subsystems": [],
+      "notes": "Default mode symlinks (auto-track plugin updates); --copy snapshots for offline edit; --force overwrites existing files. Symlinks point into the plugin cache, so a version bump invalidates the link target — re-run with --force after major updates. /jstack:install-rules."
+    },
+    {
+      "id": "handoff",
+      "kind": "skill",
+      "name": "Handoff",
+      "status": "live",
+      "description": "Generates a concise session handoff doc and opens a fresh Claude Code terminal preloaded with it via bin/open-terminal-here.",
+      "code": [
+        "skills/handoff/SKILL.md",
+        "bin/open-terminal-here"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/open-terminal-here adapter is executable."
+      },
+      "subsystems": [],
+      "notes": "Optional focus argument narrows the handoff scope. Writes handoff-context.md to cwd, then invokes open-terminal-here with --append-system-prompt-file pointing at it. Adapter self-detects terminal (iTerm/Terminal.app/gnome-terminal/etc); user can override by placing their own open-terminal-here earlier in PATH. /jstack:handoff."
+    },
+    {
+      "id": "save",
+      "kind": "skill",
+      "name": "Save",
+      "status": "live",
+      "description": "Files the current conversation as an active item under {agent_root}/{Name}/active/{slug}.md with structured progress + reference + a follow-up filed via bin/file-followup.",
+      "code": [
+        "skills/save/SKILL.md",
+        "bin/file-followup"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/file-followup adapter is executable."
+      },
+      "subsystems": [],
+      "notes": "Resolves the running agent from cwd via the userConfig.agent_root. Enforces convention max 3 active items per agent. Mirrors a one-line entry to state.md if present. Follow-up backend (none/todo/reminders/slack) routed by userConfig.followup_backend + userConfig.followup_target. /jstack:save."
+    },
+    {
+      "id": "active",
+      "kind": "skill",
+      "name": "Active",
+      "status": "live",
+      "description": "Lists or loads active items for the running agent — sorted by filed date, numbered stably (1 = oldest), max 3 per convention.",
+      "code": [
+        "skills/active/SKILL.md"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
+      },
+      "subsystems": [],
+      "notes": "List mode (no arg): one line per active item. Load mode (n | last | oldest): brief on goal, where-I-am, next moves, reference. Post-brief work mutates the active doc in-place: bumps last_touched, appends progress log entry, revises next-moves checkboxes. /jstack:active."
+    },
+    {
+      "id": "push",
+      "kind": "skill",
+      "name": "Push",
+      "status": "live",
+      "description": "Commits and pushes the work touched in the current session to whatever repo(s) those files live in — supports session-scoped (default) or all-pending (`all`) modes, and `0` to commit without pushing.",
+      "code": [
+        "skills/push/SKILL.md"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
+      },
+      "subsystems": [],
+      "notes": "Authorization gate: only runs if the user explicitly said push/commit/ship/land in this session. Resolves repos from the touched-file list (works from a non-repo cockpit). Hard rules: no --no-verify, no --amend, no Co-Authored-By, no `git add -A`, sensitive paths skipped, never force-push main/master. `all` mode groups pending changes into per-unit-of-work commits with a one-line plan up front. /jstack:push."
+    }
+  ]
+}

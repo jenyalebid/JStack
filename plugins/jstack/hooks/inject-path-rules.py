@@ -17,6 +17,12 @@ Failure mode: any exception causes a silent exit 0 with no output. The hook
 NEVER blocks the tool — its only job is to enrich context.
 
 Disable per-session: set env var JSTACK_PATH_RULES_DISABLED=1.
+
+Test overrides (do not use in production):
+  JSTACK_RULES_DIR   — override the rules source directory.
+  JSTACK_CACHE_ROOT  — override the per-session marker root.
+These let `tests/path-rule-injection.sh` run hermetically against a temp
+fixture without touching real markers or shipped rules.
 """
 
 from __future__ import annotations
@@ -28,9 +34,19 @@ import sys
 from pathlib import Path
 
 TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
-RULES_DIR = Path.home() / ".claude" / "rules"
-CACHE_ROOT = Path("/tmp/jstack-rule-cache")
+DEFAULT_RULES_DIR = Path.home() / ".claude" / "rules"
+DEFAULT_CACHE_ROOT = Path("/tmp/jstack-rule-cache")
 DEFAULT_REINJECT_BYTES = 400_000
+
+
+def _rules_dir() -> Path:
+    override = os.environ.get("JSTACK_RULES_DIR")
+    return Path(override).expanduser() if override else DEFAULT_RULES_DIR
+
+
+def _cache_root() -> Path:
+    override = os.environ.get("JSTACK_CACHE_ROOT")
+    return Path(override).expanduser() if override else DEFAULT_CACHE_ROOT
 
 
 def main() -> None:
@@ -59,11 +75,12 @@ def main() -> None:
     except ValueError:
         reinject_bytes = DEFAULT_REINJECT_BYTES
 
-    if not RULES_DIR.is_dir():
+    rules_dir = _rules_dir()
+    if not rules_dir.is_dir():
         sys.exit(0)
 
     matched: list[Path] = []
-    for rule_path in sorted(RULES_DIR.glob("*.md")):
+    for rule_path in sorted(rules_dir.glob("*.md")):
         try:
             paths = _parse_paths_frontmatter(rule_path)
             if not paths:
@@ -77,7 +94,7 @@ def main() -> None:
         sys.exit(0)
 
     current_size = _file_size(transcript_path)
-    session_cache = CACHE_ROOT / _safe_dir_name(session_id)
+    session_cache = _cache_root() / _safe_dir_name(session_id)
     try:
         session_cache.mkdir(parents=True, exist_ok=True)
     except Exception:

@@ -21,15 +21,26 @@ ARGS="$*"
 # Build the command the new shell runs. Quote CWD; ARGS is pre-tokenized by caller.
 launch_cmd="cd \"$CWD\" && claude $ARGS"
 
+# AppleScript strings are double-quoted, so any " inside the embedded shell
+# command has to become \" before interpolation. Escape backslashes first,
+# then quotes, so we don't double-escape the result.
+applescript_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
 case "$(uname -s)" in
   Darwin)
+    as_cmd="$(applescript_escape "$launch_cmd")"
     if [ -d "/Applications/iTerm.app" ]; then
       osascript <<EOF
 tell application "iTerm"
     activate
     create window with default profile
     tell current session of current window
-        write text "$launch_cmd"
+        write text "$as_cmd"
     end tell
 end tell
 EOF
@@ -37,7 +48,7 @@ EOF
       osascript <<EOF
 tell application "Terminal"
     activate
-    do script "$launch_cmd"
+    do script "$as_cmd"
 end tell
 EOF
     fi

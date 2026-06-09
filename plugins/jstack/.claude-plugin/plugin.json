@@ -1,7 +1,7 @@
 {
   "name": "jstack",
   "description": "Agent workflow skills: file/load active items, hand off sessions, commit + push session work, install bundled rules. Portable across machines via userConfig — no hardcoded paths.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": {
     "name": "Jarvis-and-J"
   },

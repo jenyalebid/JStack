@@ -40,6 +40,7 @@ Installing N rules into ~/.claude/rules/:
   - code-review.md
   - execution-gates.md
   - ios-charts.md
+  - ios-design-ethos.md
   - ios-forms.md
   - ios-lists.md
   - ios-modifiers.md

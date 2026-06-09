@@ -1,7 +1,7 @@
 {
   "name": "jstack",
   "description": "Agent workflow skills: file/load active items, hand off sessions, commit + push session work, install bundled rules. PreToolUse hook injects path-matched rules at edit time regardless of launch CWD. Portable across machines via userConfig — no hardcoded paths.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": {
     "name": "Jarvis-and-J"
   },

@@ -14,7 +14,7 @@ Five slash commands (all namespaced as `/jstack:*`):
 | `/jstack:push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
 | `/jstack:install-rules` | Symlink the 16 bundled rules into `~/.claude/rules/` |
 
-Plus 16 path-scoped rule files (Claude Code auto-loads them by glob match after install), two bundled `bin/` adapters (terminal-open + follow-up filer), and two architecture docs in `docs/` for building larger systems (agents dashboard, post-session review).
+Plus 16 path-scoped rule files (Claude Code auto-loads them by glob match after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree (the gap that the native rules system can't close), two bundled `bin/` adapters (terminal-open + follow-up filer), and two architecture docs in `docs/` for building larger systems (agents dashboard, post-session review).
 
 ---
 
@@ -174,6 +174,40 @@ Then:
 ### `/jstack:install-rules [--copy] [--force]`
 
 Symlinks every `.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/` into `~/.claude/rules/`. Default mode is symlink (edits to the source affect the live rule, and updates track automatically). `--copy` makes update-independent local copies. `--force` overwrites existing files.
+
+---
+
+## The PreToolUse hook: cross-tree rule injection
+
+Native rules in `~/.claude/rules/*.md` auto-load by `paths:` glob, but only against files **inside the session's launch CWD**. If your editor is launched from one tree (`~/Agents/Mario/`) and the code you're editing lives in a sibling tree (`~/Wordy-Project/`), no rule fires — a real gap for agents that span multiple projects.
+
+JStack ships a PreToolUse hook (`plugins/jstack/hooks/inject-path-rules.py`, auto-registered via `plugins/jstack/hooks/hooks.json`) that closes that gap. Whenever Claude Code is about to invoke `Edit`, `Write`, `MultiEdit`, or `NotebookEdit`, the hook:
+
+1. Reads the tool's `tool_input.file_path` (an **absolute** path, so launch CWD doesn't matter).
+2. Walks `~/.claude/rules/*.md`, parses each rule's `paths:` frontmatter, tests every glob against the file path.
+3. For matched rules, returns the rule body as `additionalContext` via the hook's JSON envelope (`permissionDecision: "allow"`). Claude sees the rule before executing the edit.
+
+### Dedup so the same rule doesn't flood context every edit
+
+For each `(session, rule)` pair, the hook writes a marker file containing the transcript's byte offset at injection time. On subsequent matches, it re-injects only if the transcript has grown by **at least `JSTACK_RULE_REINJECT_BYTES` bytes** since the marker (default `400000` ≈ ~100K tokens at ~4 bytes/token). Override per-session by exporting `JSTACK_RULE_REINJECT_BYTES=N`.
+
+### Kill switch
+
+Set `JSTACK_PATH_RULES_DISABLED=1` to make the hook a no-op for a session.
+
+### Defensive guarantees
+
+- Any exception → silent `exit 0`, no output. The hook **never blocks** a tool call.
+- Stdin is JSON via the documented PreToolUse contract; malformed or empty input → silent exit.
+- Default hook timeout: 10s (configured in `hooks.json`). Typical runtime: <100ms.
+
+### Cache location
+
+Per-session marker files live at `/tmp/jstack-rule-cache/<sanitized-session-id>/<rule>.marker`. Reboot-clean; no persistence needed.
+
+### Tuning
+
+The hook is content-agnostic — whatever rules' `paths:` globs are, that's what fires. If you find too many rules matching a single edit (5–7 is possible if your rule globs are broad), tighten the rules' globs rather than the hook. The hook is doing exactly what you tell it via frontmatter.
 
 ---
 

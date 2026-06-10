@@ -117,6 +117,7 @@ run_skill() {
 # Skill → required bin adapters (referenced in its SKILL.md procedure)
 run_skill install-rules
 run_skill handoff open-terminal-here
+run_skill audit open-terminal-here
 run_skill save file-followup
 run_skill active
 run_skill push
@@ -136,4 +137,4 @@ if [[ $fails -gt 0 ]]; then
   echo "$fails skill(s) failed validation" >&2
   exit 1
 fi
-echo "ALL PASS — 6 skills verified"
+echo "ALL PASS — 7 skills verified"

@@ -81,6 +81,26 @@
       "notes": "Args: [@agent] [focus]. @agent resolves {Name} case-insensitively under agent_root; target cwd = chat/ subdir if present else agent root; unknown name → list available agents and stop. Focus narrows scope. Writes handoff-context.md to the TARGET cwd, then open-terminal-here with --append-system-prompt-file. Cross-agent docs are briefings: name who hands off, mark user-locked decisions. Adapter overridable earlier in PATH. /jstack:handoff."
     },
     {
+      "id": "audit",
+      "kind": "skill",
+      "name": "Audit",
+      "status": "live",
+      "description": "Writes a claims document (audit-brief.md: protocol + Original Issue / What Was Done / Claimed Verifications / Caution Flags / Blast Radius / Pitfalls) and opens a fresh terminal via bin/open-terminal-here where a trust-nothing auditor verifies every claim from source and reports CONFIRMED/REFUTED/UNVERIFIABLE. Report-only — the auditor changes nothing.",
+      "code": [
+        "skills/audit/SKILL.md",
+        "bin/open-terminal-here"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/open-terminal-here adapter is executable."
+      },
+      "subsystems": [],
+      "notes": "Args: [focus] [@agent], order-agnostic. @agent resolves like handoff under agent_root (auditor boots under that agent's identity). Caution Flags section is mandatory — user-stated 'don't break X' constraints verbatim, verified first. Auto-start: kickoff prompt passed as a pre-quoted positional claude arg (adapter flattens args via $*). Auditor asks first only if genuinely blocked, else begins immediately. /jstack:audit."
+    },
+    {
       "id": "save",
       "kind": "skill",
       "name": "Save",

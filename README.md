@@ -4,13 +4,14 @@ Cross-machine Claude Code skills for agent workflows. Built around the `{agent_r
 
 ## What this gives you
 
-Six slash commands (all namespaced as `/jstack:*`):
+Seven slash commands (all namespaced as `/jstack:*`):
 
 | Command | What it does |
 |---|---|
 | `/jstack:active` | List active items for the current agent, or load one to resume |
 | `/jstack:save` | File the current conversation as an active item under the agent's `active/` |
 | `/jstack:handoff` | Hand off the session to a fresh terminal with context preserved |
+| `/jstack:audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
 | `/jstack:push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
 | `/jstack:install-rules` | Symlink the 19 bundled rules into `~/.claude/rules/` |
 | `/jstack:post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
@@ -225,6 +226,10 @@ Then:
 2. Shows the summary.
 3. Calls `open-terminal-here "$(pwd)" --append-system-prompt-file handoff-context.md`. If no terminal can be opened, prints instructions for opening the new session manually.
 
+### `/jstack:audit [focus] [@agent]`
+
+The inverse of handoff: instead of a continuation briefing, the session writes a **claims document** (`audit-brief.md` — Original Issue / What Was Done / Claimed Verifications / Caution Flags / Blast Radius / Potential Pitfalls) prefixed with a fixed Audit Protocol, then opens a fresh terminal preloaded with it plus a kickoff prompt so the auditor starts immediately. The auditor's cornerstone rule: believe nothing in the brief — verify every claim from source (real diff, real builds, real test runs), verify user-stated "don't break X" constraints first, derive its own blast radius, and report CONFIRMED / REFUTED / UNVERIFIABLE per claim. Report-only: the auditor changes nothing. `@agent` runs the audit under another agent's identity, same workspace resolution as handoff.
+
 ### `/jstack:install-rules [--copy] [--force]`
 
 Symlinks every `.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/` into `~/.claude/rules/`. Default mode is symlink (edits to the source affect the live rule, and updates track automatically). `--copy` makes update-independent local copies. `--force` overwrites existing files.
@@ -322,10 +327,11 @@ JStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
 │   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
-│   ├── skills/                            # the six slash commands
+│   ├── skills/                            # the seven slash commands
 │   │   ├── active/SKILL.md
 │   │   ├── save/SKILL.md
 │   │   ├── handoff/SKILL.md
+│   │   ├── audit/SKILL.md
 │   │   ├── push/SKILL.md
 │   │   ├── install-rules/SKILL.md
 │   │   └── post-session-review/SKILL.md

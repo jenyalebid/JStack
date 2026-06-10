@@ -8,13 +8,13 @@ Seven slash commands (all namespaced as `/jstack:*`):
 
 | Command | What it does |
 |---|---|
-| `/jstack:active` | List active items for the current agent, or load one to resume |
-| `/jstack:save` | File the current conversation as an active item under the agent's `active/` |
-| `/jstack:handoff` | Hand off the session to a fresh terminal with context preserved |
-| `/jstack:audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
-| `/jstack:push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
-| `/jstack:install-rules` | Symlink the 19 bundled rules into `~/.claude/rules/` |
-| `/jstack:post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
+| `/active` | List active items for the current agent, or load one to resume |
+| `/save` | File the current conversation as an active item under the agent's `active/` |
+| `/handoff` | Hand off the session to a fresh terminal with context preserved |
+| `/audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
+| `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
+| `/install-rules` | Symlink the 19 bundled rules into `~/.claude/rules/` |
+| `/post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
 
 Plus two **whole systems** that run themselves once installed:
 
@@ -56,7 +56,7 @@ JStack reads its paths from **plugin config** — no path is hardcoded. Three op
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `agent_root` | directory | `~/Agents` | Directory that contains your per-agent workspaces (`{Name}/CLAUDE.md`, `{Name}/active/`). |
-| `followup_backend` | string | `none` | How `/jstack:save` files a reminder: `none` \| `todo` \| `reminders` \| `slack`. |
+| `followup_backend` | string | `none` | How `/save` files a reminder: `none` \| `todo` \| `reminders` \| `slack`. |
 | `followup_target` | string | _(empty)_ | For `todo`: a file path (default `<agent_root>/followups.md`). For `reminders`: the macOS Reminders list name (default `Follow-ups`). |
 
 Set them in Claude Code's plugin config UI, or directly in `settings.json`:
@@ -96,7 +96,7 @@ The walk-up auto-loads this CLAUDE.md whenever a session runs inside that agent 
 After restarting Claude Code so the plugin loads:
 
 ```
-/jstack:install-rules
+/install-rules
 ```
 
 Confirms and symlinks 19 rules into `~/.claude/rules/` (agent-state, canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-charts, ios-design-ethos, ios-forms, ios-lists, ios-modifiers, ios-screens, ios-services, ios-sheets, ios-style, rules, timeline, visual-assets, x-compound-tools). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
@@ -110,7 +110,7 @@ cd "$AGENT_ROOT"/{YourAgentName}
 claude
 ```
 
-In the session, run `/jstack:active`. It should list your active items (or report an empty list). If it says you're "not inside an agent tree," check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists.
+In the session, run `/active`. It should list your active items (or report an empty list). If it says you're "not inside an agent tree," check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists.
 
 ---
 
@@ -133,7 +133,7 @@ That's the whole setup for the default experience:
 mkdir -p "$AGENT_ROOT"/{YourAgentName}/review
 ```
 
-End a session inside that agent's tree → the engine resolves the owner, spawns `claude --print` from `review/` running `/jstack:post-session-review <session-id>`, validates the output, retries once on rejection. Reviews log to `~/.claude/jstack/review-state/session-review.log` by default.
+End a session inside that agent's tree → the engine resolves the owner, spawns `claude --print` from `review/` running `/post-session-review <session-id>`, validates the output, retries once on rejection. Reviews log to `~/.claude/jstack/review-state/session-review.log` by default.
 
 ### Timeline
 
@@ -143,7 +143,7 @@ The review (and anything else) writes the day's spine with the bundled CLI — i
 log_event <agent> --at HH:MM "headline" [--detail "..."] [--pipeline-task repo#42]
 ```
 
-Files land at `~/Logs/Timeline/{YYYY-MM-DD}.md` (`JSTACK_TIMELINE_DIR` overrides). Format spec + editorial bar: the `timeline` rule. The `agent-state` rule carries the state.md discipline (the review is the only writer; ≤50 lines, ≤10 per entry). Install both via `/jstack:install-rules`.
+Files land at `~/Logs/Timeline/{YYYY-MM-DD}.md` (`JSTACK_TIMELINE_DIR` overrides). Format spec + editorial bar: the `timeline` rule. The `agent-state` rule carries the state.md discipline (the review is the only writer; ≤50 lines, ≤10 per entry). Install both via `/install-rules`.
 
 ### Machine config (optional — defaults are fully portable)
 
@@ -166,7 +166,7 @@ Then the live test: `cd` into a reviewable agent dir, run `claude --print -p "te
 
 JStack ships two adapter scripts in the plugin's `bin/`, which Claude Code auto-adds to the Bash `PATH` while the plugin is enabled. Skills call them as bare commands.
 
-### `open-terminal-here` — used by `/jstack:handoff`
+### `open-terminal-here` — used by `/handoff`
 
 Opens a new Claude Code terminal at a directory. Self-detects the terminal:
 
@@ -176,7 +176,7 @@ Opens a new Claude Code terminal at a directory. Self-detects the terminal:
 
 **Contract:** `open-terminal-here <cwd> [extra-claude-args...]`. To override on a machine, put your own `open-terminal-here` earlier in `PATH`.
 
-### `file-followup` — used by `/jstack:save`
+### `file-followup` — used by `/save`
 
 Files a follow-up reminder, routed by the `followup_backend` config:
 
@@ -193,13 +193,13 @@ Files a follow-up reminder, routed by the `followup_backend` config:
 
 `{root}` below = the configured `agent_root`.
 
-### `/jstack:active [n|last|oldest]`
+### `/active [n|last|oldest]`
 
 - No arg: lists every `*.md` under `{root}/{Name}/active/`, sorted by `filed:` date ascending. Up to 3 items.
 - Numeric arg: loads that item (1 = oldest) and briefs on its Goal / Where I am now / Next moves / Reference.
 - `last` / `oldest`: aliases.
 
-### `/jstack:save [slug] [--title "..."] [--paused] [--resume "..."]`
+### `/save [slug] [--title "..."] [--paused] [--resume "..."]`
 
 Reads the current conversation, distills it into an active doc, writes to `{root}/{Name}/active/{slug}.md` with this frontmatter:
 
@@ -220,17 +220,17 @@ Then:
 2. Calls `file-followup` with `<title>` and `<body>` (body includes a one-line "why" + path to the active doc). With `followup_backend: none` this is a silent no-op.
 3. Confirms with a one-line receipt.
 
-### `/jstack:handoff [focus]`
+### `/handoff [focus]`
 
 1. Walks this conversation, writes a `handoff-context.md` to the current working directory with Current Work / In Progress / Still To Do / Key Decisions / Context sections.
 2. Shows the summary.
 3. Calls `open-terminal-here "$(pwd)" --append-system-prompt-file handoff-context.md`. If no terminal can be opened, prints instructions for opening the new session manually.
 
-### `/jstack:audit [focus] [@agent]`
+### `/audit [focus] [@agent]`
 
 The inverse of handoff: instead of a continuation briefing, the session writes a **claims document** (`audit-brief.md` — Original Issue / What Was Done / Claimed Verifications / Caution Flags / Blast Radius / Potential Pitfalls) prefixed with a fixed Audit Protocol, then opens a fresh terminal preloaded with it plus a kickoff prompt so the auditor starts immediately. The auditor's cornerstone rule: believe nothing in the brief — verify every claim from source (real diff, real builds, real test runs), verify user-stated "don't break X" constraints first, derive its own blast radius, and report CONFIRMED / REFUTED / UNVERIFIABLE per claim. Report-only: the auditor changes nothing. `@agent` runs the audit under another agent's identity, same workspace resolution as handoff.
 
-### `/jstack:install-rules [--copy] [--force]`
+### `/install-rules [--copy] [--force]`
 
 Symlinks every `.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/` into `~/.claude/rules/`. Default mode is symlink (edits to the source affect the live rule, and updates track automatically). `--copy` makes update-independent local copies. `--force` overwrites existing files.
 
@@ -277,7 +277,7 @@ claude plugin marketplace update JStack
 claude plugin update jstack
 ```
 
-Symlinked rules track new content automatically. The plugin install path changes on version bumps (old version cleaned up ~7 days later), so if symlinks ever go stale, re-run `/jstack:install-rules --force`.
+Symlinked rules track new content automatically. The plugin install path changes on version bumps (old version cleaned up ~7 days later), so if symlinks ever go stale, re-run `/install-rules --force`.
 
 ---
 
@@ -344,7 +344,7 @@ JStack/
 │   │   ├── file-followup
 │   │   ├── log_event                      # timeline writer
 │   │   └── session-review-spawn           # review engine
-│   ├── rules-stage/                       # rules installed via /jstack:install-rules
+│   ├── rules-stage/                       # rules installed via /install-rules
 │   ├── systems.json                       # registry: every bundled system + its test
 │   ├── tests/                             # runnable system tests (*.sh, exit 0 = pass)
 │   └── docs/systems/                      # per-system deep docs
@@ -356,8 +356,8 @@ JStack/
 
 ## For a model setting this up
 
-If you're a Claude session setting this up on a fresh machine, execute steps 1–6 in order. All steps are mechanical now: there are no adapters to hand-write (they're bundled and self-detecting). The only choices are the `agent_root` path and, optionally, the `followup_backend`. After step 6 returns a successful `/jstack:active` listing, JStack is installed and verified.
+If you're a Claude session setting this up on a fresh machine, execute steps 1–6 in order. All steps are mechanical now: there are no adapters to hand-write (they're bundled and self-detecting). The only choices are the `agent_root` path and, optionally, the `followup_backend`. After step 6 returns a successful `/active` listing, JStack is installed and verified.
 
-To activate the self-running systems, add the **Post-session review + timeline** section's one `mkdir` (the `review/` dir per agent), run `/jstack:install-rules` (the `timeline` + `agent-state` rules carry the format discipline), and run the two test scripts under **Verify it works**. No config file is required unless you're overriding defaults — read `plugins/jstack/docs/systems/post-session-review.md` before writing one.
+To activate the self-running systems, add the **Post-session review + timeline** section's one `mkdir` (the `review/` dir per agent), run `/install-rules` (the `timeline` + `agent-state` rules carry the format discipline), and run the two test scripts under **Verify it works**. No config file is required unless you're overriding defaults — read `plugins/jstack/docs/systems/post-session-review.md` before writing one.
 
-If `/jstack:install-rules` would overwrite anything important on the target machine, ask the user first (default behavior skips existing files, so this only matters with `--force`).
+If `/install-rules` would overwrite anything important on the target machine, ask the user first (default behavior skips existing files, so this only matters with `--force`).

@@ -120,6 +120,55 @@
       "notes": "List mode (no arg): one line per active item. Load mode (n | last | oldest): brief on goal, where-I-am, next moves, reference. Post-brief work mutates the active doc in-place: bumps last_touched, appends progress log entry, revises next-moves checkboxes. /jstack:active."
     },
     {
+      "id": "timeline-log",
+      "kind": "system",
+      "name": "Timeline Log",
+      "status": "live",
+      "description": "Daily timeline files ({timeline_dir}/{YYYY-MM-DD}.md) written by bin/log_event — block format, chronological insertion, pipeline-task consolidation. The day's spine: feeds daily briefs and nightly reviews.",
+      "code": [
+        "bin/log_event",
+        "rules-stage/timeline.md"
+      ],
+      "config": [],
+      "docs": [
+        "docs/systems/timeline-log.md"
+      ],
+      "test": {
+        "type": "script",
+        "path": "tests/log-event.sh",
+        "description": "Runs the real bin/log_event against a temp JSTACK_TIMELINE_DIR: block format, detail bullets, chronological insertion, blank-line separation, pipeline-task consolidation (one live block, earliest ts), headline collapse, bad-arg rejection."
+      },
+      "subsystems": [],
+      "notes": "Self-contained python3 stdlib — no venv, no host imports. Timeline dir override: JSTACK_TIMELINE_DIR (default ~/Logs/Timeline). Format spec is the rules-stage/timeline.md rule (install via /jstack:install-rules). Hosts with an in-process timeline writer must keep format parity — pin it with a host-side parity test against this bin."
+    },
+    {
+      "id": "post-session-review",
+      "kind": "system",
+      "name": "Post-Session Review",
+      "status": "live",
+      "description": "SessionEnd hook → bin/session-review-spawn engine → claude --print from {agent_root}/{Name}/review/ running the review skill → output parser-validated (required sections, evidence floors, timeline-grew check) → retry → escalate. Keeps state.md, active items, and the timeline truthful after every session.",
+      "code": [
+        "bin/session-review-spawn",
+        "hooks/session-end-review.sh",
+        "hooks/hooks.json",
+        "skills/post-session-review/SKILL.md",
+        "rules-stage/agent-state.md"
+      ],
+      "config": [
+        "~/.claude/jstack/review.json"
+      ],
+      "docs": [
+        "docs/systems/post-session-review.md"
+      ],
+      "test": {
+        "type": "script",
+        "path": "tests/session-review.sh",
+        "description": "Imports the real engine under a hermetic temp config: output validator (good passes; missing section / evidence-free walk / log_event-claimed-but-timeline-didn't-grow reject; 'no user turns' + cron paraphrases accepted; host-extended section lists enforced), agent resolution (umbrella dirs, project_dir_map, $HOME → default_agent, review/-dir reviewable convention), atomic claim dedup (live pid loses, stale pid taken over), SPAWN log-line dashboard contract."
+      },
+      "subsystems": [],
+      "notes": "Stack requirements: agent workspaces under agent_root with {Name}/review/ (reviewable convention), the review skill installed (default /jstack:post-session-review; hosts may point skill_invocation at their own playbook), bin/log_event on the spawned PATH (engine prepends its own bin/). Config: JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json) — agent_root, default_agent, project_dir_map, required_sections, model, timeouts, slots, tg_classify_cmd, escalate_cmd, extra_path, log_file. Kill switch: JSTACK_REVIEW_DISABLED=1. Loop guard: SKIP_SESSION_HOOK=1 on every spawn. Multi-entry-point safe: per-session atomic claim means a host SessionEnd hook and the plugin hook never double-review."
+    },
+    {
       "id": "push",
       "kind": "skill",
       "name": "Push",

@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""log_event <source> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
+                                   [--detail "..."] [--detail "..."]
+                                   [--pipeline-task <repo>#<issue>]
+
+Add a block-format entry to the daily timeline file — the day's spine.
+
+Timeline dir: $JSTACK_TIMELINE_DIR (default ~/Logs/Timeline), one file per
+day: {YYYY-MM-DD}.md. Format spec lives in the jstack rule `timeline.md`.
+
+Block format:
+    HH:MM [source]
+    headline (single line)
+    - optional detail bullet (max 3, each short)
+
+Entries are inserted in chronological order by HH:MM. --pipeline-task
+consolidates: all blocks containing the task tag are replaced by one
+up-to-date block (keeps the earliest matched timestamp unless --at given).
+
+Self-contained: python3 stdlib only. No venv, no host imports.
+
+Examples:
+    log_event mario --at 09:15 "Pipeline #82 build complete"
+    log_event lynda --at 14:00 "Word Search v3 shipped" \
+        --detail "8 pipeline tasks merged" --detail "44 commits"
+    log_event lynda --at 23:35 --date 2026-04-15 "V2 committed late"
+    log_event mario --at 04:25 --pipeline-task wordy#87 \
+        "Custom WS boards merged to v3" --detail "type discriminator schema"
+"""
+
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+_BLOCK_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) \[")
+
+
+def timeline_dir() -> Path:
+    env = os.environ.get("JSTACK_TIMELINE_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / "Logs" / "Timeline"
+
+
+def timeline_path(day: str | None = None) -> Path:
+    d = day or datetime.now().strftime("%Y-%m-%d")
+    root = timeline_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{d}.md"
+
+
+def _format_block(source: str, headline: str, details: list[str], ts: str) -> str:
+    """Build a multi-line entry block: header line + headline + bullets."""
+    headline = " ".join(headline.split())
+    out = [f"{ts} [{source}]", headline]
+    for d in details or []:
+        d = d.strip()
+        if not d:
+            continue
+        if d.startswith("- "):
+            d = d[2:].strip()
+        d = " ".join(d.split())
+        out.append(f"- {d}")
+    return "\n".join(out)
+
+
+def _split_blocks(text: str) -> list[tuple[str | None, str]]:
+    """Parse a timeline file into [(timestamp, block_text), ...].
+
+    A block starts at a line matching `HH:MM [` and runs until the next such
+    header or a blank line. Legacy single-line entries (`HH:MM [src] text`)
+    are treated as their own block.
+    """
+    blocks: list[tuple[str | None, str]] = []
+    current: list[str] = []
+    current_ts: str | None = None
+
+    def flush():
+        nonlocal current, current_ts
+        if current:
+            blocks.append((current_ts, "\n".join(current).rstrip()))
+        current = []
+        current_ts = None
+
+    for line in text.splitlines():
+        m = _BLOCK_HEADER_RE.match(line)
+        if m:
+            flush()
+            current_ts = m.group(1)
+            current = [line]
+        elif line.strip() == "":
+            flush()
+        else:
+            if current:
+                current.append(line)
+            # else: orphan body line before any header — drop
+    flush()
+    return blocks
+
+
+def _join_blocks(blocks: list[tuple[str | None, str]]) -> str:
+    return "\n\n".join(b[1] for b in blocks) + "\n"
+
+
+def _insert_block(blocks: list[tuple[str | None, str]], ts: str, block: str) -> list[tuple[str | None, str]]:
+    out = list(blocks)
+    for i, (b_ts, _) in enumerate(out):
+        if b_ts and b_ts > ts:
+            out.insert(i, (ts, block))
+            return out
+    out.append((ts, block))
+    return out
+
+
+def append_timeline(source: str, text: str, day: str | None = None,
+                    timestamp: str | None = None,
+                    details: list[str] | None = None) -> None:
+    if not source or not text:
+        return
+    path = timeline_path(day)
+    ts = timestamp or datetime.now().strftime("%H:%M")
+    new_block = _format_block(source, text, details or [], ts)
+
+    if not path.exists() or path.read_text().strip() == "":
+        path.write_text(new_block + "\n")
+        return
+
+    blocks = _split_blocks(path.read_text())
+    blocks = _insert_block(blocks, ts, new_block)
+    path.write_text(_join_blocks(blocks))
+
+
+def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
+                               day: str | None = None,
+                               timestamp: str | None = None,
+                               details: list[str] | None = None) -> None:
+    """Replace all timeline blocks matching a pipeline task with one summary.
+
+    The task_tag (e.g. "wordy#87") is auto-prepended to the headline so the
+    block always carries its own marker. The new block keeps the earliest
+    matched timestamp unless an explicit timestamp is given.
+    """
+    if not source or not task_tag or not text:
+        return
+    headline = " ".join(text.split())
+    if task_tag not in headline:
+        headline = f"{task_tag} — {headline}"
+
+    path = timeline_path(day)
+    if not path.exists() or path.read_text().strip() == "":
+        append_timeline(source, headline, day=day, timestamp=timestamp, details=details)
+        return
+
+    blocks = _split_blocks(path.read_text())
+    kept: list[tuple[str | None, str]] = []
+    earliest_ts: str | None = None
+    for ts_b, block in blocks:
+        if task_tag in block:
+            if ts_b and (earliest_ts is None or ts_b < earliest_ts):
+                earliest_ts = ts_b
+        else:
+            kept.append((ts_b, block))
+
+    final_ts = timestamp or earliest_ts or datetime.now().strftime("%H:%M")
+    new_block = _format_block(source, headline, details or [], final_ts)
+    kept = _insert_block(kept, final_ts, new_block)
+    path.write_text(_join_blocks(kept))
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print('usage: log_event <source> "<headline>" [--at HH:MM] '
+              '[--date YYYY-MM-DD] [--detail "..."]... [--pipeline-task <tag>]',
+              file=sys.stderr)
+        return 2
+
+    source = argv[0]
+    rest = argv[1:]
+
+    timestamp = None
+    day = None
+    pipeline_task = None
+    details: list[str] = []
+    words: list[str] = []
+
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--at":
+            timestamp = rest[i + 1]; i += 2
+        elif a == "--date":
+            day = rest[i + 1]; i += 2
+        elif a == "--pipeline-task":
+            pipeline_task = rest[i + 1]; i += 2
+        elif a == "--detail":
+            details.append(rest[i + 1]); i += 2
+        else:
+            words.append(a); i += 1
+
+    text = " ".join(words)
+    if timestamp and not re.fullmatch(r"\d{2}:\d{2}", timestamp):
+        print(f"log_event: bad --at '{timestamp}' (expected HH:MM)", file=sys.stderr)
+        return 2
+    if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        print(f"log_event: bad --date '{day}' (expected YYYY-MM-DD)", file=sys.stderr)
+        return 2
+
+    label = day if day else "today"
+    if pipeline_task:
+        consolidate_pipeline_entry(source, pipeline_task, text, day=day,
+                                   timestamp=timestamp, details=details)
+        print(f"consolidated: {source} ({label}) [{pipeline_task}] {text[:80]}")
+    else:
+        append_timeline(source, text, day=day, timestamp=timestamp, details=details)
+        print(f"logged: {source} ({label}) {text[:80]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

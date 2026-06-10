@@ -120,10 +120,20 @@ run_skill handoff open-terminal-here
 run_skill save file-followup
 run_skill active
 run_skill push
+run_skill post-session-review file-followup log_event
+
+# Catch skills added to skills/ but not registered above
+for dir in "$SKILLS_DIR"/*/; do
+  name=$(basename "$dir")
+  if ! grep -qE "^run_skill $name( |$)" "$0"; then
+    echo "FAIL [$name]: skill present in skills/ but not registered in tests/skills.sh" >&2
+    fails=$((fails+1))
+  fi
+done
 
 echo ""
 if [[ $fails -gt 0 ]]; then
   echo "$fails skill(s) failed validation" >&2
   exit 1
 fi
-echo "ALL PASS — 5 skills verified"
+echo "ALL PASS — 6 skills verified"

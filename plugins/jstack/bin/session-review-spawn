@@ -1,0 +1,622 @@
+#!/usr/bin/env python3
+"""JStack post-session review engine.
+
+Spawns an agent's review/ sub-mode to review a session that just ended:
+SessionEnd hook → this engine → `claude --print` from {agent_root}/{Name}/review/
+running the review skill → output parser-validated (required sections +
+evidence floors + timeline-grew check) → retry once → escalate on
+persistent failure.
+
+Self-contained: python3 stdlib only. Behavior is configured by a single
+optional JSON file (JSTACK_REVIEW_CONFIG, default ~/.claude/jstack/review.json);
+with no config it runs portable defaults.
+
+Stack requirements (conventions this engine assumes exist):
+  - Agent workspaces under agent_root, one per {Name}/ — an agent is
+    reviewable iff {agent_root}/{Name}/review/ exists.
+  - The review skill (default /jstack:post-session-review) is installed.
+  - The jstack `log_event` tool writes the daily timeline (this engine puts
+    its own bin/ on the spawned review's PATH).
+
+Config keys (all optional):
+  agent_root            default "~/Agents"
+  default_agent         agent owning $HOME-cwd sessions (default: none → skip)
+  project_dir_map       {encoded-project-dir: agent} for non-workspace sessions
+  skill_invocation      default "/jstack:post-session-review"
+  required_sections     default ["TRANSCRIPT_WALK","DOC_RECONCILE",
+                                 "ACTIONS_TAKEN","TIMELINE","SUMMARY"]
+  model                 default "opus"
+  max_turns             default 50
+  timeout_secs          default 1200
+  max_attempts          default 2
+  max_concurrent        default 2
+  slot_wait_secs        default 1800
+  min_session_bytes     default 1000
+  recent_activity_secs  default 14400
+  telegram_cooldown_seconds   default 300
+  telegram_cooldown_file      JSON file holding telegram_cooldown_seconds
+                              (wins over the inline key when readable)
+  tg_classify_cmd       executable called with <session_id>; exit 0 = telegram
+  escalate_cmd          executable called with <agent> <session_id> <reason>
+                        on persistent failure (default: log only)
+  extra_path            list of dirs prepended to the spawned review's PATH
+  timeline_dir          default "~/Logs/Timeline" (also exported as
+                        JSTACK_TIMELINE_DIR to the spawn)
+  state_dir             default "~/.claude/jstack/review-state"
+  log_file              default {state_dir}/session-review.log
+
+Kill switch: JSTACK_REVIEW_DISABLED=1. Loop guard: SKIP_SESSION_HOOK=1 is
+set on every spawn (the SessionEnd hook honors it).
+"""
+
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+PLUGIN_BIN = Path(__file__).resolve().parent
+
+REVIEW_MARKER = "[POST-SESSION-REVIEW]"
+FILER_BRIEFING_MARKER = "You are being briefed on a topic so that when Boss returns to you"
+
+DEFAULTS = {
+    "agent_root": "~/Agents",
+    "default_agent": None,
+    "project_dir_map": {},
+    "skill_invocation": "/jstack:post-session-review",
+    "required_sections": [
+        "TRANSCRIPT_WALK", "DOC_RECONCILE", "ACTIONS_TAKEN", "TIMELINE", "SUMMARY",
+    ],
+    "model": "opus",
+    "max_turns": 50,
+    "timeout_secs": 1200,
+    "max_attempts": 2,
+    "max_concurrent": 2,
+    "slot_wait_secs": 1800,
+    "slot_poll_secs": 10,
+    "min_session_bytes": 1000,
+    "recent_activity_secs": 14400,
+    "telegram_cooldown_seconds": 300,
+    "telegram_cooldown_file": None,
+    "tg_classify_cmd": None,
+    "escalate_cmd": None,
+    "extra_path": [],
+    "timeline_dir": "~/Logs/Timeline",
+    "state_dir": "~/.claude/jstack/review-state",
+    "log_file": None,
+}
+
+
+def load_config() -> dict:
+    cfg = dict(DEFAULTS)
+    path = Path(os.environ.get(
+        "JSTACK_REVIEW_CONFIG",
+        str(Path.home() / ".claude" / "jstack" / "review.json"),
+    )).expanduser()
+    if path.exists():
+        try:
+            user = json.loads(path.read_text())
+            if isinstance(user, dict):
+                cfg.update({k: v for k, v in user.items() if k in DEFAULTS})
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"session-review-spawn: bad config {path}: {e}", file=sys.stderr)
+    cfg["agent_root"] = Path(cfg["agent_root"]).expanduser()
+    cfg["timeline_dir"] = Path(cfg["timeline_dir"]).expanduser()
+    cfg["state_dir"] = Path(cfg["state_dir"]).expanduser()
+    cfg["log_file"] = (
+        Path(cfg["log_file"]).expanduser() if cfg["log_file"]
+        else cfg["state_dir"] / "session-review.log"
+    )
+    return cfg
+
+
+CFG = load_config()
+
+
+def _log(msg: str) -> None:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    CFG["log_file"].parent.mkdir(parents=True, exist_ok=True)
+    with CFG["log_file"].open("a") as f:
+        f.write(f"{ts} {msg}\n")
+
+
+# ---------------------------------------------------------------- resolution
+
+def _encode(path: Path) -> str:
+    """Claude Code project-dir encoding of an absolute path."""
+    return str(path).replace("/", "-").replace(".", "-")
+
+
+def reviewable_agents(agent_root: Path) -> dict[str, str]:
+    """{lowercase-agent: Name} for every workspace with a review/ dir."""
+    out: dict[str, str] = {}
+    if not agent_root.is_dir():
+        return out
+    for d in sorted(agent_root.iterdir()):
+        if d.is_dir() and (d / "review").is_dir():
+            out[d.name.lower()] = d.name
+    return out
+
+
+def resolve_agent(project_dir_name: str, agent_root: Path,
+                  agents: dict[str, str],
+                  project_dir_map: dict, default_agent: str | None) -> str | None:
+    """Map an encoded project-dir name to a reviewable agent (lowercase)."""
+    root_prefix = _encode(agent_root) + "-"
+    if project_dir_name.startswith(root_prefix):
+        remainder = project_dir_name[len(root_prefix):]
+        for low, name in agents.items():
+            enc = name.replace(".", "-")
+            if remainder == enc or remainder.startswith(enc + "-"):
+                return low
+        return None
+    mapped = project_dir_map.get(project_dir_name)
+    if mapped and mapped.lower() in agents:
+        return mapped.lower()
+    if default_agent and project_dir_name == _encode(Path.home()):
+        return default_agent.lower() if default_agent.lower() in agents else None
+    return None
+
+
+def find_session(session_id: str, transcript_hint: str | None = None) -> tuple[Path | None, str | None]:
+    """Find session JSONL and owning agent. Returns (jsonl_path, agent) or (None, None)."""
+    agents = reviewable_agents(CFG["agent_root"])
+
+    def resolve(p: Path) -> tuple[Path, str | None]:
+        return p, resolve_agent(p.parent.name, CFG["agent_root"], agents,
+                                CFG["project_dir_map"], CFG["default_agent"])
+
+    if transcript_hint:
+        p = Path(transcript_hint)
+        if p.exists() and p.name == f"{session_id}.jsonl":
+            return resolve(p)
+
+    if not CLAUDE_PROJECTS.exists():
+        return None, None
+    for project_dir in CLAUDE_PROJECTS.iterdir():
+        if not project_dir.is_dir():
+            continue
+        candidate = project_dir / f"{session_id}.jsonl"
+        if candidate.exists():
+            return resolve(candidate)
+    return None, None
+
+
+# ------------------------------------------------------------------- guards
+
+def claim_session(session_id: str) -> bool:
+    """Atomically claim this session so parallel entry points (host hook +
+    plugin hook) spawn exactly one review. A claim whose pid is dead is stale
+    — resumed sessions ending again re-claim cleanly."""
+    claims = CFG["state_dir"] / "claims"
+    claims.mkdir(parents=True, exist_ok=True)
+    marker = claims / session_id
+    for _ in range(2):
+        try:
+            fd = os.open(str(marker), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            with os.fdopen(fd, "w") as f:
+                f.write(f"{os.getpid()}\n")
+            return True
+        except FileExistsError:
+            try:
+                pid = int(marker.read_text().strip().split()[0])
+                os.kill(pid, 0)
+                return False  # live holder
+            except (ValueError, IndexError, ProcessLookupError, PermissionError, OSError):
+                try:
+                    marker.unlink()
+                except FileNotFoundError:
+                    pass
+    return False
+
+
+def _iter_user_texts(jsonl_path: Path):
+    with jsonl_path.open() as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("type") != "user":
+                continue
+            content = e.get("message", {}).get("content", "")
+            if isinstance(content, list):
+                parts = [b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"]
+                yield "\n".join(parts)
+            else:
+                yield content or ""
+
+
+def is_review_session(jsonl_path: Path) -> bool:
+    """First user message carries the review marker → loop prevention."""
+    try:
+        for text in _iter_user_texts(jsonl_path):
+            return REVIEW_MARKER in text
+    except Exception:
+        pass
+    return False
+
+
+def is_unengaged_filer_briefing(jsonl_path: Path) -> bool:
+    """Filer-briefing session with no subsequent user prose turns — closing
+    the resumed terminal without typing fires SessionEnd; reviewing a
+    briefing-only transcript wastes a full spawn."""
+    saw_briefing_first = False
+    seen_prose = 0
+    try:
+        for text in _iter_user_texts(jsonl_path):
+            text = text.strip()
+            if not text:
+                continue
+            seen_prose += 1
+            if seen_prose == 1:
+                if FILER_BRIEFING_MARKER not in text:
+                    return False
+                saw_briefing_first = True
+            else:
+                return False
+    except Exception:
+        return False
+    return saw_briefing_first and seen_prose == 1
+
+
+def has_recent_activity(jsonl_path: Path) -> bool:
+    """True if the last message is from today (local) or within the window.
+    Skips reopen-and-close of old sessions (metadata-only appends)."""
+    newest_ts = None
+    try:
+        with jsonl_path.open() as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                    if e.get("type") not in ("user", "assistant"):
+                        continue
+                    ts = e.get("timestamp")
+                    if ts and (newest_ts is None or ts > newest_ts):
+                        newest_ts = ts
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except Exception:
+        return True
+    if newest_ts is None:
+        return False
+    try:
+        msg_time = datetime.fromisoformat(newest_ts.replace("Z", "+00:00"))
+        if msg_time.tzinfo is None:
+            msg_time = msg_time.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        local_now = now.astimezone()
+        if msg_time.astimezone(local_now.tzinfo).date() == local_now.date():
+            return True
+        return (now - msg_time).total_seconds() <= CFG["recent_activity_secs"]
+    except (ValueError, TypeError):
+        return True
+
+
+def is_telegram_session(session_id: str, jsonl_path: Path) -> bool:
+    """TG sessions arrive as many short claude --print runs; they need the
+    per-agent debounce. Detection: optional host classifier cmd, then
+    transcript markers."""
+    cmd = CFG["tg_classify_cmd"]
+    if cmd:
+        try:
+            r = subprocess.run([cmd, session_id], capture_output=True, timeout=30)
+            if r.returncode == 0:
+                return True
+        except Exception:
+            pass
+    try:
+        for text in _iter_user_texts(jsonl_path):
+            if not text:
+                continue
+            if "DM from" in text or "Group from" in text:
+                return True
+            if "channel=telegram" in text or '"channel": "telegram"' in text:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _telegram_cooldown() -> int:
+    f = CFG["telegram_cooldown_file"]
+    if f:
+        try:
+            return int(json.loads(Path(f).expanduser().read_text())
+                       .get("telegram_cooldown_seconds",
+                            CFG["telegram_cooldown_seconds"]))
+        except Exception:
+            pass
+    return int(CFG["telegram_cooldown_seconds"])
+
+
+def debounce_telegram(session_id: str, agent: str) -> bool:
+    """Per-AGENT marker (TG turns land in many session UUIDs): sleep the
+    cooldown; if a newer session_end overwrote the marker meanwhile, yield
+    to that later checker."""
+    cooldown = _telegram_cooldown()
+    debounce_dir = CFG["state_dir"] / "debounce"
+    debounce_dir.mkdir(parents=True, exist_ok=True)
+    marker = debounce_dir / f"tg-{agent}"
+    my_ts = f"{time.time():.6f}"
+    marker.write_text(f"{my_ts}\n{session_id}\n")
+
+    _log(f"DEBOUNCE tg-{agent} ({session_id[:8]}): sleeping {cooldown}s")
+    time.sleep(cooldown)
+
+    try:
+        current = marker.read_text().strip().split("\n")
+        if (current[0] if current else "") != my_ts:
+            current_sid = current[1] if len(current) > 1 else "?"
+            _log(f"DEBOUNCE tg-{agent} ({session_id[:8]}): superseded by {current_sid[:8]}")
+            return False
+    except FileNotFoundError:
+        _log(f"DEBOUNCE tg-{agent} ({session_id[:8]}): marker gone, skipping")
+        return False
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+    return True
+
+
+def acquire_review_slot(session_id: str, agent: str):
+    """One of max_concurrent flock slots (review spawns are memory-heavy).
+    Lock dies with the process — no stale-lock cleanup needed."""
+    slot_dir = CFG["state_dir"] / "slots"
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    slot_paths = [slot_dir / f"slot-{i}.lock" for i in range(int(CFG["max_concurrent"]))]
+    deadline = time.time() + int(CFG["slot_wait_secs"])
+    waited_logged = False
+
+    while True:
+        for i, path in enumerate(slot_paths):
+            fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+            fh = os.fdopen(fd, "r+")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fh.seek(0)
+                fh.truncate()
+                fh.write(f"{os.getpid()} {session_id} {agent} {time.time():.0f}\n")
+                fh.flush()
+                if waited_logged:
+                    _log(f"SLOT_ACQUIRED {session_id[:8]} → {agent} (slot {i})")
+                return fh
+            except (IOError, OSError):
+                fh.close()
+                continue
+        if time.time() >= deadline:
+            return None
+        if not waited_logged:
+            _log(f"SLOT_WAIT {session_id[:8]} → {agent}: all {len(slot_paths)} slots busy")
+            waited_logged = True
+        time.sleep(int(CFG["slot_poll_secs"]))
+
+
+# -------------------------------------------------------------- spawn + gate
+
+def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
+    workspace = CFG["agent_root"] / agent_title / "review"
+    if not workspace.exists():
+        _log(f"SKIP {session_id[:8]}: workspace {workspace} not found")
+        return
+
+    base_invocation = f"{CFG['skill_invocation']} {session_id}"
+    max_attempts = int(CFG["max_attempts"])
+    last_failure = ""
+
+    for attempt in range(1, max_attempts + 1):
+        if attempt == 1:
+            prompt = f"{REVIEW_MARKER}\n\n{base_invocation}"
+        else:
+            prompt = (
+                f"{REVIEW_MARKER}\n"
+                f"[RETRY {attempt}/{max_attempts}: prior output rejected — {last_failure}]\n\n"
+                f"{base_invocation}"
+            )
+
+        cmd = [
+            "claude", "--print",
+            "--output-format", "text",
+            "--model", str(CFG["model"]),
+            "--permission-mode", "bypassPermissions",
+            "--max-turns", str(CFG["max_turns"]),
+            "--name", f"Review: {agent} ({session_id[:8]}){'/retry' if attempt > 1 else ''}",
+            "-p", prompt,
+        ]
+
+        env = os.environ.copy()
+        extra = [str(PLUGIN_BIN)] + [str(Path(p).expanduser()) for p in CFG["extra_path"]]
+        env["PATH"] = ":".join(
+            extra
+            + ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+            + [env.get("PATH", "")]
+        )
+        env["SKIP_SESSION_HOOK"] = "1"
+        env["JSTACK_TIMELINE_DIR"] = str(CFG["timeline_dir"])
+
+        timeline_path = CFG["timeline_dir"] / f"{time.strftime('%Y-%m-%d')}.md"
+        pre_size = timeline_path.stat().st_size if timeline_path.exists() else 0
+        pre_mtime = timeline_path.stat().st_mtime if timeline_path.exists() else 0.0
+
+        _log(f"SPAWN {session_id[:8]} → {agent} (attempt {attempt}, workspace: {workspace.name})")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=int(CFG["timeout_secs"]),
+            )
+        except subprocess.TimeoutExpired:
+            last_failure = f"timeout after {CFG['timeout_secs']}s"
+            _log(f"TIMEOUT {session_id[:8]} → {agent} (attempt {attempt})")
+            continue
+
+        if result.returncode != 0:
+            last_failure = f"exit {result.returncode}: {(result.stderr or '')[:200]}"
+            _log(f"NONZERO {session_id[:8]} → {agent} (attempt {attempt}): {last_failure}")
+            continue
+
+        post_size = timeline_path.stat().st_size if timeline_path.exists() else 0
+        post_mtime = timeline_path.stat().st_mtime if timeline_path.exists() else 0.0
+        ok, reason = validate_review_output(
+            result.stdout,
+            CFG["required_sections"],
+            timeline_grew=(post_size > pre_size and post_mtime > pre_mtime),
+        )
+        if ok:
+            _log(f"DONE {session_id[:8]} → {agent} (attempt {attempt}, {len(result.stdout)} chars)")
+            return
+
+        last_failure = reason
+        _log(f"INVALID {session_id[:8]} → {agent} (attempt {attempt}): {reason}")
+
+    _log(f"BLOCKED {session_id[:8]} → {agent}: {max_attempts} attempts failed — {last_failure}")
+    if CFG["escalate_cmd"]:
+        try:
+            subprocess.run(
+                [str(Path(CFG["escalate_cmd"]).expanduser()), agent, session_id,
+                 f"Post-session review failed after {max_attempts} attempts: {last_failure}"],
+                timeout=60, check=False, capture_output=True,
+            )
+            _log(f"ESCALATED {session_id[:8]} → {agent}")
+        except Exception as e:
+            _log(f"ESCALATE_FAIL {session_id[:8]} → {agent}: {e}")
+
+
+def _extract_section(output: str, header: str) -> str:
+    """Text between '## {header}' and the next '## ' header (or end)."""
+    pattern = rf"## {re.escape(header)}\b(.*?)(?=\n## |\Z)"
+    m = re.search(pattern, output, re.DOTALL)
+    return m.group(1) if m else ""
+
+
+def validate_review_output(output: str, required_sections: list[str],
+                           timeline_grew: bool = True) -> tuple[bool, str]:
+    """(ok, reason). Required-section presence + per-section evidence floors.
+
+    timeline_grew: did the day's timeline file actually gain bytes during the
+    spawn — if the model claimed `log_event` but the file didn't grow, the
+    call never executed (the silent-pass bug this gate exists for)."""
+    missing = [s for s in required_sections if f"## {s}" not in output]
+    if missing:
+        return False, f"missing sections: {', '.join(missing)}"
+
+    if "TRANSCRIPT_WALK" in required_sections:
+        walk = _extract_section(output, "TRANSCRIPT_WALK")
+        has_turns = bool(re.search(r"^\s*-\s+turn\b", walk, re.MULTILINE))
+        has_no_turns_phrase = bool(re.search(
+            r"no user turns|no\s+boss\s+(prose|turns|interaction|messages|input)|"
+            r"cron[\s-]+triggered.*(no|zero).*\b(boss|user|interaction)|"
+            r"openclaw bootstrap.*only|skill payload only|"
+            r"zero\s+(boss|user)\s+(prose|turns)",
+            walk, re.IGNORECASE,
+        ))
+        if not (has_turns or has_no_turns_phrase):
+            return False, "TRANSCRIPT_WALK lacks turn entries and 'no user turns' note"
+
+    if "DOC_RECONCILE" in required_sections:
+        doc = _extract_section(output, "DOC_RECONCILE")
+        has_doc_items = bool(re.search(r"^\s*-\s+", doc, re.MULTILINE))
+        has_clean_citation = bool(re.search(r"clean\s*[-—–]\s*examined", doc, re.IGNORECASE))
+        if not (has_doc_items or has_clean_citation):
+            return False, "DOC_RECONCILE has no items and no 'clean — examined' citation"
+
+    if "ACTIONS_TAKEN" in required_sections:
+        actions = _extract_section(output, "ACTIONS_TAKEN")
+        has_action_items = bool(re.search(r"^\s*-\s+", actions, re.MULTILINE))
+        has_none_justified = bool(re.search(r"none\s*[-—–].*walked", actions,
+                                            re.IGNORECASE | re.DOTALL))
+        if not (has_action_items or has_none_justified):
+            return False, "ACTIONS_TAKEN has no items and no 'none — N walked' justification"
+
+    if "TIMELINE" in required_sections:
+        timeline = _extract_section(output, "TIMELINE")
+        has_log_event = bool(re.search(r"log_event\b", timeline))
+        has_timeline_none = bool(re.search(r"none\s*[-—–]\s*\S", timeline, re.IGNORECASE))
+        if not (has_log_event or has_timeline_none):
+            return False, "TIMELINE has no log_event invocation and no 'none — {reason}' justification"
+        if has_log_event and not timeline_grew:
+            return False, "TIMELINE claimed log_event but timeline file did not grow (command never executed)"
+
+    return True, ""
+
+
+# --------------------------------------------------------------------- main
+
+def main():
+    if os.environ.get("JSTACK_REVIEW_DISABLED") == "1":
+        sys.exit(0)
+    if len(sys.argv) < 2:
+        print("Usage: session-review-spawn <session_id> [transcript_path]", file=sys.stderr)
+        sys.exit(1)
+
+    session_id = sys.argv[1]
+    transcript_hint = sys.argv[2] if len(sys.argv) > 2 else None
+
+    if not claim_session(session_id):
+        sys.exit(0)
+
+    # Brief pause — session JSONL may still be finalizing
+    time.sleep(2)
+
+    jsonl_path, agent = find_session(session_id, transcript_hint)
+
+    if not jsonl_path or not agent:
+        _log(f"SKIP {session_id[:8]}: no agent match (path={jsonl_path})")
+        sys.exit(0)
+
+    agents = reviewable_agents(CFG["agent_root"])
+    agent_title = agents.get(agent)
+    if not agent_title:
+        _log(f"SKIP {session_id[:8]}: agent '{agent}' not reviewable")
+        sys.exit(0)
+
+    if is_review_session(jsonl_path):
+        _log(f"SKIP {session_id[:8]}: is a review session (loop prevention)")
+        sys.exit(0)
+
+    if is_unengaged_filer_briefing(jsonl_path):
+        _log(f"SKIP {session_id[:8]}: filer briefing with no user interaction")
+        sys.exit(0)
+
+    try:
+        if jsonl_path.stat().st_size < int(CFG["min_session_bytes"]):
+            _log(f"SKIP {session_id[:8]}: too small ({jsonl_path.stat().st_size}B)")
+            sys.exit(0)
+    except OSError:
+        pass
+
+    if not has_recent_activity(jsonl_path):
+        _log(f"SKIP {session_id[:8]}: no recent activity (reopen-and-close)")
+        sys.exit(0)
+
+    if is_telegram_session(session_id, jsonl_path):
+        _log(f"TELEGRAM {session_id[:8]} → {agent}: entering debounce")
+        if not debounce_telegram(session_id, agent):
+            sys.exit(0)
+        _log(f"TELEGRAM {session_id[:8]} → {agent}: conversation quiet, reviewing")
+
+    slot = acquire_review_slot(session_id, agent)
+    if slot is None:
+        _log(f"SLOT_TIMEOUT {session_id[:8]} → {agent}: gave up after {CFG['slot_wait_secs']}s")
+        sys.exit(0)
+
+    try:
+        spawn_review(session_id, agent, agent_title)
+    finally:
+        slot.close()
+
+
+if __name__ == "__main__":
+    main()

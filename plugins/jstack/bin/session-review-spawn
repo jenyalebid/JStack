@@ -307,7 +307,8 @@ def is_telegram_session(session_id: str, jsonl_path: Path) -> bool:
     cmd = CFG["tg_classify_cmd"]
     if cmd:
         try:
-            r = subprocess.run([cmd, session_id], capture_output=True, timeout=30)
+            r = subprocess.run([str(Path(cmd).expanduser()), session_id],
+                               capture_output=True, timeout=30)
             if r.returncode == 0:
                 return True
         except Exception:

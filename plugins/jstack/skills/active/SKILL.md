@@ -55,15 +55,15 @@ Keep it tight.
 
 ## Step 4 — Post-brief work tracking
 
-After the brief, the user may give a directive to actually work on the item ("ok, let's do next move 1" / "update Where I am now to say X"). If they do, execute the work AND keep the active doc honest as you go:
+After the brief, the user may give a directive to actually work on the item. Do the work. **Do not touch the active doc to record progress as you go** — post-session-review reads the session JSONL and writes one consolidated update (new `Where I am now`, new progress-log line, revised next moves, fresh `last_touched`) when the session ends. Mid-session edits duplicate that work and waste tokens.
 
-- Overwrite `## Where I am now` with the new snapshot
-- Append one line to `## Progress log` with the current timestamp (`date`) and a one-sentence summary of what changed
-- Revise `## Next moves` — check off completed boxes, add new ones, drop obsolete
-- Bump `last_touched` in frontmatter
-- If `${user_config.agent_root}/{Name}/state.md` mirrors active items in `## Active items`, update the one-sentence "current state" on the matching row
+Touch the active doc mid-session only when:
 
-This is the same touch protocol any review skill should use. Run it inline as you work — don't batch updates until end of session.
+- The user explicitly directs an edit ("update Where I am now to say X", "check off next move 2")
+- A state change must be visible to a *concurrent* session right now — rare
+- A `state.md` `## Active items` row contradicts current truth in a way that will mislead a parallel reader before session end
+
+Otherwise the live model focuses on the work; the reviewer does the bookkeeping.
 
 ## Active item format
 

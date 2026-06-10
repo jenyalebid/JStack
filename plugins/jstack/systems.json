@@ -65,7 +65,7 @@
       "kind": "skill",
       "name": "Handoff",
       "status": "live",
-      "description": "Generates a concise session handoff doc and opens a fresh Claude Code terminal preloaded with it via bin/open-terminal-here.",
+      "description": "Generates a concise session handoff doc and opens a fresh Claude Code terminal preloaded with it via bin/open-terminal-here. Supports @agent targeting: resolves another agent's workspace under user_config.agent_root and boots the new session there — walk-up does the identity switch.",
       "code": [
         "skills/handoff/SKILL.md",
         "bin/open-terminal-here"
@@ -78,7 +78,7 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/open-terminal-here adapter is executable."
       },
       "subsystems": [],
-      "notes": "Optional focus argument narrows the handoff scope. Writes handoff-context.md to cwd, then invokes open-terminal-here with --append-system-prompt-file pointing at it. Adapter self-detects terminal (iTerm/Terminal.app/gnome-terminal/etc); user can override by placing their own open-terminal-here earlier in PATH. /jstack:handoff."
+      "notes": "Args: [@agent] [focus]. @agent resolves {Name} case-insensitively under agent_root; target cwd = chat/ subdir if present else agent root; unknown name → list available agents and stop. Focus narrows scope. Writes handoff-context.md to the TARGET cwd, then open-terminal-here with --append-system-prompt-file. Cross-agent docs are briefings: name who hands off, mark user-locked decisions. Adapter overridable earlier in PATH. /jstack:handoff."
     },
     {
       "id": "save",

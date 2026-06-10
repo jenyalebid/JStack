@@ -63,12 +63,14 @@ Include an action when the user can fix the empty state ("Add Book", "Start Sear
 - **Trailing swipe** — destructive/secondary action (delete, archive)
 - Use `.tint()` to color swipe actions (`.red` for destructive, accent for positive)
 - Destructive swipes should use `.role(.destructive)` for the red background
+- Below the 27 SDKs, `.swipeActions {}` only works on `List` rows. On SDK 27+, rows inside a `ScrollView` (`LazyVStack`, `LazyVGrid`, plain stacks) take the same row modifier once the scrollable container gets `.swipeActionsContainer()` (iOS 27+, gate it). Without the container modifier, row swipe actions outside `List` silently do nothing — don't hand-roll gesture-based swipe rows to work around that on 27
 
 ## Loading
 
 - Show skeleton/shimmer rows matching the expected layout while loading
 - `LazyVStack` items load on scroll automatically — no special handling needed
 - For paginated content, show a loading indicator at the bottom and load more on scroll
+- `AsyncImage` in rows/grids: on the 2027 OS releases it HTTP-caches by default (honors server cache headers, even in apps built against older SDKs) — "images reload on scroll-back" is no longer a reason to hand-roll a cache. For explicit control: `AsyncImage(request:)` with a `URLRequest` cache policy, or `asyncImageURLSession(_:)` for a custom `URLCache` — both iOS 27+, gate them
 
 ## Search & Filter
 

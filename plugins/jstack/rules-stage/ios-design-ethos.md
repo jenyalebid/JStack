@@ -17,7 +17,7 @@ How to build iOS apps with consistency, care, and craft. Every app from the same
 
 1. **Views are pure functions of state.** No imperative refresh hacks. `@Query`/`@FetchRequest` with `animation:` parameters make list changes smooth automatically. Manual `refreshID = UUID()` triggers only for date-rollover edge cases.
 
-2. **State flows through `.environment()`, not props.** App-level state lives in `@Observable` classes injected at the root. Deeply nested views access what they need directly — no prop drilling.
+2. **State flows through `.environment()`, not props.** App-level state lives in `@Observable` classes injected at the root. Deeply nested views access what they need directly — no prop drilling. Mark every `@Observable` class `@MainActor` (unless the target sets main-actor default isolation): views read the model on the main actor, so an unisolated model lets background writes race those reads — Swift 6 strict concurrency flags exactly this.
 
 3. **Styling is parameterized via environment values, not hardcoded.** Colors, spacing, layout flow through environment + `transformEnvironment()`. New visual variant = add a parameter, don't fork the component.
 
@@ -73,6 +73,16 @@ Shared packages (extract once, reuse across every app)
 ```
 
 Feature names are subfolders within each type. Max 2 levels deep.
+
+## SwiftUI skill routing
+
+If the SwiftUI skills are installed, they layer — consult the right one instead of loading all three:
+
+- **`swiftui-specialist`** (Apple) — primary for writing/reviewing SwiftUI correctness: dataflow and input narrowing, view structure, ForEach identity, localization, soft-deprecated API lookup.
+- **`swiftui-whats-new-27`** (Apple) — mandatory before touching code built against the 27 SDKs. `@State` is a macro there: init-assignment compile errors have a documented fix, and the intuitive one (reordering init assignments) is wrong. Also covers drag-to-reorder, toolbar overflow, swipe-action containers, AsyncImage caching.
+- **`swiftui-expert-skill`** — Instruments trace recording/analysis, Liquid Glass adoption, macOS specifics, animation patterns, and iOS 15–26 versioned API history.
+
+These rules carry team conventions; the skills carry framework truth. Where they disagree on framework behavior, the newest Apple skill wins — then update the rule.
 
 ## Build is not verify
 

@@ -547,7 +547,12 @@ def validate_review_output(output: str, required_sections: list[str],
         has_timeline_none = bool(re.search(r"none\s*[-—–]\s*\S", timeline, re.IGNORECASE))
         if not (has_log_event or has_timeline_none):
             return False, "TIMELINE has no log_event invocation and no 'none — {reason}' justification"
-        if has_log_event and not timeline_grew:
+        # Silent-pass guard: only when the model affirmatively claims an
+        # invocation. A 'none — {reason}' justification is a deliberate skip
+        # (e.g. the entry already exists, re-logging would duplicate) and may
+        # legitimately mention the word log_event in its reason — don't treat
+        # that mention as a phantom invocation.
+        if has_log_event and not has_timeline_none and not timeline_grew:
             return False, "TIMELINE claimed log_event but timeline file did not grow (command never executed)"
 
     return True, ""

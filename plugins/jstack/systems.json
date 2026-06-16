@@ -206,6 +206,26 @@
       },
       "subsystems": [],
       "notes": "Authorization gate: only runs if the user explicitly said push/commit/ship/land in this session. Resolves repos from the touched-file list (works from a non-repo cockpit). Hard rules: no --no-verify, no --amend, no Co-Authored-By, no `git add -A`, sensitive paths skipped, never force-push main/master. `all` mode groups pending changes into per-unit-of-work commits with a one-line plan up front. /jstack:push."
+    },
+    {
+      "id": "showme",
+      "kind": "skill",
+      "name": "Show Me",
+      "status": "live",
+      "description": "Surfaces the result of the current topic in its real viewer instead of describing it. A fidelity-ladder command: mode token raw|live picks source-code vs live-running surface, default prefers an in-code preview. Classifies the artifact (code, preview, image, doc, mockup, data, app, web page, diff) and opens it via bin/open-artifact / Xcode (xed) / sim. Optional focus arg narrows which artifact.",
+      "code": [
+        "skills/showme/SKILL.md",
+        "bin/open-artifact"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/open-artifact adapter is executable."
+      },
+      "subsystems": [],
+      "notes": "Args: [raw|live] [focus]. mode = reserved token on the fidelity ladder: raw -> source code (iOS: xed <View>.swift in Xcode; mockup/doc -> its .html/.svg/.md source not the render); default -> cheapest visual, prefers an in-code preview (SwiftUI #Preview in Xcode canvas, Storybook, Quick Look) over a heavier surface; live -> running env (sim build+launch+screenshot, dev server + live URL) via the project's run/sim/device skill. focus narrows the artifact; omitted shows the most recent salient result. Static artifacts (image/pdf): default==live==open in viewer, raw==source-if-any. Fallbacks: requested surface unavailable -> drop to nearest rung and say so; no visual -> textual render; adapter/xed nonzero -> report absolute path. bin/open-artifact self-detects platform (open / xdg-open|gio / start), overridable earlier in PATH. /jstack:showme."
     }
   ]
 }

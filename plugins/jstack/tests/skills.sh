@@ -122,6 +122,7 @@ run_skill save file-followup
 run_skill active
 run_skill push
 run_skill post-session-review file-followup log_event
+run_skill showme open-artifact
 
 # Catch skills added to skills/ but not registered above
 for dir in "$SKILLS_DIR"/*/; do
@@ -137,4 +138,4 @@ if [[ $fails -gt 0 ]]; then
   echo "$fails skill(s) failed validation" >&2
   exit 1
 fi
-echo "ALL PASS — 7 skills verified"
+echo "ALL PASS — 8 skills verified"

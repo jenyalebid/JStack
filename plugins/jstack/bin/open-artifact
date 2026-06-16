@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# JStack adapter — open a file or URL in the OS's default visual viewer.
+#
+# Contract:  open-artifact <path-or-url> [path-or-url...]
+# Behavior:  hands each target to the platform's default app/viewer so the
+#            user SEES it (image → Preview/viewer, doc → its app, html/url →
+#            browser). One or more targets; opens them all.
+#              macOS   → open
+#              Linux   → xdg-open (falls back to gio open)
+#              Windows → start (via cmd)
+#
+# Shipped in the plugin's bin/ (auto-added to PATH while jstack is enabled), so
+# skills call it as a bare command. Self-detects the platform — no per-machine
+# adapter to hand-write. Override by putting your own `open-artifact` earlier
+# in PATH. Exit 0 = all targets opened; nonzero = at least one failed.
+set -euo pipefail
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: open-artifact <path-or-url> [more...]" >&2
+  exit 64
+fi
+
+case "$(uname -s)" in
+  Darwin)
+    open_one() { open "$1"; } ;;
+  Linux)
+    if command -v xdg-open >/dev/null 2>&1; then
+      open_one() { xdg-open "$1"; }
+    elif command -v gio >/dev/null 2>&1; then
+      open_one() { gio open "$1"; }
+    else
+      echo "open-artifact: no xdg-open or gio on this Linux host" >&2
+      exit 69
+    fi ;;
+  CYGWIN*|MINGW*|MSYS*)
+    open_one() { cmd //c start "" "$1"; } ;;
+  *)
+    echo "open-artifact: unsupported platform $(uname -s)" >&2
+    exit 69 ;;
+esac
+
+rc=0
+for target in "$@"; do
+  if ! open_one "$target" >/dev/null 2>&1; then
+    echo "open-artifact: failed to open: $target" >&2
+    rc=1
+  fi
+done
+exit "$rc"

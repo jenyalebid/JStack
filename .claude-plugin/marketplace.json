@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "jstack",
-      "description": "Agent workflow skills: /active, /save, /handoff, /audit, /push, /install-rules. Environment-aware via adapter pattern.",
+      "description": "Agent workflow skills: /active, /save, /handoff, /audit, /day-audit, /push, /install-rules. Environment-aware via adapter pattern.",
       "source": "./plugins/jstack",
       "category": "productivity"
     }

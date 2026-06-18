@@ -1,7 +1,7 @@
 {
   "name": "jstack",
-  "description": "Agent workflow skills: file/load active items, hand off sessions, audit completed work trust-nothing (a subagent reviews from source and reports a triaged verdict back to the session, or a fresh terminal you drive), show the result of the current topic in its real viewer, commit + push session work, install bundled rules. PreToolUse hook injects path-matched rules at edit time regardless of launch CWD. SessionEnd hook spawns a validated post-session review (state.md + follow-ups + timeline via bin/log_event). Portable across machines via userConfig — no hardcoded paths.",
-  "version": "0.11.0",
+  "description": "Agent workflow skills: file/load active items, hand off sessions, audit completed work trust-nothing (a subagent reviews from source and reports a triaged verdict back to the session, or a fresh terminal you drive), reverify a whole day's shipped work across every repo against the timeline, show the result of the current topic in its real viewer, commit + push session work, install bundled rules. PreToolUse hook injects path-matched rules at edit time regardless of launch CWD. SessionEnd hook spawns a validated post-session review (state.md + follow-ups + timeline via bin/log_event). Portable across machines via userConfig — no hardcoded paths.",
+  "version": "0.12.0",
   "author": {
     "name": "Jarvis-and-J"
   },
@@ -11,6 +11,18 @@
       "title": "Agent workspaces root",
       "description": "Directory that contains your per-agent workspaces — each as {Name}/ with a CLAUDE.md and an active/ folder. JStack resolves every agent path under here. Example: ~/Agents or /Users/you/Projects/Agents.",
       "default": "~/Agents"
+    },
+    "repo_root": {
+      "type": "directory",
+      "title": "Code repos root",
+      "description": "Directory under which /jstack:day-audit discovers the git repos to audit (scanned to depth 2). Leave empty to default to the parent of agent_root — the usual layout where code repos are siblings of the agent workspaces. Example: ~/Projects or /Users/you/Work.",
+      "default": ""
+    },
+    "agent_registry": {
+      "type": "file",
+      "title": "Agent registry (agents.json)",
+      "description": "Path to the agent registry that maps each agent to its workspace and the repos it owns ({agent: {workspace, repos: [...]}}). /jstack:day-audit reads it to dispatch each repo's regression audit under its owning agent (which loads that agent's domain context). Leave empty to default to {agent_root}/agents.json. Absent/unreadable → every repo gets a generic auditor.",
+      "default": ""
     },
     "followup_backend": {
       "type": "string",

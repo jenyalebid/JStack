@@ -123,6 +123,7 @@ run_skill active
 run_skill push
 run_skill post-session-review file-followup log_event
 run_skill showme open-artifact
+run_skill day-audit log_event
 
 # Catch skills added to skills/ but not registered above
 for dir in "$SKILLS_DIR"/*/; do

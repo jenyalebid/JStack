@@ -226,6 +226,26 @@
       },
       "subsystems": [],
       "notes": "Args: [raw|live] [focus]. mode = reserved token on the fidelity ladder: raw -> source code (iOS: xed <View>.swift in Xcode; mockup/doc -> its .html/.svg/.md source not the render); default -> cheapest visual, prefers an in-code preview (SwiftUI #Preview in Xcode canvas, Storybook, Quick Look) over a heavier surface; live -> running env (sim build+launch+screenshot, dev server + live URL) via the project's run/sim/device skill. focus narrows the artifact; omitted shows the most recent salient result. Static artifacts (image/pdf): default==live==open in viewer, raw==source-if-any. Fallbacks: requested surface unavailable -> drop to nearest rung and say so; no visual -> textual render; adapter/xed nonzero -> report absolute path. bin/open-artifact self-detects platform (open / xdg-open|gio / start), overridable earlier in PATH. /jstack:showme."
+    },
+    {
+      "id": "day-audit",
+      "kind": "skill",
+      "name": "Day Audit",
+      "status": "live",
+      "description": "Reverifies a whole day's shipped work across every repo, each audited under its OWNING agent for real domain context. Treats that day's timeline (the agents' claims) as a claims document, gathers the day's commits in each repo under repo_root (all refs), resolves each repo to its owning agent via the agent registry, fans out one regression auditor per repo-with-commits told to load that agent's role file + the repo's CLAUDE.md first (focus on bug-fix commits: real fix? regressed another issue? broke a consumer? smuggled in something big?), then synthesizes an IMPROVED/NEUTRAL/REGRESSED verdict per app and flags claim<->commit gaps. Report-only on code; always writes one timeline block recording the verdict.",
+      "code": [
+        "skills/day-audit/SKILL.md",
+        "bin/log_event"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory, bin/log_event is executable."
+      },
+      "subsystems": [],
+      "notes": "Args: [today|yesterday|<date>], date normalized in python3 (defaults today). Portable repo discovery: repo_root userConfig, else parent of agent_root, scanned for */.git. Ownership: agent_registry userConfig (else {agent_root}/agents.json) — each agent entry's {workspace, repos}; repo<->registry matched by normalized name (case + _/- folded) against BOTH local dir basename and git origin, so WBIS_iOS==WBIS-iOS. Owning-agent context delivered by instructing the auditor to read {workspace}/CLAUDE.md + {repo}/CLAUDE.md first (in-process subagents don't inherit a foreign CLAUDE.md via cwd); unowned repo -> generic auditor, coverage never drops. Per-day commits via `git log --all --no-merges --since/--until --date=local` so develop/feature/pushed work is covered. Verdict logged to the AUDITED day's file: `log_event day-audit --at <now> --date <DAY> --pipeline-task day-audit#<DAY>` — one block per day, replaced on re-run. Report-only on repos (never edits code); high-severity findings re-verified by the parent before repeating. /jstack:day-audit."
     }
   ]
 }

@@ -13,6 +13,7 @@ Seven slash commands (all namespaced as `/jstack:*`):
 | `/handoff` | Hand off the session to a fresh terminal with context preserved |
 | `/audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
 | `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
+| `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
 | `/install-rules` | Symlink the 19 bundled rules into `~/.claude/rules/` |
 | `/post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
 

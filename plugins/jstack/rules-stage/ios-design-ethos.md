@@ -13,7 +13,7 @@ paths:
 
 How to build iOS apps with consistency, care, and craft. Every app from the same team should feel like it came from the same designer with the same taste — no matter how many engineers, how many features, how many years.
 
-## The 10 principles
+## The 11 principles
 
 1. **Views are pure functions of state.** No imperative refresh hacks. `@Query`/`@FetchRequest` with `animation:` parameters make list changes smooth automatically. Manual `refreshID = UUID()` triggers only for date-rollover edge cases.
 
@@ -34,6 +34,8 @@ How to build iOS apps with consistency, care, and craft. Every app from the same
 9. **"Shared component" means feature parity, not just chrome unification.** When migrating a mode onto a shared shell, audit the OTHER modes' wired features (timer, intro, share, popovers) and either wire them up for the new mode or explicitly state which are absent and why.
 
 10. **Toolbar slots use `NavigationStack` + `ToolbarItem(placement:)`.** Hand-rolled `HStack` mimicking a toolbar IS the bug. Sheet presentation: "Dismiss X, present Y" is sequential — `pending` flag on host + `dismiss()` + fire Y from `.onDismiss`. Never stack sheets.
+
+11. **Type scales with the user — `.system(size:)` is the exception, not the default.** Text honors Dynamic Type. Reach for semantic styles (`.body`, `.headline`, `.caption`) first; when a custom look is needed, keep it scaling with relative system fonts — `.system(.title2, design: .rounded, weight: .bold)` preserves the rounded/weight identity *and* scales. Custom faces use `Font.custom(_:size:relativeTo:)`; spacing/icon frames that track text use `@ScaledMetric`. A fixed `.system(size:)` is defensible only for genuinely decorative display type (a wordmark, a score readout) — and you must be able to name why it's exempt. **Sketch px values do not survive translation:** an HTML sketch's `font-size: 15px` becomes a semantic or relative font at code time, never a literal `.system(size: 15)`.
 
 ## Architecture pattern
 

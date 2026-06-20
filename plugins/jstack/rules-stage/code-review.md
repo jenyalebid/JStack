@@ -20,6 +20,7 @@ Auto-loaded when reviewing iOS code. Combines with `ios-design-ethos.md` (the pr
 - Using JSwiftUI components where they exist (`PrimaryActionButtonStyle`, `DismissButton`, `FlowLayout`, `ProgressCircle`, `PresentationController`)?
 - Animations use spring constants (`response: 0.6, dampingFraction: 0.8`), not linear?
 - Every tap has feedback (haptic, scale, visual)?
+- Text scales with Dynamic Type — semantic (`.body`/`.headline`) or relative (`.system(.title2, design:, weight:)`) fonts, not fixed `.system(size:)`? Fixed sizing flagged unless it's decorative display type with a stated reason.
 - iOS 26 adaptation at modifier level, not scattered version checks?
 - Sheets follow `ios-sheets.md` rules?
 - Toolbar buttons via `NavigationStack` + `ToolbarItem(placement:)`, never hand-rolled `HStack`?

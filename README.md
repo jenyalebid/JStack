@@ -4,10 +4,11 @@ Cross-machine Claude Code skills for agent workflows. Built around the `{agent_r
 
 ## What this gives you
 
-Seven slash commands (all namespaced as `/jstack:*`):
+Eight slash commands (all namespaced as `/jstack:*`):
 
 | Command | What it does |
 |---|---|
+| `/work` | Get battle-ready on a topic — orient, load every relevant skill, survey recent changes, read the core files, report a grounded lay of the land. `[@project] <topic>` |
 | `/active` | List active items for the current agent, or load one to resume |
 | `/save` | File the current conversation as an active item under the agent's `active/` |
 | `/handoff` | Hand off the session to a fresh terminal with context preserved |
@@ -328,7 +329,8 @@ JStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
 │   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
-│   ├── skills/                            # the seven slash commands
+│   ├── skills/                            # the eight slash commands
+│   │   ├── work/SKILL.md
 │   │   ├── active/SKILL.md
 │   │   ├── save/SKILL.md
 │   │   ├── handoff/SKILL.md

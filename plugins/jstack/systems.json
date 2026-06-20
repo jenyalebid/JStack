@@ -61,6 +61,25 @@
       "notes": "Default mode symlinks (auto-track plugin updates); --copy snapshots for offline edit; --force overwrites existing files. Symlinks point into the plugin cache, so a version bump invalidates the link target — re-run with --force after major updates. /jstack:install-rules."
     },
     {
+      "id": "work",
+      "kind": "skill",
+      "name": "Work",
+      "status": "live",
+      "description": "Gets the agent battle-ready on a topic before doing the work: orient (date + own state.md), resolve project → repo, determine stack, load every relevant skill via the Skill tool, survey recent changes (git log/status + topic file search), read the core files, and report a grounded lay of the land. Preparation only — no code changes, no state writes, no PR.",
+      "code": [
+        "skills/work/SKILL.md"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
+      },
+      "subsystems": [],
+      "notes": "Args: [@project] <topic>. No registry read — leans on the agent's own loaded identity for project + stack. @project resolves a repo name case-insensitively under userConfig.repo_root (default parent of agent_root); unknown → list candidates and stop. No @project → own project; multi-project agent + ambiguous topic → infer from topic, else ask one question. Skill selection matches stack+topic against live skill descriptions (no hardcoded table), loads inclusive. /jstack:work."
+    },
+    {
       "id": "handoff",
       "kind": "skill",
       "name": "Handoff",

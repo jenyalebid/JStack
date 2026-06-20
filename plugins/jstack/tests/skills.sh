@@ -32,6 +32,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 fails=0
+passes=0
 
 validate_frontmatter() {
   local skill_md="$1"
@@ -112,9 +113,11 @@ run_skill() {
   fi
 
   echo "PASS [$name]"
+  passes=$((passes+1))
 }
 
 # Skill → required bin adapters (referenced in its SKILL.md procedure)
+run_skill work
 run_skill install-rules
 run_skill handoff open-terminal-here
 run_skill audit open-terminal-here
@@ -139,4 +142,4 @@ if [[ $fails -gt 0 ]]; then
   echo "$fails skill(s) failed validation" >&2
   exit 1
 fi
-echo "ALL PASS — 8 skills verified"
+echo "ALL PASS — $passes skills verified"

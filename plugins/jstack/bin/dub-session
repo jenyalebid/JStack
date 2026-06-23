@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# JStack adapter — dub (verbatim-fork) a Claude Code session into a new id.
+#
+# Contract:  dub-session [src-session-id] [project-key]
+# Behavior:  copies the source session's .jsonl to a fresh UUID in the same
+#            project dir, rewriting every line's internal sessionId to the new
+#            id so the copy is self-consistent. The original file is untouched;
+#            the copy diverges forward once resumed. Prints the NEW session id
+#            to stdout (and nothing else there) so callers can capture it.
+#
+# Defaults:  src   = $CLAUDE_CODE_SESSION_ID (the live session)
+#            key   = $PWD with '/' -> '-'    (the project dir under ~/.claude/projects)
+#
+# Resume the result with:  claude --resume <new-id>   (NOT --session-id, which
+# forces a fresh empty session and errors when the file exists).
+#
+# Shipped in the plugin's bin/ (auto-added to PATH while jstack is enabled).
+set -euo pipefail
+
+SRC_ID="${1:-${CLAUDE_CODE_SESSION_ID:-}}"
+KEY="${2:-$(printf '%s' "$PWD" | sed 's#/#-#g')}"
+
+if [ -z "$SRC_ID" ]; then
+  echo "dub-session: no source session id (pass one or set CLAUDE_CODE_SESSION_ID)" >&2
+  exit 64
+fi
+
+PROJ_DIR="$HOME/.claude/projects/$KEY"
+SRC_FILE="$PROJ_DIR/$SRC_ID.jsonl"
+
+if [ ! -f "$SRC_FILE" ]; then
+  echo "dub-session: source transcript not found: $SRC_FILE" >&2
+  exit 66
+fi
+
+NEW_ID="$(uuidgen | tr 'A-Z' 'a-z')"
+DST_FILE="$PROJ_DIR/$NEW_ID.jsonl"
+
+# Copy line-by-line, rewriting the sessionId field (to the new id) and the
+# aiTitle field (to "<original> - copy", so the copy is distinguishable in the
+# resume picker — titles live only here, in `type: ai-title` lines). The
+# original name is the last ai-title in the source; all ai-title lines are set
+# to that + " - copy" so whichever one the picker reads shows the copy name.
+# Non-JSON lines are passed through verbatim. Message uuid/parentUuid chain is
+# left intact — those are message-level ids, not session-level.
+SRC_FILE="$SRC_FILE" NEW_ID="$NEW_ID" python3 - "$DST_FILE" <<'PY'
+import json, os, sys
+src = os.environ["SRC_FILE"]; new_id = os.environ["NEW_ID"]; dst = sys.argv[1]
+
+# First pass: find the current (last) title.
+orig_title = None
+with open(src) as f:
+    for line in f:
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            d = json.loads(s)
+        except json.JSONDecodeError:
+            continue
+        if d.get("type") == "ai-title" and d.get("aiTitle"):
+            orig_title = d["aiTitle"]
+copy_title = f"{orig_title} - copy" if orig_title else None
+
+# Second pass: write the copy with sessionId and aiTitle rewritten.
+with open(src) as f, open(dst, "w") as out:
+    for line in f:
+        s = line.rstrip("\n")
+        if not s:
+            continue
+        try:
+            d = json.loads(s)
+        except json.JSONDecodeError:
+            out.write(line)
+            continue
+        if "sessionId" in d:
+            d["sessionId"] = new_id
+        if copy_title and d.get("type") == "ai-title":
+            d["aiTitle"] = copy_title
+        out.write(json.dumps(d) + "\n")
+PY
+
+printf '%s\n' "$NEW_ID"

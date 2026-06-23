@@ -76,14 +76,28 @@ Pick a **session title** so the new terminal reads as a handoff at a glance:
 - plain handoff → `Handoff` (append the focus if one was given: `Handoff · <focus>`)
 - `@agent` handoff → `Handoff → <Agent>` (append the focus the same way)
 
-Invocation:
+Invocation — **always emit it through the guard below**, never the bare `--prompt-file` form:
 
 ```bash
-open-terminal-here "$TARGET_CWD" --prompt-file "$HANDOFF_TMP" --name "$TITLE"
+# --prompt-file / --name are adapter-only options added in 0.15.0. A stale PATH can
+# resolve an older open-terminal-here that forwards them straight to `claude`, which
+# then dies on `unknown option '--prompt-file'` and an unquoted name. Detect the
+# adapter's contract and pick a form it actually understands.
+if open-terminal-here 2>&1 | grep -q -- '--prompt-file'; then
+  # 0.15.0+ adapter: inline briefing, auto-deletes the temp file, re-quotes the name.
+  open-terminal-here "$TARGET_CWD" --prompt-file "$HANDOFF_TMP" --name "$TITLE"
+else
+  # Pre-0.15.0 adapter (pass-through): use a real claude flag every version forwards
+  # verbatim. The temp file lingers in /tmp (OS-cleaned, never in the workspace). The
+  # name must be a single shell token here — pass-through adapters don't re-quote it.
+  SAFE_TITLE="${TITLE// · /·}"; SAFE_TITLE="${SAFE_TITLE// /-}"  # "Handoff · foo bar" → "Handoff·foo-bar"
+  open-terminal-here "$TARGET_CWD" --append-system-prompt-file "$HANDOFF_TMP" --name "$SAFE_TITLE"
+fi
 ```
 
 - `--prompt-file` — the new shell reads the briefing into `--append-system-prompt` and `rm`s the temp file before Claude starts. The handoff content is never written into a workspace and never has to be cleaned up.
 - `--name` — sets the new session's display name AND its terminal title (native `claude --name`, applied externally at launch, so Claude doesn't overwrite it with its own summary).
+- The fallback branch keeps handoff working when the adapter on PATH is older than the skill (the classic long-running-shell version skew) — it degrades the niceties, not the launch.
 
 The adapter self-detects the terminal (iTerm → Terminal.app on macOS; gnome-terminal/konsole/xterm on Linux; Windows Terminal on Windows). Put your own `open-terminal-here` earlier in PATH to override.
 

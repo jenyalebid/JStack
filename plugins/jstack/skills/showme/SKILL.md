@@ -1,6 +1,6 @@
 ---
 name: showme
-description: Use when the user asks to see, show, preview, open, look at, or visualize the result of what you've been working on — surfaces the actual artifact (code, preview, image, doc, mockup, running app, web page) in its real viewer instead of describing it in text. Mode token raw|live picks source-code vs live-running fidelity.
+description: Use when the user asks to see, show, preview, open, look at, or visualize the result of what you've been working on — surfaces the actual artifact (code, preview, image, doc, mockup, running app, web page) in its real viewer instead of describing it in text. When the real result is a setup the user must perform externally, it opens the exact console page and lays out their steps. Mode token raw|live picks source-code vs live-running fidelity.
 argument-hint: "[raw|live] [focus]"
 ---
 
@@ -29,6 +29,8 @@ For a static artifact already produced (image, PDF), `default` and `live` collap
 
 Reflect on this conversation. What is the concrete result of the current topic — the thing worth looking at? Resolve it to an **absolute path** (or URL, for web/live). If you produced it this session you know where it is; otherwise locate it before opening — never open a guessed path. Apply `focus` to narrow.
 
+**The result is not always an artifact you made — sometimes it's an action Boss must take.** If the session ended with the ball in *Boss's* court (a cloud console to configure, billing to enable, a dashboard toggle, an OAuth/API grant, a service to sign up for), the "thing worth looking at" is **the place where they do it**, not a tool you built or a file you wrote. Surfacing a CLI demo or a code path here is a miss — open the console and tell them what to do. See the *Pending external setup* row below.
+
 ## Step 2 — Pick the surface (by mode), then open
 
 `open-artifact` (bundled on PATH while jstack is enabled) hands a path or URL to the platform's default app/viewer — call it as a bare command. On macOS, code goes to Xcode via `xed <file>` (falls back to `open-artifact` / `$EDITOR` elsewhere). Do **not** just print the path or paste the code — the point of showme is the thing is now on screen.
@@ -43,6 +45,9 @@ Reflect on this conversation. What is the concrete result of the current topic �
 | **Markdown / doc** | the `.md`/source in editor | Quick Look render (macOS `qlmanage -p`) / default app | same as default |
 | **Data (csv/json)** | raw file in editor | compact table inline if clearer, else default app | same as default |
 | **Code change / diff** | the changed file(s) in editor/IDE | the diff inline, or in the editor | run it, if it has a runtime surface |
+| **Pending external setup** (a console/dashboard *Boss* must configure) | the script/command/doc that drives the setup, in the editor | **open the deepest direct link to the exact page** (not the product homepage) + outline the numbered steps inline and name what info you need back | same — open the page(s), walk the steps with them |
+
+**When the result is a setup Boss must perform.** Open the **deepest** deep-link that lands them on the exact action — the specific project's IAM page, the billing screen, the integration's settings tab — never just `console.cloud.google.com`. Open every distinct page they'll touch (you can open several). Then give a tight numbered checklist of what to click/enter and, crucially, **what to hand back to you** (an ID, a downloaded key, a confirmation) so the loop closes. The artifact is the button, not your code.
 
 **Features: preview by default, sim on `live`, code on `raw`.** "Show me the settings screen" → its SwiftUI preview in Xcode. "Show me the settings screen live" → running on the sim. "Show me the settings screen raw" → the Swift file in Xcode. Reach for the project's launch skill before hand-building.
 

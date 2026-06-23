@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 # JStack adapter — open a new Claude Code terminal at a directory.
 #
-# Contract:  open-terminal-here <cwd> [extra-claude-args...]
+# Contract:  open-terminal-here <cwd> [adapter-opts...] [extra-claude-args...]
 # Behavior:  opens a new terminal window at <cwd> and runs `claude <extra-args>`.
+#
+# Adapter-managed options (parsed before the pass-through claude args, so values
+# with spaces survive — they are NOT subject to the `claude $ARGS` re-tokenize):
+#   --prompt-file <path>   The new shell reads <path> into --append-system-prompt
+#                          and deletes it before claude starts. Use this instead
+#                          of `--append-system-prompt-file <path>` when the prompt
+#                          is a throwaway briefing: nothing lingers on disk.
+#   --name <title>         Passed to `claude --name <title>` (sets the session
+#                          display name AND the terminal title).
 #
 # Shipped in the plugin's bin/ (auto-added to PATH while jstack is enabled), so
 # skills call it as a bare command. Self-detects the terminal — no per-machine
@@ -11,15 +20,45 @@
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
-  echo "usage: open-terminal-here <cwd> [claude-args...]" >&2
+  echo "usage: open-terminal-here <cwd> [--prompt-file <path>] [--name <title>] [claude-args...]" >&2
   exit 64
 fi
 
 CWD="$1"; shift
-ARGS="$*"
 
-# Build the command the new shell runs. Quote CWD; ARGS is pre-tokenized by caller.
-launch_cmd="cd \"$CWD\" && claude $ARGS"
+# Adapter-managed options. Parsed while still proper argv elements (a --name with
+# spaces stays one token here, unlike the flattened pass-through ARGS below).
+PROMPT_FILE=""
+NAME=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
+    --name)        NAME="$2"; shift 2 ;;
+    *)             break ;;
+  esac
+done
+
+ARGS="$*"  # remaining pass-through claude args (pre-tokenized by caller)
+
+# --name <title> rebuilt as a single quoted token for the embedded shell command.
+name_arg=""
+if [ -n "$NAME" ]; then
+  name_arg=" --name \"$NAME\""
+fi
+
+# The claude invocation the new shell runs (the part after `cd`).
+# With --prompt-file: read the briefing into a var, delete the file, then launch
+# claude with the content inline. Only the PATH ever crosses into AppleScript /
+# the terminal command — the (possibly multi-line) content is read at runtime in
+# the new shell, so there is no escaping hazard and nothing is left to clean up.
+if [ -n "$PROMPT_FILE" ]; then
+  claude_invoke="__JSTACK_SP=\"\$(cat \"$PROMPT_FILE\")\" && rm -f \"$PROMPT_FILE\" && claude $ARGS$name_arg --append-system-prompt \"\$__JSTACK_SP\""
+else
+  claude_invoke="claude $ARGS$name_arg"
+fi
+
+# Build the full command the new shell runs (cd then launch). Quote CWD.
+launch_cmd="cd \"$CWD\" && $claude_invoke"
 
 # AppleScript strings are double-quoted, so any " inside the embedded shell
 # command has to become \" before interpolation. Escape backslashes first,
@@ -55,9 +94,9 @@ EOF
     ;;
   Linux)
     if command -v gnome-terminal >/dev/null 2>&1; then
-      gnome-terminal --working-directory="$CWD" -- bash -lc "claude $ARGS; exec bash"
+      gnome-terminal --working-directory="$CWD" -- bash -lc "$claude_invoke; exec bash"
     elif command -v konsole >/dev/null 2>&1; then
-      konsole --workdir "$CWD" -e bash -lc "claude $ARGS; exec bash"
+      konsole --workdir "$CWD" -e bash -lc "$claude_invoke; exec bash"
     elif command -v x-terminal-emulator >/dev/null 2>&1; then
       x-terminal-emulator -e bash -lc "$launch_cmd; exec bash"
     elif command -v xterm >/dev/null 2>&1; then
@@ -68,11 +107,15 @@ EOF
     fi
     ;;
   *)
-    # Windows / MSYS / Cygwin: try Windows Terminal, then plain cmd.
+    # Windows / MSYS / Cygwin: try Windows Terminal, then plain cmd. The bash
+    # read-and-delete idiom does not run under cmd, so fall back to passing the
+    # prompt file directly (it will linger — acceptable on this best-effort path).
+    win_args="$ARGS$name_arg"
+    [ -n "$PROMPT_FILE" ] && win_args="$win_args --append-system-prompt-file \"$PROMPT_FILE\""
     if command -v wt.exe >/dev/null 2>&1; then
-      wt.exe -d "$CWD" cmd /k "claude $ARGS"
+      wt.exe -d "$CWD" cmd /k "claude $win_args"
     else
-      echo "open-terminal-here: unsupported platform $(uname -s); open a terminal at $CWD and run: claude $ARGS" >&2
+      echo "open-terminal-here: unsupported platform $(uname -s); open a terminal at $CWD and run: claude $win_args" >&2
       exit 69
     fi
     ;;

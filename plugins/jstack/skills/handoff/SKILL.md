@@ -50,17 +50,15 @@ Rules:
 - Skip what the next session can derive from CLAUDE.md or the code
 - Keep it under 200 lines — goes into system prompt space
 
-## Step 2 — Write the summary
+## Step 2 — Write the summary to a throwaway temp file
 
-Write to `{TARGET_CWD}/handoff-context.md` using the Write tool (target cwd from the Arguments section — current cwd unless `@agent` redirected it).
-
-If a prior `handoff-context.md` exists there, remove it FIRST so the Write is a fresh-file create (avoids the Read-before-write guard burn):
+The summary is a one-shot payload: it loads into the new session's system prompt and is never needed again. So it must NOT land in any workspace — no `handoff-context.md` to delete later. Write it to a temp file outside the tree:
 
 ```bash
-trash "$TARGET_CWD/handoff-context.md" 2>/dev/null || rm -f "$TARGET_CWD/handoff-context.md"
+HANDOFF_TMP="$(mktemp -t jstack-handoff)"
 ```
 
-Then Write the new content.
+Write the summary to `$HANDOFF_TMP` with the Write tool. The adapter (Step 4) reads it into the new session inline and deletes it before Claude starts — nothing lingers anywhere.
 
 ## Step 3 — Show the summary
 
@@ -71,19 +69,26 @@ Output the summary to the user.
 Call the bundled terminal-open adapter (on PATH while jstack is enabled). Contract:
 
 ```
-open-terminal-here <cwd> [extra-claude-args...]
+open-terminal-here <cwd> [--prompt-file <path>] [--name <title>] [extra-claude-args...]
 ```
+
+Pick a **session title** so the new terminal reads as a handoff at a glance:
+- plain handoff → `Handoff` (append the focus if one was given: `Handoff · <focus>`)
+- `@agent` handoff → `Handoff → <Agent>` (append the focus the same way)
 
 Invocation:
 
 ```bash
-open-terminal-here "$TARGET_CWD" --append-system-prompt-file "$TARGET_CWD/handoff-context.md"
+open-terminal-here "$TARGET_CWD" --prompt-file "$HANDOFF_TMP" --name "$TITLE"
 ```
+
+- `--prompt-file` — the new shell reads the briefing into `--append-system-prompt` and `rm`s the temp file before Claude starts. The handoff content is never written into a workspace and never has to be cleaned up.
+- `--name` — sets the new session's display name AND its terminal title (native `claude --name`, applied externally at launch, so Claude doesn't overwrite it with its own summary).
 
 The adapter self-detects the terminal (iTerm → Terminal.app on macOS; gnome-terminal/konsole/xterm on Linux; Windows Terminal on Windows). Put your own `open-terminal-here` earlier in PATH to override.
 
 **If the adapter exits nonzero** (no supported terminal found, or an unsupported platform), tell the user:
 
-> Couldn't open a new terminal automatically. Handoff doc is at `<target cwd>/handoff-context.md`. Open a new Claude session there manually with `--append-system-prompt-file handoff-context.md`.
+> Couldn't open a new terminal automatically. Handoff doc is at `$HANDOFF_TMP`. Open a new Claude session in the target workspace manually with `--append-system-prompt-file "$HANDOFF_TMP"`.
 
-The handoff file lives in the target workspace so each agent keeps its own. The new session loads the CLAUDE.md walk-up from the target cwd — same agent for a plain handoff, the target agent's identity for an `@agent` handoff.
+The new session loads the CLAUDE.md walk-up from the target cwd — same agent for a plain handoff, the target agent's identity for an `@agent` handoff.

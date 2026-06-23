@@ -1,7 +1,7 @@
 ---
 name: showme
-description: Use when the user asks to see, show, preview, open, look at, or visualize the result of what you've been working on — surfaces the actual artifact (code, preview, image, doc, mockup, running app, web page) in its real viewer instead of describing it in text. When the real result is a setup the user must perform externally, it opens the exact console page and lays out their steps. Mode token raw|live picks source-code vs live-running fidelity.
-argument-hint: "[raw|live] [focus]"
+description: Use when the user asks to see, show, preview, open, look at, or visualize the result of what you've been working on — surfaces the actual artifact (code, preview, image, doc, mockup, running app, web page) in its real viewer instead of describing it in text. When the real result is a setup the user must perform externally, it opens the exact console page and lays out their steps. Mode token raw|live picks source-code vs live-running fidelity; location reveals the file in Finder so you can grab/attach/move it.
+argument-hint: "[raw|live|location] [focus]"
 ---
 
 # /jstack:showme — surface the result of the current topic, visually
@@ -12,7 +12,7 @@ User invoked showme. They don't want a text summary of what you produced — the
 
 `$ARGUMENTS` = `[mode] [focus]`, both optional.
 
-- **`mode`** — a reserved token, `raw` or `live`, anywhere in the args. Omitted = **default** (preview-preferred). It sets where on the fidelity ladder to land (below).
+- **`mode`** — a reserved token, `raw`, `live`, or `location`, anywhere in the args. Omitted = **default** (preview-preferred). `raw`/`default`/`live` set where on the fidelity ladder to land (below); `location` is off the ladder — it reveals the artifact in Finder instead of rendering it (see below).
 - **`focus`** — everything that isn't the mode token. Narrows which artifact when the session touched several ("the icon", "the settings screen", "the retro doc"). It's an explicit narrowing instruction — don't try to be balanced. Omitted: show the most recent salient result; if two candidates are equally central and the wrong pick wastes Boss's time, ask one short question, otherwise take the most recent.
 
 ## The fidelity ladder — what `mode` selects
@@ -25,6 +25,8 @@ showme always picks a **surface** for the result. The mode chooses how close to 
 
 For a static artifact already produced (image, PDF), `default` and `live` collapse to "open it in the viewer"; `raw` shows its source if one exists, else the file itself.
 
+**`location` — reveal, don't render.** Off the fidelity ladder entirely. The intent isn't "look at the content," it's "show me *where the file is* so I can grab, attach, move, or rename it." Resolve the same artifact (Step 1), then reveal it selected in the OS file manager rather than opening it: macOS → `open -R <abs-path>` (highlights it in Finder); Linux → `nautilus --select <abs-path>` (or `xdg-open` on the containing dir) — whatever's present. This applies to *any* artifact type — a `.enc` blob or binary that has nothing to render is the canonical case for `location`. For a URL/live result there's no file to reveal: say so and fall back to opening the URL.
+
 ## Step 1 — Identify the artifact
 
 Reflect on this conversation. What is the concrete result of the current topic — the thing worth looking at? Resolve it to an **absolute path** (or URL, for web/live). If you produced it this session you know where it is; otherwise locate it before opening — never open a guessed path. Apply `focus` to narrow.
@@ -33,7 +35,7 @@ Reflect on this conversation. What is the concrete result of the current topic �
 
 ## Step 2 — Pick the surface (by mode), then open
 
-`open-artifact` (bundled on PATH while jstack is enabled) hands a path or URL to the platform's default app/viewer — call it as a bare command. On macOS, code goes to Xcode via `xed <file>` (falls back to `open-artifact` / `$EDITOR` elsewhere). Do **not** just print the path or paste the code — the point of showme is the thing is now on screen.
+`open-artifact` (bundled on PATH while jstack is enabled) hands a path or URL to the platform's default app/viewer — call it as a bare command. On macOS, code goes to Xcode via `xed <file>` (falls back to `open-artifact` / `$EDITOR` elsewhere). For the `location` mode, **reveal** instead of open: `open -R <abs-path>` on macOS (Linux: `nautilus --select` / file manager). Do **not** just print the path or paste the code — the point of showme is the thing is now on screen.
 
 | Result is… | `raw` (source) | default (preview / render) | `live` (running) |
 |---|---|---|---|
@@ -53,7 +55,7 @@ Reflect on this conversation. What is the concrete result of the current topic �
 
 ## Step 3 — Confirm
 
-One line: what you opened and where (`SettingsView.swift open in Xcode`, `settings-screen preview in Xcode's canvas`, `Wordy running on the sim — settings screen`, `<url> in the browser`, `Opened icon.png in Preview`). For anything you ran or previewed, attach or reference the screenshot so the visual is captured, not just asserted.
+One line: what you opened and where (`SettingsView.swift open in Xcode`, `settings-screen preview in Xcode's canvas`, `Wordy running on the sim — settings screen`, `<url> in the browser`, `Opened icon.png in Preview`, `Revealed firebase-keys.tar.gz.enc in Finder`). For anything you ran or previewed, attach or reference the screenshot so the visual is captured, not just asserted.
 
 ## Fallbacks
 

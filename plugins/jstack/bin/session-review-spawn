@@ -81,6 +81,11 @@ DEFAULTS = {
     "slot_wait_secs": 1800,
     "slot_poll_secs": 10,
     "min_session_bytes": 1000,
+    # Optional allowlist of sub-modes to review, as ["agent/submode", ...] with a
+    # "*/submode" wildcard for any agent (e.g. ["*/chat", "lynda/pm"]). None = no
+    # scoping, review every resolvable session (the historical default). The set is
+    # HOST POLICY and lives in the machine's review.json — never hardcode it here.
+    "reviewed_submodes": None,
     "recent_activity_secs": 14400,
     "telegram_cooldown_seconds": 300,
     "telegram_cooldown_file": None,
@@ -186,6 +191,48 @@ def find_session(session_id: str, transcript_hint: str | None = None) -> tuple[P
         if candidate.exists():
             return resolve(candidate)
     return None, None
+
+
+def _session_cwd(jsonl_path: Path) -> str | None:
+    """The real working dir the session ran in, read from the JSONL. Unlike the
+    encoded project-dir name, this is unambiguous (hyphens in sub-mode names like
+    'nightly-review' survive)."""
+    try:
+        with jsonl_path.open() as f:
+            for line in f:
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except json.JSONDecodeError:
+                    continue
+                if cwd:
+                    return cwd
+    except OSError:
+        pass
+    return None
+
+
+def resolve_submode(jsonl_path: Path, agent_root: Path, agent_title: str) -> str | None:
+    """The sub-mode the session ran in: the first path segment under
+    {agent_root}/{agent_title}/. None if it ran at the agent root or outside the
+    workspace (e.g. a mapped project dir — those carry no sub-mode)."""
+    cwd = _session_cwd(jsonl_path)
+    if not cwd:
+        return None
+    try:
+        rel = Path(cwd).relative_to(agent_root / agent_title)
+    except ValueError:
+        return None
+    return rel.parts[0] if rel.parts else None
+
+
+def submode_reviewed(agent: str, submode: str | None, reviewed) -> bool:
+    """True iff this agent/sub-mode is in the reviewed allowlist. Absent list
+    (None) means no scoping — everything is reviewed."""
+    if reviewed is None:
+        return True
+    if submode is None:
+        return False
+    return f"{agent}/{submode}" in reviewed or f"*/{submode}" in reviewed
 
 
 # ------------------------------------------------------------------- guards
@@ -586,6 +633,11 @@ def main():
     agent_title = agents.get(agent)
     if not agent_title:
         _log(f"SKIP {session_id[:8]}: agent '{agent}' not reviewable")
+        sys.exit(0)
+
+    submode = resolve_submode(jsonl_path, CFG["agent_root"], agent_title)
+    if not submode_reviewed(agent, submode, CFG.get("reviewed_submodes")):
+        _log(f"SKIP {session_id[:8]}: sub-mode '{agent}/{submode}' not in reviewed set")
         sys.exit(0)
 
     if is_review_session(jsonl_path):

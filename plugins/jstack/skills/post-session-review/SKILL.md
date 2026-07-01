@@ -110,10 +110,14 @@ If nothing this session belongs, the `## TIMELINE` section says `none — {brief
 `state.md` is the index; **`continuity.md` is the memory of what happened** — the thread the mode's *next* run reads on entry so it builds on prior runs instead of starting cold. Append one plain-language line for this session:
 
 ```bash
-SUBMODE=$(basename "$(jq -r 'select(.cwd) | .cwd' "$JSONL" | head -1)")
+CWD=$(jq -r 'select(.cwd) | .cwd' "$JSONL" | head -1)
+REL="${CWD#"$CONTINUITY_ROOT/$AGENT_TITLE"}"; REL="${REL#/}"   # path under the agent dir
+SUBMODE="${REL%%/*}"; SUBMODE="${SUBMODE:-chat}"               # first segment; root → "chat"
 continuity append --agent "$AGENT_TITLE" --mode "$SUBMODE" \
   --summary "one sentence or two: what this session actually DID, readable cold months from now"
 ```
+
+The sub-mode MUST resolve the same way the SessionStart injector reads it back (first segment under the agent dir, root → `chat`) or the next run won't find what you wrote.
 
 Substance, not data: `"Reviewed the 4.2 branch, found the freeze-timer regression, filed it."` — NOT `"4.2 · freeze-timer · ISS-0032 · b70b551"`. The tool owns compaction (Today full / This week / Earlier; oldest entry dropped whole; hard-capped) — you supply the one honest line, never truncated. `continuity` ships in the plugin's `bin/` (self-contained; the engine points it at the right tree via `CONTINUITY_ROOT`). Report it under `ACTIONS_TAKEN`.
 

@@ -74,6 +74,12 @@ Log line contract (dashboards parse this): `YYYY-MM-DD HH:MM:SS SPAWN <sid8> →
 
 Storage is a JSON sidecar (`.continuity.json`) rendered one-way to `continuity.md` (never parsed back); compaction drops whole oldest entries at a hard cap, never truncates words. It resolves the agents tree from `CONTINUITY_ROOT` (the engine exports this from `agent_root`). Stdlib only, no host dependency — portable to any machine running the plugin.
 
+### The read half — SessionStart injection
+
+Writing `continuity.md` (and `state.md`) is only half the loop: **a file in the workspace is not context in the session** — nothing reads it just because it exists. `hooks/session-start-inject.py` (a **SessionStart** hook) is the read half. On every new session it resolves the agent + sub-mode from cwd and injects, as `additionalContext`, the agent's `state.md` (what's in flight) followed by the sub-mode's `continuity.md` (what prior runs did). So the write half (Phase D) and the read half (this hook) together make the loop actually close.
+
+Sub-mode resolution is identical on both sides: the first path segment of cwd under `{agent_root}/{Name}`, or **`chat`** when cwd is the agent root. Cockpit sessions run at the agent root and are the `chat` mode by default — they do **not** cd into `chat/` (that would change the Claude Code project-dir key and orphan transcripts + memory); `chat` is only the folder its continuity is stored under (`{Name}/chat/continuity.md`). The `review` sub-mode is skipped (the automated reviewer reconciles state.md itself). Recognized only for reviewable agents ({Name}/review/ exists); any other cwd → silent no-op. Kill switch: `JSTACK_CONTINUITY_INJECT_DISABLED=1`. Defensive: any error → exit 0, never blocks a session.
+
 ## Companion rule
 
 `rules-stage/agent-state.md` — state.md discipline: it is the active-items index and nothing else. The review **verifies** it (each active line still valid) and never authors history into it; the running record lives in `continuity.md`.

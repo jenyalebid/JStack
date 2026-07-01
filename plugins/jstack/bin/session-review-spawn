@@ -213,8 +213,10 @@ def _session_cwd(jsonl_path: Path) -> str | None:
 
 def resolve_submode(jsonl_path: Path, agent_root: Path, agent_title: str) -> str | None:
     """The sub-mode the session ran in: the first path segment under
-    {agent_root}/{agent_title}/. None if it ran at the agent root or outside the
-    workspace (e.g. a mapped project dir — those carry no sub-mode)."""
+    {agent_root}/{agent_title}/. A session at the agent root is the default
+    cockpit mode "chat" (it doesn't cd into chat/ — that would move its
+    project-dir key; "chat" is just the label its continuity is stored under).
+    None only if it ran outside the workspace (e.g. a mapped project dir)."""
     cwd = _session_cwd(jsonl_path)
     if not cwd:
         return None
@@ -222,7 +224,7 @@ def resolve_submode(jsonl_path: Path, agent_root: Path, agent_title: str) -> str
         rel = Path(cwd).relative_to(agent_root / agent_title)
     except ValueError:
         return None
-    return rel.parts[0] if rel.parts else None
+    return rel.parts[0] if rel.parts else "chat"
 
 
 def submode_reviewed(agent: str, submode: str | None, reviewed) -> bool:

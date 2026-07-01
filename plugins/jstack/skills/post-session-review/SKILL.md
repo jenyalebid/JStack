@@ -57,7 +57,7 @@ For each `unfinished-active-work` or `silently-dropped` topic, file a follow-up:
 file-followup "Glanceable issue title" "1–2 plain sentences: what's unfinished and why it matters."
 ```
 
-(`file-followup` ships in the plugin's `bin/` — backend chosen by the plugin's `followup_backend` userConfig; with backend `none` it's a no-op, so ALSO record the thread in `state.md` so it isn't lost.)
+(`file-followup` ships in the plugin's `bin/` — backend chosen by the plugin's `followup_backend` userConfig; with backend `none` it's a no-op, so add the unresolved thread to `state.md` as an active-items line — an open thread the next session must pick up IS an active item — so it isn't lost.)
 
 Follow-up wording rules:
 - **Title:** one short line, issue stated plainly — not "Approve X" / "Decide Y" action framing.
@@ -79,12 +79,13 @@ For each match, classify and act:
 
 - `agree` — doc and reality consistent — no action.
 - `fossil` — doc references work that's done/superseded — **`Edit` the doc to remove/rewrite the line**.
-- `phantom` — live work with no doc mention — **add the reference where it belongs** (usually `state.md`).
+- `phantom` — an in-flight item with no doc mention — **add its one-line pointer to `state.md`** (the active-items index); the run's narrative belongs in `continuity.md`, not here.
 - `stale-active` — `active/*.md` untouched ≥ 7d — flag in DOC_RECONCILE; don't auto-prune.
 
-Then update `state.md` (you are its only writer — see the `agent-state` rule):
-- Remove done items; add new in-flight work with `[YYYY-MM-DD HH:MM]` stamps from when things actually happened (not now).
-- Keep it ≤50 lines AND ≤10 lines per entry — detail belongs in `active/{slug}.md`, state.md carries the pointer.
+Then reconcile `state.md` — **verify it, don't author it** (see the `agent-state` rule). `state.md` is the **active-items index**: one line per open `active/{slug}.md`, nothing else — not a work-log, not history.
+- Confirm each active line is still valid — item still open, status accurate, its `active/{slug}.md` exists. Fix or remove any that drifted.
+- Add a line only for genuine new in-flight work (a phantom active item with no pointer). What this session *did* is NOT recorded here — it goes to `continuity.md` (Phase D).
+- No active items → `_None._` is complete and correct. A state.md that grows past its active items is a bug.
 
 ## Phase C — Timeline
 
@@ -103,6 +104,18 @@ log_event $AGENT --at HH:MM "headline ≤120 chars" --detail "≤80 chars" --det
 `HH:MM` is **the timestamp of the LAST message in the reviewed conversation** in machine-local time. Not now. Session JSONL records UTC (`...Z` suffix) — convert before passing to `--at`. Sanity-check: the value must be ≤ current local time. If the session's last message is from a previous local day, pass `--date YYYY-MM-DD` too.
 
 If nothing this session belongs, the `## TIMELINE` section says `none — {brief reason}`. Empty section without a reason = rejected.
+
+## Phase D — Continuity (the running memory)
+
+`state.md` is the index; **`continuity.md` is the memory of what happened** — the thread the mode's *next* run reads on entry so it builds on prior runs instead of starting cold. Append one plain-language line for this session:
+
+```bash
+SUBMODE=$(basename "$(jq -r 'select(.cwd) | .cwd' "$JSONL" | head -1)")
+continuity append --agent "$AGENT_TITLE" --mode "$SUBMODE" \
+  --summary "one sentence or two: what this session actually DID, readable cold months from now"
+```
+
+Substance, not data: `"Reviewed the 4.2 branch, found the freeze-timer regression, filed it."` — NOT `"4.2 · freeze-timer · ISS-0032 · b70b551"`. The tool owns compaction (Today full / This week / Earlier; oldest entry dropped whole; hard-capped) — you supply the one honest line, never truncated. `continuity` ships in the plugin's `bin/` (self-contained; the engine points it at the right tree via `CONTINUITY_ROOT`). Report it under `ACTIONS_TAKEN`.
 
 ---
 

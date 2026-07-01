@@ -489,6 +489,8 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
         )
         env["SKIP_SESSION_HOOK"] = "1"
         env["JSTACK_TIMELINE_DIR"] = str(CFG["timeline_dir"])
+        # So `continuity` (bin/) writes to the same tree the engine reviews.
+        env["CONTINUITY_ROOT"] = str(CFG["agent_root"])
 
         timeline_path = CFG["timeline_dir"] / f"{time.strftime('%Y-%m-%d')}.md"
         pre_size = timeline_path.stat().st_size if timeline_path.exists() else 0

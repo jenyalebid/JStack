@@ -41,7 +41,7 @@ All keys optional; defaults are fully portable. Host-relevant keys:
 
 | Key | Default | Use |
 |-----|---------|-----|
-| `agent_root` | `~/Agents` | Workspace root |
+| `agent_root` | `~/Agents` | Workspace root; also exported as `CONTINUITY_ROOT` to spawns |
 | `default_agent` | none | Owner of `$HOME`-cwd sessions |
 | `project_dir_map` | `{}` | Encoded project dir → agent, for non-workspace sessions |
 | `skill_invocation` | `/jstack:post-session-review` | Host playbook override |
@@ -64,6 +64,16 @@ Log line contract (dashboards parse this): `YYYY-MM-DD HH:MM:SS SPAWN <sid8> →
 - The plugin SessionEnd hook is safe to ship alongside a host's own SessionEnd wiring: the claim makes spawning idempotent per session.
 - On machines with no `agent_root` layout, every session resolves to no agent and the engine exits silently — installing the plugin never spawns surprise reviews.
 
+## Continuity — the running memory
+
+`state.md` is the **active-items index** (one line per open `active/{slug}.md`, nothing else). What a session *did* is not recorded there — it goes to the sub-mode's `continuity.md`, the thread the next run reads on entry so it builds on prior runs instead of starting cold. The review appends one plain-language line per session (Phase D of the skill) via the self-contained `bin/continuity` tool:
+
+    continuity append  --agent <A> --mode <M> --summary "what this run did, a sentence or two"
+    continuity verdict --agent <A> --mode <M> --verdict shipped|drift|blocked|empty --note "..."
+    continuity show    --agent <A> --mode <M>
+
+Storage is a JSON sidecar (`.continuity.json`) rendered one-way to `continuity.md` (never parsed back); compaction drops whole oldest entries at a hard cap, never truncates words. It resolves the agents tree from `CONTINUITY_ROOT` (the engine exports this from `agent_root`). Stdlib only, no host dependency — portable to any machine running the plugin.
+
 ## Companion rule
 
-`rules-stage/agent-state.md` — state.md discipline (review owns all writes; interactive sessions never write; ≤50 lines and ≤10 lines per entry; entries dated from when things happened).
+`rules-stage/agent-state.md` — state.md discipline: it is the active-items index and nothing else. The review **verifies** it (each active line still valid) and never authors history into it; the running record lives in `continuity.md`.

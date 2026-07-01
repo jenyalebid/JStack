@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""continuity — a recurring mode's running memory (the anti-amnesia loop).
+
+A recurring / reviewed sub-mode reads its own ``continuity.md`` on entry (the
+post-session-review engine injects it), and the review appends one plain-language
+line at the END of each session. So run N sees the thread of runs N-1..N-k and
+builds on them instead of rediscovering the same things every time — the memory
+layer that replaced state.md-as-work-log (state.md is now the active-items index).
+
+  continuity append  --agent A --mode M --summary "what the session did, a sentence or two"
+      Add this run to the thread. Newest on top; oldest drops at the cap.
+
+  continuity verdict --agent A --mode M --verdict shipped|drift|blocked|empty --note "..."
+      An independent verdict on the latest run + the one move not to repeat
+      (e.g. a nightly meta-review writes this the morning after).
+
+  continuity show    --agent A --mode M
+      Print the current thread (what the next wake will read).
+
+Storage: a JSON sidecar (``.continuity.json``) rendered one-way to
+``continuity.md`` (never parsed back — corruption-proof). Both live in the mode's
+own dir under the agents root, e.g. ``<AGENTS>/Mario/nightly-review/``.
+
+Agents root: $CONTINUITY_ROOT (default ~/Agents). The review engine exports it
+from its ``agent_root`` config so this resolves the same tree the engine reviews.
+
+Self-contained: python3 stdlib only. No venv, no host imports.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import os
+import sys
+from pathlib import Path
+
+# Keep at most this many runs; appending an (N+1)th drops the oldest. ~2 weeks of
+# nightlies — enough to build on, small enough to always inject on entry.
+MAX_RUNS = 14
+# Soft guidance only (warn, never truncate): a continuity line is a sentence or
+# two a human reads, not a data dump.
+SUMMARY_SOFT_LEN = 280
+
+_VALID_VERDICTS = {"shipped", "drift", "blocked", "empty"}
+_MD_NAME = "continuity.md"
+_SIDECAR_NAME = ".continuity.json"
+
+_HEADER = """\
+# Continuity — {agent} · {mode}
+
+_What you've done in this job across recent runs — read on entry, you are not
+starting fresh. Today builds on this; don't re-discover or re-propose what's
+already below. Newest first. If a verdict's "do not repeat" names the move you
+were about to make, that's the system catching you — pick differently._
+"""
+
+
+def _root() -> Path:
+    env = os.environ.get("CONTINUITY_ROOT")
+    return Path(env).expanduser() if env else Path.home() / "Agents"
+
+
+def resolve_agent(name: str) -> Path:
+    """Case-insensitively resolve an agent name to its dir under the agents root."""
+    root = _root()
+    want = name.strip().lower()
+    if root.is_dir():
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and child.name.lower() == want:
+                return child
+    direct = root / name
+    if direct.is_dir():
+        return direct
+    raise ValueError(f"no agent workspace for {name!r} under {root}")
+
+
+def _mode_dir(agent: str, mode: str) -> Path:
+    mode = mode.strip().strip("/")
+    if not mode:
+        raise ValueError("mode is required (e.g. 'nightly-review', 'pm', 'social')")
+    d = resolve_agent(agent) / mode
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def md_path(agent: str, mode: str) -> Path:
+    return _mode_dir(agent, mode) / _MD_NAME
+
+
+def _sidecar_path(agent: str, mode: str) -> Path:
+    return _mode_dir(agent, mode) / _SIDECAR_NAME
+
+
+def _today() -> str:
+    return _dt.date.today().isoformat()
+
+
+def _load(agent: str, mode: str) -> dict:
+    p = _sidecar_path(agent, mode)
+    if p.exists():
+        try:
+            data = json.loads(p.read_text())
+            if isinstance(data, dict) and isinstance(data.get("runs"), list):
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"runs": []}
+
+
+def _fmt_run_full(run: dict) -> str:
+    lines = [f"- {run.get('summary', '').strip()}"]
+    if run.get("verdict"):
+        note = run.get("note", "").strip()
+        tail = f" — do not repeat: {note}" if note else ""
+        lines.append(f"  ↳ verdict: {run['verdict']}{tail}")
+    return "\n".join(lines)
+
+
+def _fmt_run_line(run: dict) -> str:
+    tag = f" [{run['verdict']}]" if run.get("verdict") else ""
+    return f"- {run.get('date', '')}{tag} — {run.get('summary', '').strip()}"
+
+
+def _render(agent: str, mode: str, data: dict) -> str:
+    canon = resolve_agent(agent).name
+    runs = data.get("runs", [])
+    header = _HEADER.format(agent=canon, mode=mode)
+    if not runs:
+        return f"{header}\n_(no runs yet — this is the first)_\n"
+
+    today = _today()
+    try:
+        cutoff = (_dt.date.fromisoformat(today) - _dt.timedelta(days=7)).isoformat()
+    except ValueError:
+        cutoff = today
+
+    today_runs, week_runs, earlier_runs = [], [], []
+    for run in runs:
+        d = run.get("date", "")
+        if d == today:
+            today_runs.append(run)
+        elif d >= cutoff:
+            week_runs.append(run)
+        else:
+            earlier_runs.append(run)
+
+    blocks = [header]
+    if today_runs:
+        blocks.append(f"## Today · {today}\n" + "\n".join(_fmt_run_full(r) for r in today_runs))
+    if week_runs:
+        body = "\n".join(_fmt_run_line(r) for r in reversed(week_runs))
+        blocks.append(f"## This week\n{body}")
+    if earlier_runs:
+        body = "\n".join(_fmt_run_line(r) for r in reversed(earlier_runs))
+        blocks.append(f"## Earlier\n{body}")
+    return "\n\n".join(blocks) + "\n"
+
+
+def _commit(agent: str, mode: str, data: dict) -> Path:
+    if len(data["runs"]) > MAX_RUNS:
+        data["runs"] = data["runs"][-MAX_RUNS:]
+    _sidecar_path(agent, mode).write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    )
+    md = md_path(agent, mode)
+    md.write_text(_render(agent, mode, data))
+    return md
+
+
+def append(agent: str, mode: str, summary: str, date: str | None = None) -> Path:
+    summary = summary.strip()
+    if not summary:
+        raise ValueError("summary is required — one plain-language line of what you did")
+    data = _load(agent, mode)
+    data["runs"].append({"date": date or _today(), "summary": summary})
+    return _commit(agent, mode, data)
+
+
+def set_verdict(agent: str, mode: str, verdict: str, note: str, date: str | None = None) -> Path:
+    verdict = verdict.strip().lower()
+    if verdict not in _VALID_VERDICTS:
+        raise ValueError(f"verdict must be one of {sorted(_VALID_VERDICTS)}, got {verdict!r}")
+    data = _load(agent, mode)
+    runs = data.get("runs", [])
+    if not runs:
+        raise ValueError(f"no runs to verdict for {agent}/{mode}")
+    target = runs[-1]
+    if date:
+        matches = [r for r in runs if r.get("date") == date]
+        if not matches:
+            raise ValueError(f"no run dated {date} for {agent}/{mode}")
+        target = matches[-1]
+    target["verdict"] = verdict
+    target["note"] = note.strip()
+    return _commit(agent, mode, data)
+
+
+def show(agent: str, mode: str) -> str:
+    md = md_path(agent, mode)
+    if md.exists():
+        return md.read_text()
+    return _render(agent, mode, _load(agent, mode))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="continuity", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("append", help="add this run's plain-language summary")
+    a.add_argument("--agent", required=True)
+    a.add_argument("--mode", required=True, help="the recurring mode, e.g. nightly-review, pm, social")
+    a.add_argument("--summary", required=True, help="one sentence or two: what you did this run")
+    a.add_argument("--date", default=None)
+
+    v = sub.add_parser("verdict", help="write an independent verdict on the latest run")
+    v.add_argument("--agent", required=True)
+    v.add_argument("--mode", required=True)
+    v.add_argument("--verdict", required=True, choices=sorted(_VALID_VERDICTS))
+    v.add_argument("--note", required=True, help="the one move not to repeat")
+    v.add_argument("--date", default=None)
+
+    sh = sub.add_parser("show", help="print the current continuity thread")
+    sh.add_argument("--agent", required=True)
+    sh.add_argument("--mode", required=True)
+
+    args = ap.parse_args()
+    try:
+        if args.cmd == "append":
+            if len(args.summary.strip()) > SUMMARY_SOFT_LEN:
+                print(
+                    f"note: summary is {len(args.summary.strip())} chars (> {SUMMARY_SOFT_LEN}). "
+                    "Keep it a readable sentence or two, not a data dump.",
+                    file=sys.stderr,
+                )
+            p = append(args.agent, args.mode, args.summary, args.date)
+            print(f"continuity[append] → {p}")
+        elif args.cmd == "verdict":
+            p = set_verdict(args.agent, args.mode, args.verdict, args.note, args.date)
+            print(f"continuity[verdict] → {p}")
+        elif args.cmd == "show":
+            print(show(args.agent, args.mode))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

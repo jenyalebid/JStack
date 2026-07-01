@@ -24,8 +24,10 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/jstack-injecttest.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 ROOT="$TMP/Agents"
-mkdir -p "$ROOT/Mario/review" "$ROOT/Mario/chat" "$ROOT/Mario/pm" "$ROOT/Loner"
+mkdir -p "$ROOT/Mario/review" "$ROOT/Mario/chat" "$ROOT/Mario/pm" "$ROOT/Loner" "$ROOT/Solo/review"
 printf '# Mario — state\n\n## Active items\n- **thing** — doing it. → active/thing.md\n' > "$ROOT/Mario/state.md"
+# Solo is reviewable but has NO continuity yet (only state) → nothing to inject
+printf '# Solo — state\n\n## Active items\n- **x** — y. → active/x.md\n' > "$ROOT/Solo/state.md"
 printf '# Continuity — Mario · chat\n\n## Today\n- Shipped the freeze fix.\n' > "$ROOT/Mario/chat/continuity.md"
 printf '# Continuity — Mario · pm\n\n## Today\n- Reviewed the roadmap.\n' > "$ROOT/Mario/pm/continuity.md"
 # Loner has NO review/ dir → not a reviewable agent
@@ -48,12 +50,12 @@ pass=0; fail=0
 ok()   { echo "  ok: $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 
-# (a) agent root → chat: state.md + chat continuity present
+# (a) agent root → chat: chat continuity present; state.md NOT injected
 OUT="$(ctx "$ROOT/Mario")"
-echo "$OUT" | grep -q "state.md" && echo "$OUT" | grep -q "Shipped the freeze fix" \
-  && echo "$OUT" | grep -q "chat" \
-  && ok "agent-root injects state + chat continuity" \
-  || bad "agent-root did not inject state + chat continuity :: $OUT"
+echo "$OUT" | grep -q "Shipped the freeze fix" && echo "$OUT" | grep -q "chat" \
+  && ! echo "$OUT" | grep -q "active-items" \
+  && ok "agent-root injects chat continuity (and not state.md)" \
+  || bad "agent-root injection wrong :: $OUT"
 
 # (b) explicit submode cwd → that submode's continuity, not chat's
 OUT="$(ctx "$ROOT/Mario/pm")"
@@ -73,6 +75,10 @@ OUT="$(fire "$TMP/somewhere/else")"
 # (e) agent without review/ dir → not recognized → no output
 OUT="$(fire "$ROOT/Loner")"
 [[ -z "$OUT" ]] && ok "agent without review/ is not recognized" || bad "unreviewable agent emitted output :: $OUT"
+
+# (f) reviewable agent with state but NO continuity → no output (state is not injected)
+OUT="$(fire "$ROOT/Solo")"
+[[ -z "$OUT" ]] && ok "no continuity → no output (state.md alone is not injected)" || bad "injected with no continuity :: $OUT"
 
 # valid-JSON check on the one that emits
 OUT="$(fire "$ROOT/Mario")"

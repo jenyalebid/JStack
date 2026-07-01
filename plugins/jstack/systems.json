@@ -45,7 +45,7 @@
       "kind": "hook",
       "name": "SessionStart Continuity Injection",
       "status": "live",
-      "description": "SessionStart hook that injects the agent's state.md (active-items index) + the sub-mode's continuity.md (running memory) into every new session as additionalContext — the READ half of the post-session-review loop (the WRITE half is the review's Phase D). Neither file is context just by existing on disk; this makes a session start sighted instead of cold. Sub-mode resolves from cwd: first segment under {agent_root}/{Name}, else 'chat' (cockpit sessions stay at the agent root, so the project-dir key / memory is never moved); 'review' is skipped.",
+      "description": "SessionStart hook that injects the sub-mode's continuity.md (running memory) into every new session as additionalContext — the READ half of the post-session-review loop (the WRITE half is the review's Phase D). continuity.md is not context just by existing on disk; this makes a session start sighted instead of cold. state.md is NOT injected (it's the active-items index, read as a file). Sub-mode resolves from cwd: first segment under {agent_root}/{Name}, else 'chat' (cockpit sessions stay at the agent root, so the project-dir key / memory is never moved); 'review' is skipped.",
       "code": [
         "hooks/session-start-inject.py",
         "hooks/hooks.json"
@@ -57,7 +57,7 @@
       "test": {
         "type": "script",
         "path": "tests/continuity-injection.sh",
-        "description": "Live test of the real hook via its SessionStart JSON stdin contract against a hermetic temp agents tree (JSTACK_REVIEW_CONFIG override): agent-root cwd → 'chat' injects state.md + chat continuity; explicit submode cwd → that submode's continuity; 'review' submode → no output; non-workspace cwd → no-op; agent without review/ → not recognized; emitted payload is valid SessionStart hook JSON."
+        "description": "Live test of the real hook via its SessionStart JSON stdin contract against a hermetic temp agents tree (JSTACK_REVIEW_CONFIG override): agent-root cwd → 'chat' injects chat continuity and NOT state.md; explicit submode cwd → that submode's continuity; 'review' submode → no output; non-workspace cwd → no-op; agent without review/ → not recognized; reviewable agent with state but no continuity → no output; emitted payload is valid SessionStart hook JSON."
       },
       "subsystems": [],
       "notes": "Registered in hooks/hooks.json — auto-loads when the plugin is installed. Kill switch: JSTACK_CONTINUITY_INJECT_DISABLED=1. Reads agent_root from JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json), same as the engine. Defensive: any error → exit 0, never blocks a session. Sub-mode resolution is kept identical to bin/session-review-spawn resolve_submode and the skill's Phase D writer — if they drift, the next run won't find what the review wrote."

@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""SessionStart hook — inject the agent's live memory into every new session.
+"""SessionStart hook — inject the sub-mode's running memory into every new session.
 
-Neither state.md nor continuity.md is read just because it exists on disk — a
-file in the workspace is not context in the session. This hook closes that loop:
-on session start it resolves the agent + sub-mode from the session's cwd and
-injects, as SessionStart additionalContext,
+``continuity.md`` is not read just because it exists on disk — a file in the
+workspace is not context in the session. This hook closes that loop: on session
+start it resolves the agent + sub-mode from the session's cwd and injects the
+sub-mode's ``continuity.md`` (what past runs did) as SessionStart
+additionalContext, so the session starts sighted instead of cold. It is the READ
+half of the post-session-review loop, whose WRITE half is the review's Phase D.
 
-  1. the agent's ``state.md``          — the active-items index (what's in flight), and
-  2. the sub-mode's ``continuity.md``  — the running memory (what past runs did),
-
-so the session starts sighted instead of cold. It is the READ half of the
-post-session-review loop, whose WRITE half is the review's Phase D.
+(``state.md`` is deliberately NOT injected — it's the active-items index, read
+as a file when needed; the running memory is what a cold start actually lacks.)
 
 Sub-mode resolution (MUST match the review's Phase D writer and the engine's
 resolve_submode): the first path component of cwd under {agent_root}/{Name};
@@ -80,28 +79,16 @@ def _read(path: Path) -> str:
 
 
 def build_context(agent_dir: Path, submode: str) -> str:
-    blocks = []
-    state = _read(agent_dir / "state.md")
-    if state:
-        blocks.append(
-            f"### {agent_dir.name} — state.md · the active-items index "
-            f"(authoritative for what is in flight)\n\n{state}"
-        )
     cont = _read(agent_dir / submode / "continuity.md")
-    if cont:
-        blocks.append(
-            f"### {agent_dir.name} · {submode} — continuity.md · the running memory "
-            f"(what prior runs did; you are not starting cold)\n\n{cont}"
-        )
-    if not blocks:
+    if not cont:
         return ""
     return (
         "<jstack-continuity>\n"
-        "Injected on entry by JStack — your persistent working state for this agent. "
-        "Read it before acting: state.md is the source of truth for what's open, and "
-        "continuity.md is what prior runs already did (don't re-discover or re-propose it).\n\n"
-        + "\n\n---\n\n".join(blocks)
-        + "\n</jstack-continuity>"
+        f"Injected on entry by JStack — {agent_dir.name} · {submode} running memory. "
+        "This is what prior runs already did; you are not starting cold. Build on it — "
+        "don't re-discover or re-propose what's already below.\n\n"
+        f"{cont}\n"
+        "</jstack-continuity>"
     )
 
 

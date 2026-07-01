@@ -5,22 +5,28 @@ paths:
 
 # Agent State Discipline — state.md
 
-Each agent workspace carries `{agent_root}/{Name}/state.md` — the agent's live working state, the unifier across all of its sub-modes. Every session reads it on entry; the **post-session review owns all writes**.
+`{agent_root}/{Name}/state.md` is the agent's cross-mode snapshot of **what is open right now** — the unifier every sub-mode reads on entry. It is NOT a history log. What got done lives in each reviewed sub-mode's `continuity.md` and in the timeline. state.md never accumulates resolved-work prose.
+
+## What's in it — and nothing else
+
+- **Active items** — one line each: `**slug** — one-line status → active/{slug}.md`. The detail lives in the `active/*.md`; never inline it here.
+- **Open cross-mode handoffs** — a breadcrumb the next sub-mode genuinely needs to pick up in-flight work.
+- **Pending Boss** — live items that also have a reminder counterpart (no shadows).
+
+**No `## Recent (resolved)` section.** When work resolves, its line is **removed**, not moved to an archive. The record is in git, the timeline, and continuity — not here.
 
 ## Who writes
 
-- **Interactive sessions (chat, tg) NEVER write state.md.** They read it on entry, period. The review authors their state from the transcript after the session ends.
-- **Autonomous modes** may leave breadcrumbs; the review reconciles.
-- The post-session review is the single writer — it removes done items, adds new work, captures user corrections, and keeps timestamps honest (when things actually happened, not review time).
+- **Reviewed sub-modes** (the post-session review fires for them — `review.json` `reviewed_submodes`: `*/chat` plus the agent's recurring autonomous modes): the **review** authors state.md from the transcript. Interactive chat never self-writes.
+- **Un-reviewed autonomous modes** (no review fires): **self-maintain** — update your own state.md line at end of run if in-flight state changed. No review will do it for you.
+- Timestamps are when things actually happened, not write time.
 
-## Format
+## Hard limits
 
-- Every entry dated `[YYYY-MM-DD HH:MM]`, newest at top.
-- **≤50 lines AND ≤10 lines per entry.** state.md is a glanceable index, not an archive — an entry that needs more belongs in `active/{slug}.md` with a one-line pointer here. Long entries tax every session that loads the file.
-- Entries >1 day stale must be resolved or removed by the review.
-- Resolved work moves to a `## Recent (resolved)` section and rolls off; it does not accumulate.
+- **≤ 30 lines total.** It's a glanceable index. Over the floor = you're logging history that belongs in continuity/timeline — cut it.
+- Every active item is a one-line pointer. An entry that needs a paragraph belongs in `active/{slug}.md`.
+- Stale in-flight state (work shipped or dropped) gets removed, not left to rot.
 
-## What goes here / what doesn't
+## Never here
 
-- **Here:** in-flight work state, cross-mode handoffs, breadcrumbs the next session needs.
-- **NOT here:** corrections or durable rules (those land in CLAUDE.md / rules / memory per the destination hierarchy), reminder shadows (the live reminder list is the source of truth), anything derivable from git history.
+Corrections or durable rules (→ CLAUDE.md / rules / memory), reminder shadows (the live list is truth), resolved-work narration (→ continuity + timeline), anything derivable from git.

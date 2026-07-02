@@ -78,6 +78,11 @@ DEFAULTS = {
     "timeout_secs": 1200,
     "max_attempts": 2,
     "max_concurrent": 2,
+    # Seconds to wait before retrying when the child was killed by a signal
+    # (negative returncode — e.g. SIGKILL/-9 from macOS jetsam under memory
+    # pressure). Environmental kills recur instantly on immediate re-spawn;
+    # a pause lets the transient condition clear. 0 disables the backoff.
+    "signal_retry_backoff_secs": 45,
     "slot_wait_secs": 1800,
     "slot_poll_secs": 10,
     "min_session_bytes": 1000,
@@ -566,6 +571,16 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
         if result.returncode != 0:
             last_failure = f"exit {result.returncode}: {(result.stderr or '')[:200]}"
             _log(f"NONZERO {session_id[:8]} → {agent} (attempt {attempt}): {last_failure}")
+            # A negative returncode means the child was killed by a signal (e.g.
+            # SIGKILL/-9 from macOS jetsam under memory pressure), not a review-
+            # content failure. Retrying immediately just gets killed again by the
+            # same transient condition — burning every attempt in seconds and
+            # escalating a blip into a page. Back off so the pressure can clear.
+            backoff = int(CFG["signal_retry_backoff_secs"])
+            if result.returncode < 0 and attempt < max_attempts and backoff > 0:
+                _log(f"BACKOFF {session_id[:8]} → {agent}: killed by signal "
+                     f"{-result.returncode}, waiting {backoff}s before retry")
+                time.sleep(backoff)
             continue
 
         post_size = timeline_path.stat().st_size if timeline_path.exists() else 0

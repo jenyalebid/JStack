@@ -349,6 +349,55 @@ def has_recent_activity(jsonl_path: Path) -> bool:
         return True
 
 
+def _reviewed_offset_file(session_id: str) -> Path:
+    d = CFG["state_dir"] / "reviewed-offset"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / session_id
+
+
+def reviewed_offset(session_id: str) -> int:
+    try:
+        return int(_reviewed_offset_file(session_id).read_text().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return 0
+
+
+def record_reviewed_offset(session_id: str, size: int) -> None:
+    try:
+        _reviewed_offset_file(session_id).write_text(str(size))
+    except OSError:
+        pass
+
+
+def has_new_user_prose(jsonl_path: Path, offset: int) -> bool:
+    """Real user input past `offset` (the transcript size at the last review).
+    Resuming a session and closing it without typing appends no user prose —
+    reviewing that again burns a full spawn on nothing. Injected content
+    (system-reminders, command wrappers, task notifications, local-command
+    caveats) is not user prose."""
+    try:
+        with jsonl_path.open() as f:
+            if offset > 0:
+                f.seek(offset)   # append-only file: recorded size = line boundary
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("type") != "user" or e.get("isMeta"):
+                    continue
+                content = e.get("message", {}).get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(b.get("text", "") for b in content
+                                         if isinstance(b, dict) and b.get("type") == "text")
+                text = (content or "").strip()
+                if text and not text.startswith(("<", "Caveat:")):
+                    return True
+    except OSError:
+        return True   # can't read → don't silently swallow a review
+    return False
+
+
 def is_telegram_session(session_id: str, jsonl_path: Path) -> bool:
     """TG sessions arrive as many short claude --print runs; they need the
     per-agent debounce. Detection: optional host classifier cmd, then
@@ -663,6 +712,11 @@ def main():
         _log(f"SKIP {session_id[:8]}: no recent activity (reopen-and-close)")
         sys.exit(0)
 
+    prior = reviewed_offset(session_id)
+    if not has_new_user_prose(jsonl_path, prior):
+        _log(f"SKIP {session_id[:8]}: no new user input since last review (offset {prior})")
+        sys.exit(0)
+
     if is_telegram_session(session_id, jsonl_path):
         _log(f"TELEGRAM {session_id[:8]} → {agent}: entering debounce")
         if not debounce_telegram(session_id, agent):
@@ -675,6 +729,10 @@ def main():
         sys.exit(0)
 
     try:
+        try:
+            record_reviewed_offset(session_id, jsonl_path.stat().st_size)
+        except OSError:
+            pass
         spawn_review(session_id, agent, agent_title)
     finally:
         slot.close()

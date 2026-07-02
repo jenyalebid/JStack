@@ -30,6 +30,7 @@ The skill (default `skills/post-session-review/SKILL.md`, `/jstack:post-session-
 | `SKIP_SESSION_HOOK=1` honored + `[POST-SESSION-REVIEW]` marker check | Review-of-review loops |
 | Filer-briefing skip | Burning a spawn on briefing-only resumed sessions closed without typing |
 | `min_session_bytes` (1KB) | Reviewing empty sessions |
+| reviewed-offset (state, per session) | Re-reviewing on resume-and-close: the transcript size is stamped at each spawn; a later SessionEnd with no new user prose past the stamp skips. Injected content (`<`-prefixed, `Caveat:`, isMeta) is not user prose. |
 | Recent-activity check (today, or ≤4h) | Reviewing reopen-and-close of old sessions |
 | Per-agent telegram debounce | One review per TG conversation, not per message |
 | flock slots (`max_concurrent`, default 2) | Memory blowups from overlapping spawns |

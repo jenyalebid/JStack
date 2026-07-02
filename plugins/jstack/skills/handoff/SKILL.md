@@ -52,13 +52,17 @@ Rules:
 
 ## Step 2 — Write the summary to a throwaway temp file
 
-The summary is a one-shot payload: it loads into the new session's system prompt and is never needed again. So it must NOT land in any workspace — no `handoff-context.md` to delete later. Write it to a temp file outside the tree:
+The summary is a one-shot payload: it loads into the new session's system prompt and is never needed again. So it must NOT land in any workspace — no `handoff-context.md` to delete later. Write it to a temp path outside the tree:
 
 ```bash
-HANDOFF_TMP="$(mktemp -t jstack-handoff)"
+# mktemp reserves a unique name, then we delete the file it created: an
+# existing-but-unread file trips the Write tool's "read it before you write it"
+# guard, forcing a pointless Read of an empty file. Deleting it lets the Write
+# tool create it fresh while keeping mktemp's collision-safe name.
+HANDOFF_TMP="$(mktemp -t jstack-handoff)" && rm -f "$HANDOFF_TMP"
 ```
 
-Write the summary to `$HANDOFF_TMP` with the Write tool. The adapter (Step 4) reads it into the new session inline and deletes it before Claude starts — nothing lingers anywhere.
+Write the summary to `$HANDOFF_TMP` with the Write tool — it creates the file, no prior Read needed. The adapter (Step 4) reads it into the new session inline and deletes it before Claude starts — nothing lingers anywhere.
 
 ## Step 3 — Show the summary
 

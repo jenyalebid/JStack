@@ -1,7 +1,7 @@
 {
   "name": "jstack",
   "description": "Agent workflow skills: get battle-ready on a topic (load every relevant skill, survey recent changes, read core files), file/load active items, hand off sessions, split off a verbatim copy of the session into a new terminal, audit completed work trust-nothing (a subagent reviews from source and reports a triaged verdict back to the session, or a fresh terminal you drive), reverify a whole day's shipped work across every repo against the timeline, show the result of the current topic in its real viewer, commit + push session work, install bundled rules. PreToolUse hook injects path-matched rules at edit time regardless of launch CWD. SessionStart hook injects the sub-mode's continuity.md (running memory) so a session starts sighted, not cold. SessionEnd hook spawns a validated post-session review (writes the sub-mode's continuity.md via bin/continuity, verifies the state.md active-items index, files follow-ups, logs the timeline via bin/log_event). Portable across machines via userConfig — no hardcoded paths.",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "author": {
     "name": "Jarvis-and-J"
   },

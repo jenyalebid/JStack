@@ -598,6 +598,12 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
         _log(f"INVALID {session_id[:8]} → {agent} (attempt {attempt}): {reason}")
 
     _log(f"BLOCKED {session_id[:8]} → {agent}: {max_attempts} attempts failed — {last_failure}")
+    if last_failure and last_failure.startswith("exit -"):
+        # Died by signal every attempt: a deliberate kill (board Kill button,
+        # operator pkill) or memory pressure — neither is a review-content
+        # failure worth paging Boss about.
+        _log(f"KILLED {session_id[:8]} → {agent}: signal death, not escalating")
+        return
     if CFG["escalate_cmd"]:
         try:
             subprocess.run(

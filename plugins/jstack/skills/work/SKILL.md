@@ -23,7 +23,7 @@ You already know who you are, what you own, and your stack from your loaded iden
 Run these in order. This is the spine — don't skip steps, don't start editing code.
 
 ### 1 — Orient
-`date`. Read your own `state.md` for cross-mode context (read-only — never write it from here).
+`date`. Read your own `active.md` for cross-mode context (read-only — never write it from here).
 
 ### 2 — Resolve project → repo
 Per the Arguments rules above. End this step knowing the exact repo directory you're working in.
@@ -52,4 +52,4 @@ Give the user one grounded summary:
 - **Core files** you read and what they are.
 - **Your read** of the current state and where the topic's work would land.
 
-End ready to execute. Do **not** change code, write `state.md`, or open a PR — `/work` is preparation. The actual work is whatever the user asks next, now that you're grounded.
+End ready to execute. Do **not** change code, write `active.md`, or open a PR — `/work` is preparation. The actual work is whatever the user asks next, now that you're grounded.

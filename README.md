@@ -20,7 +20,7 @@ Eight slash commands (all namespaced as `/jstack:*`):
 
 Plus two **whole systems** that run themselves once installed:
 
-- **Post-session review** — a SessionEnd hook spawns a validated review of every session that ends inside an agent workspace: reconciles `state.md` + `active/` with what actually happened, extracts dropped threads into follow-ups, logs timeline entries. Output is machine-validated (required sections, evidence floors, a timeline-grew gate); rejected output re-spawns once, persistent failure escalates. See **Post-session review + timeline** below.
+- **Post-session review** — a SessionEnd hook spawns a validated review of every session that ends inside an agent workspace: reconciles `active.md` + `active/` with what actually happened, extracts dropped threads into follow-ups, logs timeline entries. Output is machine-validated (required sections, evidence floors, a timeline-grew gate); rejected output re-spawns once, persistent failure escalates. See **Post-session review + timeline** below.
 - **Timeline log** — `bin/log_event` writes daily `{YYYY-MM-DD}.md` timeline files (the day's spine) with strict block format, chronological insertion, and pipeline-task consolidation.
 
 And the supporting machinery: 19 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, four bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `log_event`, `session-review-spawn`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
@@ -126,7 +126,7 @@ Once the plugin is installed, the SessionEnd hook is live — but it only does a
 {agent_root}/{Name}/review/        ← this directory existing IS the opt-in
 {agent_root}/{Name}/review/CLAUDE.md   (optional but recommended: agent-specific review glue,
                                         auto-loaded by walk-up when the review spawns there)
-{agent_root}/{Name}/state.md       ← what the review reconciles (see the agent-state rule)
+{agent_root}/{Name}/active.md       ← what the review reconciles (see the agent-state rule)
 ```
 
 That's the whole setup for the default experience:
@@ -145,7 +145,7 @@ The review (and anything else) writes the day's spine with the bundled CLI — i
 log_event <agent> --at HH:MM "headline" [--detail "..."] [--pipeline-task repo#42]
 ```
 
-Files land at `~/Logs/Timeline/{YYYY-MM-DD}.md` (`JSTACK_TIMELINE_DIR` overrides). Format spec + editorial bar: the `timeline` rule. The `agent-state` rule carries the state.md discipline (the review is the only writer; ≤50 lines, ≤10 per entry). Install both via `/install-rules`.
+Files land at `~/Logs/Timeline/{YYYY-MM-DD}.md` (`JSTACK_TIMELINE_DIR` overrides). Format spec + editorial bar: the `timeline` rule. The `agent-state` rule carries the active.md discipline (the review is the only writer; ≤50 lines, ≤10 per entry). Install both via `/install-rules`.
 
 ### Machine config (optional — defaults are fully portable)
 
@@ -218,7 +218,7 @@ resume_trigger: <only if paused>
 ```
 
 Then:
-1. If `{root}/{Name}/state.md` exists with a `## Active items` section, appends a one-liner pointer there.
+1. If `{root}/{Name}/active.md` exists with a `## Active items` section, appends a one-liner pointer there.
 2. Calls `file-followup` with `<title>` and `<body>` (body includes a one-line "why" + path to the active doc). With `followup_backend: none` this is a silent no-op.
 3. Confirms with a one-line receipt.
 
@@ -304,7 +304,7 @@ done
 
 1. **Agent root** — `{agent_root}/{Name}/` (configured, not hardcoded)
 2. **Identity** — `{agent_root}/{Name}/CLAUDE.md` (auto-loaded by walk-up)
-3. **Cross-mode state** — `{agent_root}/{Name}/state.md` (optional; if present, `save` mirrors to its `## Active items` section)
+3. **Cross-mode state** — `{agent_root}/{Name}/active.md` (optional; if present, `save` mirrors to its `## Active items` section)
 4. **In-progress items** — `{agent_root}/{Name}/active/{slug}.md` (format defined above)
 5. **Sub-modes** — subdirectories of the agent root, same identity in a different context (walk-up handles inheritance)
 6. **Adapters** — bundled in the plugin's `bin/`, configured via `followup_backend` / `followup_target`

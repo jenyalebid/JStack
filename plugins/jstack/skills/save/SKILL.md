@@ -90,15 +90,15 @@ resume_trigger: <only if paused>
 
 If `--paused`: set `status: paused`, add `resume_trigger:` to frontmatter. Ask for resume value if `--resume` not supplied.
 
-## Step 6 — Mirror to state.md (if it exists)
+## Step 6 — Mirror to active.md (if it exists)
 
-If `${user_config.agent_root}/{Name}/state.md` exists, find or create `## Active items` section near the top. Append:
+If `${user_config.agent_root}/{Name}/active.md` exists, find or create `## Active items` section near the top. Append:
 
 ```markdown
 - **<title>** (`<slug>`) — <status> — <one-sentence current state>. Doc: `active/<slug>.md`.
 ```
 
-If state.md doesn't exist on this agent, skip. Active doc is the canonical record.
+If active.md doesn't exist on this agent, skip. Active doc is the canonical record.
 
 ## Step 7 — File a follow-up
 
@@ -135,4 +135,4 @@ The user invoked it; the confirmation is a receipt.
 
 - **"Save it" but unclear topic** — pick the single most important thread; ask: *"Saving as `<slug>` — that's the {summary} thread, right?"*
 - **Fresh session, nothing in context** — ask what to save.
-- **"Save and close X first"** — close X (delete file, remove state.md line), then file the new one.
+- **"Save and close X first"** — close X (delete file, remove active.md line), then file the new one.

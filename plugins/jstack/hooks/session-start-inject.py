@@ -8,7 +8,7 @@ sub-mode's ``continuity.md`` (what past runs did) as SessionStart
 additionalContext, so the session starts sighted instead of cold. It is the READ
 half of the post-session-review loop, whose WRITE half is the review's Phase D.
 
-(``state.md`` is deliberately NOT injected — it's the active-items index, read
+(``active.md`` is deliberately NOT injected — it's the active-items index, read
 as a file when needed; the running memory is what a cold start actually lacks.)
 
 Sub-mode resolution (MUST match the review's Phase D writer and the engine's
@@ -19,7 +19,7 @@ project-dir key (transcripts + memory) is never disturbed; "chat" is only the
 label under which their continuity is stored ({Name}/chat/continuity.md).
 
 The "review" sub-mode is skipped — the automated reviewer operates on the ended
-session's transcript and reconciles state.md itself; it needs no injection.
+session's transcript and reconciles active.md itself; it needs no injection.
 
 Config: agent_root from $JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json),
 falling back to ~/Agents — the same resolution the review engine uses. An agent

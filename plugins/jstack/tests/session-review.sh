@@ -67,10 +67,10 @@ GOOD = """## TRANSCRIPT_WALK
 - turn 1 [10:02]: "fix the thing" → resolved-in-session → commit landed
 
 ## DOC_RECONCILE
-- clean — examined: state.md (2 topic matches), active/ (1 file); all consistent.
+- clean — examined: active.md (2 topic matches), active/ (1 file); all consistent.
 
 ## ACTIONS_TAKEN
-- Edit state.md:4 — removed fossil entry
+- Edit active.md:4 — removed fossil entry
 
 ## TIMELINE
 - log_event jarvis --at 10:30 "Thing fixed"

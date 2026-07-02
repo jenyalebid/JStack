@@ -1,6 +1,6 @@
 # Post-Session Review — Architecture & Configuration
 
-Every agent session gets reviewed immediately after it ends: a purpose-spawned review session reconciles the agent's `state.md` and active items with what actually happened, extracts dropped threads into follow-ups, and logs timeline entries. The review's output is machine-validated — a review that doesn't show its evidence is rejected and re-spawned.
+Every agent session gets reviewed immediately after it ends: a purpose-spawned review session reconciles the agent's `active.md` and active items with what actually happened, extracts dropped threads into follow-ups, and logs timeline entries. The review's output is machine-validated — a review that doesn't show its evidence is rejected and re-spawned.
 
 ## Chain
 
@@ -67,7 +67,7 @@ Log line contract (dashboards parse this): `YYYY-MM-DD HH:MM:SS SPAWN <sid8> →
 
 ## Continuity — the running memory
 
-`state.md` is the **active-items index** (one line per open `active/{slug}.md`, nothing else). What a session *did* is not recorded there — it goes to the sub-mode's `continuity.md`, the thread the next run reads on entry so it builds on prior runs instead of starting cold. The review appends one plain-language line per session (Phase D of the skill) via the self-contained `bin/continuity` tool:
+`active.md` is the **active-items index** (one line per open `active/{slug}.md`, nothing else). What a session *did* is not recorded there — it goes to the sub-mode's `continuity.md`, the thread the next run reads on entry so it builds on prior runs instead of starting cold. The review appends one plain-language line per session (Phase D of the skill) via the self-contained `bin/continuity` tool:
 
     continuity append  --agent <A> --mode <M> --summary "what this run did, a sentence or two"
     continuity verdict --agent <A> --mode <M> --verdict shipped|drift|blocked|empty --note "..."
@@ -79,8 +79,8 @@ Storage is a JSON sidecar (`.continuity.json`) rendered one-way to `continuity.m
 
 Writing `continuity.md` is only half the loop: **a file in the workspace is not context in the session** — nothing reads it just because it exists. `hooks/session-start-inject.py` (a **SessionStart** hook) is the read half. On every new session it resolves the agent + sub-mode from cwd and injects the sub-mode's `continuity.md` (what prior runs did) as `additionalContext`. So the write half (Phase D) and the read half (this hook) together make the loop actually close.
 
-`state.md` is deliberately **not** injected — it's the active-items index, read as a file when needed; the running memory is what a cold start actually lacks. Sub-mode resolution is identical on both sides of the loop: the first path segment of cwd under `{agent_root}/{Name}`, or **`chat`** when cwd is the agent root. Cockpit sessions run at the agent root and are the `chat` mode by default — they do **not** cd into `chat/` (that would change the Claude Code project-dir key and orphan transcripts + memory); `chat` is only the folder its continuity is stored under (`{Name}/chat/continuity.md`). The `review` sub-mode is skipped. Recognized only for reviewable agents ({Name}/review/ exists); any other cwd → silent no-op. Kill switch: `JSTACK_CONTINUITY_INJECT_DISABLED=1`. Defensive: any error → exit 0, never blocks a session.
+`active.md` is deliberately **not** injected — it's the active-items index, read as a file when needed; the running memory is what a cold start actually lacks. Sub-mode resolution is identical on both sides of the loop: the first path segment of cwd under `{agent_root}/{Name}`, or **`chat`** when cwd is the agent root. Cockpit sessions run at the agent root and are the `chat` mode by default — they do **not** cd into `chat/` (that would change the Claude Code project-dir key and orphan transcripts + memory); `chat` is only the folder its continuity is stored under (`{Name}/chat/continuity.md`). The `review` sub-mode is skipped. Recognized only for reviewable agents ({Name}/review/ exists); any other cwd → silent no-op. Kill switch: `JSTACK_CONTINUITY_INJECT_DISABLED=1`. Defensive: any error → exit 0, never blocks a session.
 
 ## Companion rule
 
-`rules-stage/agent-state.md` — state.md discipline: it is the active-items index and nothing else. The review **verifies** it (each active line still valid) and never authors history into it; the running record lives in `continuity.md`.
+`rules-stage/agent-active.md` — active.md discipline: it is the active-items index and nothing else. The review **verifies** it (each active line still valid) and never authors history into it; the running record lives in `continuity.md`.

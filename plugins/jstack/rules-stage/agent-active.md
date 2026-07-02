@@ -1,11 +1,11 @@
 ---
 paths:
-  - "Agents/**/state.md"
+  - "Agents/**/active.md"
 ---
 
-# Agent State Discipline — state.md
+# Agent Active-Items Discipline — active.md
 
-`{agent_root}/{Name}/state.md` holds **one thing: the agent's active-items index** — a one-line pointer to each open `active/{slug}.md`. Nothing else. Not a work-log, not history, not a watch-list, not pending-Boss notes. Every session reads it on entry to know what's in flight.
+`{agent_root}/{Name}/active.md` holds **one thing: the agent's active-items index** — a one-line pointer to each open `active/{slug}.md`. Nothing else. Not a work-log, not history, not a watch-list, not pending-Boss notes. Every session reads it on entry to know what's in flight.
 
 ## The only content
 
@@ -16,7 +16,7 @@ paths:
 - **{slug}** — one-line status. → `active/{slug}.md`
 ```
 
-No active items → `_None._`. That is a complete, correct state.md.
+No active items → `_None._`. That is a complete, correct active.md.
 
 Everything that used to sprawl here now lives where it belongs:
 - **What got done** → the sub-mode's `continuity.md` + the timeline.
@@ -30,4 +30,4 @@ Everything that used to sprawl here now lives where it belongs:
 
 ## Hard limit
 
-One line per active item, max 3 items per agent. If an entry needs a paragraph, that paragraph belongs in `active/{slug}.md`, not here. A state.md that grows past its active items is a bug.
+One line per active item, max 3 items per agent. If an entry needs a paragraph, that paragraph belongs in `active/{slug}.md`, not here. An active.md that grows past its active items is a bug.

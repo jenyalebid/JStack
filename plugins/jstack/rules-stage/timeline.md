@@ -38,7 +38,7 @@ Headline — present-tense, one line, ≤120 chars.
 - File paths, commit hashes, branch names, session UUIDs, PIDs, exit codes.
 - Test counts, line counts, build configs, device/simulator models, OS versions.
 - Process noise — "pushed", "build clean", "5/5 tests pass".
-- Routine maintenance — "reviewed session", "updated state.md".
+- Routine maintenance — "reviewed session", "updated active.md".
 - Multiple entries for the same event from different angles.
 
 A reader asks "what happened today?" — not "which simulator on which iOS?".

@@ -4,9 +4,9 @@
 # Calls the real hook (hooks/session-start-inject.py) with the real SessionStart
 # JSON stdin contract against a hermetic fixture (a temp agents tree pointed at
 # via JSTACK_REVIEW_CONFIG). Verifies the behaviors that define the hook:
-#   (a) agent-root cwd   → submode "chat"; injects state.md + chat/continuity.md
+#   (a) agent-root cwd   → submode "chat"; injects active.md + chat/continuity.md
 #   (b) submode cwd      → injects that submode's continuity.md
-#   (c) review submode   → no output (reviewer reconciles state.md itself)
+#   (c) review submode   → no output (reviewer reconciles active.md itself)
 #   (d) non-workspace    → no output (silent no-op)
 #   (e) no review/ dir   → not a reviewable agent → no output
 #
@@ -25,13 +25,13 @@ trap 'rm -rf "$TMP"' EXIT
 
 ROOT="$TMP/Agents"
 mkdir -p "$ROOT/Mario/review" "$ROOT/Mario/chat" "$ROOT/Mario/pm" "$ROOT/Loner" "$ROOT/Solo/review"
-printf '# Mario — state\n\n## Active items\n- **thing** — doing it. → active/thing.md\n' > "$ROOT/Mario/state.md"
+printf '# Mario — state\n\n## Active items\n- **thing** — doing it. → active/thing.md\n' > "$ROOT/Mario/active.md"
 # Solo is reviewable but has NO continuity yet (only state) → nothing to inject
-printf '# Solo — state\n\n## Active items\n- **x** — y. → active/x.md\n' > "$ROOT/Solo/state.md"
+printf '# Solo — state\n\n## Active items\n- **x** — y. → active/x.md\n' > "$ROOT/Solo/active.md"
 printf '# Continuity — Mario · chat\n\n## Today\n- Shipped the freeze fix.\n' > "$ROOT/Mario/chat/continuity.md"
 printf '# Continuity — Mario · pm\n\n## Today\n- Reviewed the roadmap.\n' > "$ROOT/Mario/pm/continuity.md"
 # Loner has NO review/ dir → not a reviewable agent
-printf '# Loner — state\n\n_None._\n' > "$ROOT/Loner/state.md"
+printf '# Loner — state\n\n_None._\n' > "$ROOT/Loner/active.md"
 
 CFG="$TMP/review.json"
 printf '{ "agent_root": "%s" }' "$ROOT" > "$CFG"
@@ -50,11 +50,11 @@ pass=0; fail=0
 ok()   { echo "  ok: $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 
-# (a) agent root → chat: chat continuity present; state.md NOT injected
+# (a) agent root → chat: chat continuity present; active.md NOT injected
 OUT="$(ctx "$ROOT/Mario")"
 echo "$OUT" | grep -q "Shipped the freeze fix" && echo "$OUT" | grep -q "chat" \
   && ! echo "$OUT" | grep -q "active-items" \
-  && ok "agent-root injects chat continuity (and not state.md)" \
+  && ok "agent-root injects chat continuity (and not active.md)" \
   || bad "agent-root injection wrong :: $OUT"
 
 # (b) explicit submode cwd → that submode's continuity, not chat's
@@ -78,7 +78,7 @@ OUT="$(fire "$ROOT/Loner")"
 
 # (f) reviewable agent with state but NO continuity → no output (state is not injected)
 OUT="$(fire "$ROOT/Solo")"
-[[ -z "$OUT" ]] && ok "no continuity → no output (state.md alone is not injected)" || bad "injected with no continuity :: $OUT"
+[[ -z "$OUT" ]] && ok "no continuity → no output (active.md alone is not injected)" || bad "injected with no continuity :: $OUT"
 
 # valid-JSON check on the one that emits
 OUT="$(fire "$ROOT/Mario")"

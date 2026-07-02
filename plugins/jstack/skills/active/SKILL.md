@@ -61,7 +61,7 @@ Touch the active doc mid-session only when:
 
 - The user explicitly directs an edit ("update Where I am now to say X", "check off next move 2")
 - A state change must be visible to a *concurrent* session right now — rare
-- A `state.md` `## Active items` row contradicts current truth in a way that will mislead a parallel reader before session end
+- A `active.md` `## Active items` row contradicts current truth in a way that will mislead a parallel reader before session end
 
 Otherwise the live model focuses on the work; the reviewer does the bookkeeping.
 
@@ -71,6 +71,6 @@ Files at `${user_config.agent_root}/{Name}/active/{slug}.md` use the format defi
 
 ## Edge cases
 
-- **State.md `## Active items` count doesn't match the folder** — use the folder as source of truth for numbering; flag the mismatch in the list output. Reconcile state.md inline (add missing rows, remove orphans).
+- **active.md `## Active items` count doesn't match the folder** — use the folder as source of truth for numbering; flag the mismatch in the list output. Reconcile active.md inline (add missing rows, remove orphans).
 - **A file has no frontmatter or invalid frontmatter** — call it out as malformed; still number it by filename mtime fallback.
 - **User invokes `/jstack:active` then immediately gives a directive in the same message** (e.g. `/jstack:active 2 — let's ship next move 1`) — brief on 2 first, then execute the directive without waiting.

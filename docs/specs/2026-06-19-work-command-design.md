@@ -13,7 +13,7 @@ When Boss sits down to work with an agent, he has to re-explain context every ti
 ## Non-goals (YAGNI)
 
 - **No project registry, no `pipeline.json` read.** The agent already knows its own identity, project, and stack from its loaded `CLAUDE.md` walk-up. `/work` leans on that context — it does not look anything up in J&J-specific config. This keeps it a clean, portable jstack skill.
-- **No state writes.** Interactive command; never touches `state.md`.
+- **No state writes.** Interactive command; never touches `active.md`.
 - **No code changes.** `/work` ends *ready to work*; the actual work is whatever Boss asks next.
 - **No hardcoded stack→skill table.** Skill selection is by matching live skill descriptions, so new skills are picked up automatically.
 
@@ -31,7 +31,7 @@ Examples:
 
 ## Procedure (the spine — mirrors Maggie's session)
 
-1. **Orient.** `date`. Read own `state.md` for cross-mode context (read-only).
+1. **Orient.** `date`. Read own `active.md` for cross-mode context (read-only).
 2. **Resolve project → repo.**
    - `@project` given → match the name (case-insensitive) against repo directories under `${user_config.repo_root}` (default: parent of `agent_root`). No match → list candidates and stop.
    - No `@project` → use the agent's own project from its identity context. Multi-project agent with an ambiguous topic → infer from topic; if still unclear, one question.

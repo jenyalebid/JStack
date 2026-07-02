@@ -16,11 +16,11 @@ Every agent lives under one root dir. Reference shape (names are illustrative �
 ~/Agents/
   {AgentName}/
     CLAUDE.md            # identity — auto-loaded on any session in this tree
-    state.md             # (optional) cross-mode state file
+    active.md             # (optional) cross-mode state file
     active/              # (optional) in-progress items
     {sub-mode}/          # any subdir that ISN'T a reserved name = a sub-mode
       CLAUDE.md          # sub-mode playbook (walk-up appends to root)
-      state.md           # (optional)
+      active.md           # (optional)
     {sub-mode}/{nested}/ # nested sub-modes are allowed
 ```
 
@@ -235,7 +235,7 @@ Read-only unless noted. Gate behind whatever auth your dashboard uses (or none f
 | `POST` | `/api/conversations/delete` | Body `{session_ids: [...]}` |
 | `POST` | `/api/conversations/delete-empty` | Sessions with no real user messages |
 | `POST` | `/api/conversations/delete-older-than` | Body `{age: "day"\|"week"\|"month"\|"all"}` |
-| `GET` | `/api/agents/{id}/file?name={filename}` | Raw content for the side viewer (CLAUDE.md, state.md, etc.) |
+| `GET` | `/api/agents/{id}/file?name={filename}` | Raw content for the side viewer (CLAUDE.md, active.md, etc.) |
 | `POST` | `/api/workspace-chat` | Body `{path, resume?}` — opens a chat (§11) |
 
 **Agent object:**
@@ -248,7 +248,7 @@ Read-only unless noted. Gate behind whatever auth your dashboard uses (or none f
   "role": "...",
   "description": "...",
   "path": "/abs/workspace/path",
-  "files": ["CLAUDE.md", "state.md"],
+  "files": ["CLAUDE.md", "active.md"],
   "chat_count": 42,
   "type_counts": {"category-a": 10, "category-b": 32},
   "active": true
@@ -287,7 +287,7 @@ Read-only unless noted. Gate behind whatever auth your dashboard uses (or none f
   "kind": "submode",
   "path": "/abs/path",
   "has_claude_md": true,
-  "files": ["CLAUDE.md", "state.md"],
+  "files": ["CLAUDE.md", "active.md"],
   "chat_count": 12,
   "type_counts": {...}
 }

@@ -1,6 +1,6 @@
 ---
 name: post-session-review
-description: Review the session that just ended — reconcile the agent's state.md and active items with what actually happened, extract dropped threads into follow-ups, and log timeline entries. Spawned by the jstack session-review engine; can also be invoked manually with a session id.
+description: Review the session that just ended — reconcile the agent's active.md and active items with what actually happened, extract dropped threads into follow-ups, and log timeline entries. Spawned by the jstack session-review engine; can also be invoked manually with a session id.
 argument-hint: "<session-id>"
 ---
 
@@ -8,10 +8,11 @@ argument-hint: "<session-id>"
 
 You are spawned in `{agent_root}/{Name}/review/`. Session ID is in `$ARGUMENTS`.
 
-**You exist to do TWO things, and nothing else:**
+**Why you exist:** the next session boots nearly blind. The one thing loaded into it is `continuity.md`, injected by the SessionStart hook. Everything else — `active.md`, docs — is read only *if* the next session chooses to. So your job is delivery, not tidiness:
 
-1. **Self-consistency** — the next session reads truth. `state.md` and `active/*.md` must agree with reality. If they drift, the next session works on phantom inputs and re-surfaces ghosts.
-2. **Thread extraction** — read the session JSONL. Topics the user raised that this session didn't resolve and aren't filed anywhere must be filed or explicitly dropped. **Judgment matters**: "forget it" / "skip" / "moving on" means drop. Raised-and-moved-on means file.
+1. **Continuity — the deliverable.** Write `continuity.md` (Phase D): the short, honest, reconciled running memory of what this session did and where things stand, so the next run starts sighted instead of cold. The only artifact with a guaranteed path into the next session — anything the next run must know rides here.
+2. **Thread extraction.** Read the session JSONL. Topics the user raised that this session didn't resolve and aren't filed anywhere get filed or explicitly dropped. **Judgment matters**: "forget it" / "skip" / "moving on" means drop; raised-and-moved-on means file.
+3. **Accuracy — hygiene, not delivery.** `active.md` and `active/*.md` must not lie (the active-items index — pointers only, never a work-log). But a true file nobody opens changed nothing — accuracy never substitutes for the continuity write.
 
 Your output is parsed by the engine. Missing required sections OR empty sections without per-item citation = rejected, re-spawned. Don't write "clean" or "none" without an evidence trail.
 
@@ -57,14 +58,14 @@ For each `unfinished-active-work` or `silently-dropped` topic, file a follow-up:
 file-followup "Glanceable issue title" "1–2 plain sentences: what's unfinished and why it matters."
 ```
 
-(`file-followup` ships in the plugin's `bin/` — backend chosen by the plugin's `followup_backend` userConfig; with backend `none` it's a no-op, so add the unresolved thread to `state.md` as an active-items line — an open thread the next session must pick up IS an active item — so it isn't lost.)
+(`file-followup` ships in the plugin's `bin/` — backend chosen by the plugin's `followup_backend` userConfig; with backend `none` it's a no-op, so add the unresolved thread to `active.md` as an active-items line — an open thread the next session must pick up IS an active item — so it isn't lost.)
 
 Follow-up wording rules:
 - **Title:** one short line, issue stated plainly — not "Approve X" / "Decide Y" action framing.
 - **Body:** 1–2 plain sentences. No commit hashes, no GUIDs, no file paths, no hour estimates.
 - **No duplicate filings.** If the same issue is already filed, update/skip — never stack a "still pending" copy.
 
-If a topic is a correction or new rule the user gave, apply it at the most specific place that loads when the behavior matters (project CLAUDE.md, agent CLAUDE.md, a path-scoped rule, or memory) — never park corrections in `state.md`.
+If a topic is a correction or new rule the user gave, apply it at the most specific place that loads when the behavior matters (project CLAUDE.md, agent CLAUDE.md, a path-scoped rule, or memory) — never park corrections in `active.md`.
 
 ## Phase B — Accuracy
 
@@ -72,20 +73,20 @@ Reconcile docs in the agent workspace against what the session actually did:
 
 ```bash
 cd "$(dirname "$PWD")"   # agent root
-grep -rni "<phase-A-topic-keywords>" state.md active/*.md 2>/dev/null
+grep -rni "<phase-A-topic-keywords>" active.md active/*.md 2>/dev/null
 ```
 
 For each match, classify and act:
 
 - `agree` — doc and reality consistent — no action.
 - `fossil` — doc references work that's done/superseded — **`Edit` the doc to remove/rewrite the line**.
-- `phantom` — an in-flight item with no doc mention — **add its one-line pointer to `state.md`** (the active-items index); the run's narrative belongs in `continuity.md`, not here.
+- `phantom` — an in-flight item with no doc mention — **add its one-line pointer to `active.md`** (the active-items index); the run's narrative belongs in `continuity.md`, not here.
 - `stale-active` — `active/*.md` untouched ≥ 7d — flag in DOC_RECONCILE; don't auto-prune.
 
-Then reconcile `state.md` — **verify it, don't author it** (see the `agent-state` rule). `state.md` is the **active-items index**: one line per open `active/{slug}.md`, nothing else — not a work-log, not history.
+Then reconcile `active.md` — **verify it, don't author it** (see the `agent-state` rule). `active.md` is the **active-items index**: one line per open `active/{slug}.md`, nothing else — not a work-log, not history.
 - Confirm each active line is still valid — item still open, status accurate, its `active/{slug}.md` exists. Fix or remove any that drifted.
 - Add a line only for genuine new in-flight work (a phantom active item with no pointer). What this session *did* is NOT recorded here — it goes to `continuity.md` (Phase D).
-- No active items → `_None._` is complete and correct. A state.md that grows past its active items is a bug.
+- No active items → `_None._` is complete and correct. An active.md that grows past its active items is a bug.
 
 ## Phase C — Timeline
 
@@ -99,27 +100,41 @@ log_event $AGENT --at HH:MM "headline ≤120 chars" --detail "≤80 chars" --det
 ```
 
 **Timeline-worthy:** code shipped, feature live, decision made, problem fixed, user directive that drove work, significant autonomous work.
-**NOT timeline-worthy:** "reviewed session", "updated state.md", build counts, test counts, file paths, commit hashes, session UUIDs, internal cleanup.
+**NOT timeline-worthy:** "reviewed session", "updated active.md", build counts, test counts, file paths, commit hashes, session UUIDs, internal cleanup.
 
 `HH:MM` is **the timestamp of the LAST message in the reviewed conversation** in machine-local time. Not now. Session JSONL records UTC (`...Z` suffix) — convert before passing to `--at`. Sanity-check: the value must be ≤ current local time. If the session's last message is from a previous local day, pass `--date YYYY-MM-DD` too.
 
 If nothing this session belongs, the `## TIMELINE` section says `none — {brief reason}`. Empty section without a reason = rejected.
 
-## Phase D — Continuity (the running memory)
+## Phase D — Continuity (the running memory — THE deliverable)
 
-`state.md` is the index; **`continuity.md` is the memory of what happened** — the thread the mode's *next* run reads on entry so it builds on prior runs instead of starting cold. Append one plain-language line for this session:
+`active.md` is the index; **`continuity.md` is the memory the mode's *next* run reads on entry** (SessionStart injects it). It is a **reconciled working doc, not an append-only log**: two moves, in order.
 
 ```bash
 CWD=$(jq -r 'select(.cwd) | .cwd' "$JSONL" | head -1)
 REL="${CWD#"$CONTINUITY_ROOT/$AGENT_TITLE"}"; REL="${REL#/}"   # path under the agent dir
 SUBMODE="${REL%%/*}"; SUBMODE="${SUBMODE:-chat}"               # first segment; root → "chat"
-continuity append --agent "$AGENT_TITLE" --mode "$SUBMODE" \
-  --summary "one sentence or two: what this session actually DID, readable cold months from now"
+continuity show --agent "$AGENT_TITLE" --mode "$SUBMODE"       # READ current standing + log FIRST
 ```
 
 The sub-mode MUST resolve the same way the SessionStart injector reads it back (first segment under the agent dir, root → `chat`) or the next run won't find what you wrote.
 
-Substance, not data: `"Reviewed the 4.2 branch, found the freeze-timer regression, filed it."` — NOT `"4.2 · freeze-timer · ISS-0032 · b70b551"`. The tool owns compaction (Today full / This week / Earlier; oldest entry dropped whole; hard-capped) — you supply the one honest line, never truncated. `continuity` ships in the plugin's `bin/` (self-contained; the engine points it at the right tree via `CONTINUITY_ROOT`). Report it under `ACTIONS_TAKEN`.
+**1. Reconcile the standing (the merge).** Rewrite "Where things stand" to reflect *current reality*: a thread this session finished → remove or restate as its outcome (never leave a stale "unfinished X" beside a later "finished X"); a thread that advanced → update it; genuinely new open work → add it; superseded → drop it. Only threads actually open right now — the tool hard-rejects a bloated standing, so reconcile down.
+
+```bash
+printf -- '- thread one: where it stands\n- thread two: where it stands' \
+  | continuity standing --agent "$AGENT_TITLE" --mode "$SUBMODE"
+# nothing open? clear it:  echo '' | continuity standing --agent "$AGENT_TITLE" --mode "$SUBMODE"
+```
+
+**2. Log the arc.** One dated line: what this session did (appended + aged automatically).
+
+```bash
+continuity append --agent "$AGENT_TITLE" --mode "$SUBMODE" \
+  --summary "one sentence or two: what this session actually DID, readable cold months from now"
+```
+
+Substance, not data: `"Fixed the freeze-timer regression, verified on sim."` — NOT `"4.2 · freeze-timer · ISS-0032 · b70b551"`. `continuity` ships in the plugin's `bin/` (self-contained; the engine points it at the right tree via `CONTINUITY_ROOT`). Report both moves under `ACTIONS_TAKEN`.
 
 ---
 
@@ -134,7 +149,7 @@ Substance, not data: `"Reviewed the 4.2 branch, found the freeze-timer regressio
 ## DOC_RECONCILE
 - {file:line} — {fossil/phantom/stale-active} — {action taken or flag}
 OR
-- clean — examined: state.md ({N} topic matches), active/ ({K} files); all consistent.
+- clean — examined: active.md ({N} topic matches), active/ ({K} files); all consistent.
 
 ## ACTIONS_TAKEN
 - Edit {path:line} — {what changed}

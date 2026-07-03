@@ -142,6 +142,31 @@ stale.parent.mkdir(parents=True, exist_ok=True)
 stale.write_text("999999999\n")  # dead pid
 check("stale claim taken over", eng.claim_session("test-sid-2"))
 
+# ---- auto-session gate (user-engaged classifier) -------------------------
+import json as _json
+
+def _mk_jsonl(name, entries):
+    f = Path(eng.CFG["state_dir"]) / name
+    f.write_text("\n".join(_json.dumps(e) for e in entries) + "\n")
+    return f
+
+CRON_LINES = [
+    {"type": "queue-operation", "operation": "enqueue", "content": "[cron:x] /social_reply"},
+    {"type": "user", "message": {"content": "[cron:x Wake] /social_reply post=1"}},
+    {"type": "last-prompt"},
+    {"type": "assistant", "timestamp": "2026-07-02T20:00:00Z",
+     "message": {"content": [{"type": "text", "text": "Done with this round — 5 replies posted."}]}},
+]
+f = _mk_jsonl("cron.jsonl", CRON_LINES)
+check("cron session is not user-engaged", not eng.is_user_engaged(f))
+
+f = _mk_jsonl("typed.jsonl", CRON_LINES + [
+    {"type": "user", "promptSource": "typed", "message": {"content": "shorter, close it"}}])
+check("typed prompt → user-engaged", eng.is_user_engaged(f))
+
+f = _mk_jsonl("tui.jsonl", CRON_LINES + [{"type": "permission-mode"}])
+check("TUI attach (permission-mode) → user-engaged", eng.is_user_engaged(f))
+
 # ---- log format contract (dashboard parses SPAWN lines) -----------------
 import re
 eng._log("SPAWN abcd1234 → jarvis (attempt 1, workspace: review)")

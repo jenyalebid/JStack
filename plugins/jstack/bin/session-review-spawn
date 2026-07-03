@@ -321,6 +321,34 @@ def is_unengaged_filer_briefing(jsonl_path: Path) -> bool:
     return saw_briefing_first and seen_prose == 1
 
 
+def is_user_engaged(jsonl_path: Path) -> bool:
+    """True iff a human actually drove any part of this session — the defining
+    factor for whether it gets a model review (Boss 2026-07-02: auto work never
+    does). Two harness signals, either sufficient:
+      - a user prompt stamped promptSource="typed" (keyboard input), or
+      - a `mode`/`permission-mode` entry — written ONLY when an interactive
+        terminal is attached. Gateway/cron/--print sessions never write these
+        (they do write `last-prompt`, which is NOT a human signal).
+    Telegram conversations carry neither marker — callers must keep
+    is_telegram_session() as the user-driven exception."""
+    try:
+        with jsonl_path.open() as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = e.get("type")
+                if t in ("mode", "permission-mode"):
+                    return True
+                if (t == "user" and not e.get("isMeta")
+                        and e.get("promptSource") == "typed"):
+                    return True
+    except OSError:
+        return True   # unreadable → fail toward review, never silently drop
+    return False
+
+
 def has_recent_activity(jsonl_path: Path) -> bool:
     """True if the last message is from today (local) or within the window.
     Skips reopen-and-close of old sessions (metadata-only appends)."""
@@ -709,13 +737,25 @@ def main():
         _log(f"SKIP {session_id[:8]}: agent '{agent}' not reviewable")
         sys.exit(0)
 
+    if is_review_session(jsonl_path):
+        _log(f"SKIP {session_id[:8]}: is a review session (loop prevention)")
+        sys.exit(0)
+
+    # Auto sessions — no human typed, no TUI attached, not a Telegram
+    # conversation — never get a model review (Boss 2026-07-02: pointless token
+    # waste). Their timeline entry is written IN-SESSION by the Stop hook
+    # (hooks/stop-timeline-remind.py): the model that did the work appends its
+    # own line before dying. Nothing to do here but stay out of the way.
+    # Applies to EVERY agent's auto work, reviewed_submodes notwithstanding —
+    # that config now scopes user-session reviews only.
+    if (not is_user_engaged(jsonl_path)
+            and not is_telegram_session(session_id, jsonl_path)):
+        _log(f"AUTO {session_id[:8]} → {agent}: no review (timeline owned by Stop hook)")
+        sys.exit(0)
+
     submode = resolve_submode(jsonl_path, CFG["agent_root"], agent_title)
     if not submode_reviewed(agent, submode, CFG.get("reviewed_submodes")):
         _log(f"SKIP {session_id[:8]}: sub-mode '{agent}/{submode}' not in reviewed set")
-        sys.exit(0)
-
-    if is_review_session(jsonl_path):
-        _log(f"SKIP {session_id[:8]}: is a review session (loop prevention)")
         sys.exit(0)
 
     if is_unengaged_filer_briefing(jsonl_path):

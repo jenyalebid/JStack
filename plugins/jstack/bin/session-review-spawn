@@ -65,6 +65,17 @@ PLUGIN_BIN = Path(__file__).resolve().parent
 REVIEW_MARKER = "[POST-SESSION-REVIEW]"
 FILER_BRIEFING_MARKER = "You are being briefed on a topic so that when Boss returns to you"
 
+# The claude CLI prints this and exits nonzero when the account's usage window is
+# exhausted (e.g. "You've hit your session limit · resets 7am (America/Los_Angeles)").
+# A review spawn that only hit this did no review — but it is transient and self-
+# heals at the reset, so it must NOT be retried in a tight loop or escalated as a
+# broken review (ISS-0076: that false-paged Boss with SC-2026-07-01-003..006).
+SESSION_LIMIT_MARKER = "hit your session limit"
+
+
+def is_session_limit(output: str) -> bool:
+    return bool(output) and SESSION_LIMIT_MARKER in output
+
 DEFAULTS = {
     "agent_root": "~/Agents",
     "default_agent": None,
@@ -597,6 +608,12 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
             continue
 
         if result.returncode != 0:
+            # Usage-limit exhaustion is transient, not a review-content failure:
+            # do not burn the retry or escalate — the next session end reviews fresh.
+            if is_session_limit((result.stdout or "") + (result.stderr or "")):
+                _log(f"RATE_LIMITED {session_id[:8]} → {agent} (attempt {attempt}): "
+                     "hit Claude session limit — skipping, not escalating")
+                return
             last_failure = f"exit {result.returncode}: {(result.stderr or '')[:200]}"
             _log(f"NONZERO {session_id[:8]} → {agent} (attempt {attempt}): {last_failure}")
             # A negative returncode means the child was killed by a signal (e.g.

@@ -116,6 +116,14 @@ extra = ["TRANSCRIPT_WALK", "J_LIST_LIVE", "DOC_RECONCILE", "ACTIONS_TAKEN", "TI
 ok, why = eng.validate_review_output(GOOD, extra, timeline_grew=True)
 check("host-extended section list enforced", not ok and "J_LIST_LIVE" in why)
 
+# ---- session limit (rate limit) ----------------------------------------
+# A review spawn that only hit the Claude usage limit exits 1 with a one-line
+# limit message. That is transient — not a review-content failure — so it must
+# be recognized and NOT retried/escalated as a broken review (ISS-0076).
+check("session-limit output recognized",
+      eng.is_session_limit("You've hit your session limit · resets 7am (America/Los_Angeles)"))
+check("normal review output not flagged as session-limit", not eng.is_session_limit(GOOD))
+
 # ---- agent resolution ---------------------------------------------------
 agents = eng.reviewable_agents(agent_root)
 check("reviewable = review/-dir convention", sorted(agents) == ["jarvis", "lynda"])

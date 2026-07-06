@@ -12,7 +12,7 @@ User invoked handoff. Opens a new Claude Code session in a fresh terminal window
 
 `$ARGUMENTS` = `[@agent] [focus]`, both optional.
 
-- **`@agent`** (first token, `@`-prefixed): hand off to a different agent. Resolve the target workspace under `${user_config.agent_root}`: match `{Name}` against the agent subdirectories case-insensitively (`@ted` → `Ted/`). Target cwd = the agent's `chat/` subdirectory if it exists, else the agent root. If no matching directory exists, list the available agent directories and stop — do not guess.
+- **`@agent`** (first token, `@`-prefixed): hand off to a different agent. Resolve the target workspace under `${user_config.agent_root}`: match `{Name}` against the agent subdirectories case-insensitively (`@ted` → `Ted/`). **Target cwd is focus-aware:** if the focus clearly belongs to one of the agent's sub-mode directories (a subdirectory with its own CLAUDE.md whose name/domain matches the focus — e.g. a social focus → `social/`), boot THERE — path-scoped rules and the sub-mode's CLAUDE.md only load from inside that tree, and a session booted in the wrong subdirectory silently misses them. Otherwise: the agent's `chat/` subdirectory if it exists, else the agent root. If no matching agent directory exists, list the available agent directories and stop — do not guess.
 - **`focus`** (everything after the optional `@agent`): scope "Current Work" and "Still To Do" to that focus. Drop unrelated tangents. The next session boots narrowed. Don't try to be balanced — the argument is an explicit narrowing instruction. If omitted: general handoff covering the active thread at session end.
 
 With no `@agent`, the target cwd is the current cwd (same-workspace handoff, original behavior).

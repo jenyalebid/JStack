@@ -1,13 +1,15 @@
 #!/bin/bash
-# JStack SessionEnd hook — spawn the post-session review engine, detached.
+# JStack SessionEnd hook — hand the ended session to the session-end engine, detached.
 #
 # Reads the hook's stdin JSON ({session_id, transcript_path, ...}) and hands
 # both to bin/session-review-spawn, which does all gating (agent resolution,
-# loop prevention, debounce, slots) and is safe to fire from multiple entry
-# points — it claims each session atomically, so a host-level SessionEnd hook
-# and this plugin hook never double-review.
+# loop prevention, debounce, slots) and then runs session_end_action: by default
+# "selfwrite" (resume the ended session for one turn to write its own timeline +
+# continuity), or the legacy "review" (fresh review/ session). Safe to fire from
+# multiple entry points — it claims each session atomically, so a host-level
+# SessionEnd hook and this plugin hook never double-act.
 #
-# Review spawns run with SKIP_SESSION_HOOK=1 — honor it here (loop guard).
+# Engine spawns run with SKIP_SESSION_HOOK=1 — honor it here (loop guard).
 # Kill switch: JSTACK_REVIEW_DISABLED=1.
 
 [ "$SKIP_SESSION_HOOK" = "1" ] && exit 0

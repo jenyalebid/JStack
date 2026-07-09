@@ -175,12 +175,51 @@ check("typed prompt → user-engaged", eng.is_user_engaged(f))
 f = _mk_jsonl("tui.jsonl", CRON_LINES + [{"type": "permission-mode"}])
 check("TUI attach (permission-mode) → user-engaged", eng.is_user_engaged(f))
 
+# ---- auto-review carve-out (continuity-critical crons) -------------------
+# Auto sessions are normally skipped (their timeline is written in-session by the
+# Stop hook), EXCEPT the purpose-built recurring crons whose continuity.md is the
+# running memory their next run boots on — the post-session review is its ONLY
+# writer, so skipping them silently froze that continuity (ISS-0091). Same match
+# form as reviewed_submodes: "agent/submode" or "*/submode".
+AUTO_LIST = ["lynda/pm", "mario/nightly-review", "*/meta"]
+check("auto-review: nightly PM cron carved in",
+      eng.auto_reviewed("lynda", "pm", AUTO_LIST))
+check("auto-review: wildcard sub-mode carved in",
+      eng.auto_reviewed("jarvis", "meta", AUTO_LIST))
+check("auto-review: ordinary social wake stays skipped",
+      not eng.auto_reviewed("lynda", "social", AUTO_LIST))
+check("auto-review: empty/None allowlist reviews nothing auto",
+      not eng.auto_reviewed("lynda", "pm", None))
+check("auto-review: None sub-mode never carved in",
+      not eng.auto_reviewed("lynda", None, AUTO_LIST))
+
 # ---- log format contract (dashboard parses SPAWN lines) -----------------
 import re
 eng._log("SPAWN abcd1234 → jarvis (attempt 1, workspace: review)")
 line = eng.CFG["log_file"].read_text().strip().splitlines()[-1]
 m = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) SPAWN (\w{8})\S* . (\w+)", line)
 check("SPAWN log line matches dashboard regex", bool(m) and m.group(3) == "jarvis")
+
+# ---- self-write path (default session_end_action) -----------------------
+check("session_end_action defaults to selfwrite",
+      eng.DEFAULTS.get("session_end_action") == "selfwrite")
+
+# The one-turn resume prompt must format cleanly with all placeholders and
+# name the three writes it drives.
+sw = eng.SELFWRITE_PROMPT.format(
+    marker=eng.SELFWRITE_MARKER, agent="jarvis", agent_title="Jarvis",
+    submode="chat", session_id="abcd1234-....",
+)
+check("selfwrite prompt formats + names log_event",  "log_event jarvis" in sw)
+check("selfwrite prompt names continuity",           "continuity" in sw and "--mode chat" in sw)
+check("selfwrite prompt names the review stamp",     "stamp abcd1234-.... assistant" in sw)
+
+# The SELFWRITE log line the engine emits must match the (updated) dashboard
+# regex, which accepts SELFWRITE alongside legacy SPAWN.
+eng._log("SELFWRITE abcd1234 → jarvis/chat")
+line = eng.CFG["log_file"].read_text().strip().splitlines()[-1]
+m2 = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?:SELFWRITE|SPAWN) (\w{8})\S* . (\w+)", line)
+check("SELFWRITE log line matches dashboard regex", bool(m2) and m2.group(3) == "jarvis")
 
 print()
 if fails:

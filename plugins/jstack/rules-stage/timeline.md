@@ -56,7 +56,7 @@ Bullets are punchy too:
 
 ## Order is chronological
 
-**Always pass `--at HH:MM`** — for post-session-review entries, this is the **timestamp of the LAST message in the reviewed conversation** (machine-local time, not UTC). For in-session direct `log_event` calls, use the actual event time. Late-logged events from a previous local day: also pass `--date YYYY-MM-DD`.
+**Always pass `--at HH:MM`** — for a session's own end-of-session self-write, this is the **timestamp of the LAST message in the reviewed conversation** (machine-local time, not UTC). For in-session direct `log_event` calls, use the actual event time. Late-logged events from a previous local day: also pass `--date YYYY-MM-DD`.
 
 ## One event, one entry
 

@@ -1,6 +1,10 @@
-# Post-Session Review — Architecture & Configuration
+# Session-End Engine — Architecture & Configuration
 
-Every agent session gets reviewed immediately after it ends: a purpose-spawned review session reconciles the agent's `active.md` and active items with what actually happened, extracts dropped threads into follow-ups, and logs timeline entries. The review's output is machine-validated — a review that doesn't show its evidence is rejected and re-spawned.
+When an agent session ends, the engine writes that session's running memory. The `session_end_action` config picks how:
+
+- **`selfwrite`** (default) — **resume the session that just ended for ONE turn** so it writes its own timeline line + continuity, then stop. It already lived the conversation, so it is the cheapest, best-informed writer; the write **appends to the same session JSONL** (no separate review conversation). It does NOT extract threads, reconcile docs, or file follow-ups.
+- **`review`** — the legacy fresh pass: a purpose-spawned `review/` session re-ingests a transcript digest and runs the multi-phase review skill (reconcile `active.md` + active items, extract dropped threads into follow-ups, log timeline), machine-validated against required sections + evidence floors — rejected and re-spawned if it doesn't show its evidence. Still the right choice when you want the full stranger audit; also the manual `/…post-session-review` deep pass.
+- **`off`** — do nothing on session end.
 
 ## Chain
 
@@ -8,13 +12,19 @@ Every agent session gets reviewed immediately after it ends: a purpose-spawned r
 SessionEnd hook (hooks/session-end-review.sh, or a host-wired equivalent)
   → bin/session-review-spawn <session_id> [transcript_path]   (detached)
     → gating: claim → agent resolution → loop/size/activity/TG guards → slot
-    → claude --print --model {model} from {agent_root}/{Name}/review/
-        -p "[POST-SESSION-REVIEW]\n\n{skill_invocation} {session_id}"
-    → validate output (required sections + evidence floors + timeline-grew)
-    → retry once on rejection → escalate_cmd on persistent failure
+    → session_end_action:
+       selfwrite (default):
+         claude --print --model {selfwrite_model} --resume {session_id}
+             -p "[SESSION-SELF-WRITE] … log one timeline line + reconcile continuity"
+         → re-record reviewed offset past the appended turn (no reopen re-fire)
+       review (legacy):
+         claude --print --model {model} from {agent_root}/{Name}/review/
+             -p "[POST-SESSION-REVIEW]\n\n{skill_invocation} {session_id}"
+         → validate output (required sections + evidence floors + timeline-grew)
+         → retry once on rejection → escalate_cmd on persistent failure
 ```
 
-The skill (default `skills/post-session-review/SKILL.md`, `/jstack:post-session-review`) carries the review procedure; the engine is pure mechanism. Hosts with a richer playbook point `skill_invocation` at their own skill and extend `required_sections` to match its output contract — the engine enforces whatever list it's given.
+The self-write turn uses `bin/log_event` + `bin/continuity` (both on the spawned PATH). The `review` skill (default `skills/post-session-review/SKILL.md`, `/jstack:post-session-review`) carries the multi-phase procedure; the engine is pure mechanism. Hosts point `skill_invocation` at their own skill and extend `required_sections` to match its output contract — the engine enforces whatever list it's given.
 
 ## Stack requirements (conventions assumed to exist)
 
@@ -27,13 +37,14 @@ The skill (default `skills/post-session-review/SKILL.md`, `/jstack:post-session-
 | Guard | What it prevents |
 |-------|------------------|
 | Atomic per-session claim (pid-stamped, stale-takeover) | Double review when host hook + plugin hook both fire |
-| `SKIP_SESSION_HOOK=1` honored + `[POST-SESSION-REVIEW]` marker check | Review-of-review loops |
+| `SKIP_SESSION_HOOK=1` honored (set on the resume/spawn) + `[POST-SESSION-REVIEW]` marker check | Self-write-of-self-write and review-of-review loops. The self-write also re-records the reviewed offset past its own appended turn, so a later reopen sees no new user prose and skips. |
 | Filer-briefing skip | Burning a spawn on briefing-only resumed sessions closed without typing |
 | `min_session_bytes` (1KB) | Reviewing empty sessions |
 | reviewed-offset (state, per session) | Re-reviewing on resume-and-close: the transcript size is stamped at each spawn; a later SessionEnd with no new user prose past the stamp skips. Injected content (`<`-prefixed, `Caveat:`, isMeta) is not user prose. |
 | Recent-activity check (today, or ≤4h) | Reviewing reopen-and-close of old sessions |
 | Per-agent telegram debounce | One review per TG conversation, not per message |
 | flock slots (`max_concurrent`, default 2) | Memory blowups from overlapping spawns |
+| Auto-session skip (no typed prompt / TUI attach / TG) | Reviewing the high-frequency auto flood (cron/gateway/`--print` wakes) — their timeline line is written in-session by the Stop hook. **Carve-out:** sub-modes in `auto_review_submodes` (the purpose-built recurring crons whose `continuity.md` is load-bearing) ARE still reviewed even when auto — the review is the only writer of their continuity, so skipping them silently freezes it. |
 | Timeline-grew validator | The model *claiming* `log_event` in prose while the command never executed |
 
 ## Configuration — `~/.claude/jstack/review.json` (env: `JSTACK_REVIEW_CONFIG`)
@@ -45,8 +56,14 @@ All keys optional; defaults are fully portable. Host-relevant keys:
 | `agent_root` | `~/Agents` | Workspace root; also exported as `CONTINUITY_ROOT` to spawns |
 | `default_agent` | none | Owner of `$HOME`-cwd sessions |
 | `project_dir_map` | `{}` | Encoded project dir → agent, for non-workspace sessions |
-| `skill_invocation` | `/jstack:post-session-review` | Host playbook override |
-| `required_sections` | core 5 | Extend to the host skill's output contract |
+| `session_end_action` | `selfwrite` | `selfwrite` (resume the ended session, 1 turn, timeline + continuity) \| `review` (legacy fresh `review/` spawn) \| `off` |
+| `selfwrite_model` | `sonnet` | Model for the one-turn resume write |
+| `selfwrite_max_turns` | `12` | Turn budget for the self-write |
+| `selfwrite_timeout_secs` | `300` | Timeout for the self-write |
+| `skill_invocation` | `/jstack:post-session-review` | Host playbook override (`review` action) |
+| `required_sections` | core 5 | Extend to the host skill's output contract (`review` action) |
+| `reviewed_submodes` | none (all) | Allowlist of user-session sub-modes to review, as `"agent/submode"` / `"*/submode"`. None = review every resolvable session |
+| `auto_review_submodes` | none | Sub-modes (same match form) that get reviewed **even when auto** (no human drove them) — the recurring crons whose `continuity.md` is running memory the next run boots on. None/`[]` = nothing auto-reviewed |
 | `model` / `max_turns` / `timeout_secs` / `max_attempts` | opus / 50 / 1200 / 2 | Spawn budget |
 | `max_concurrent` / `slot_wait_secs` | 2 / 1800 | Concurrency |
 | `telegram_cooldown_seconds` / `telegram_cooldown_file` | 300 / none | TG debounce; file form lets a host UI own the value |
@@ -57,7 +74,7 @@ All keys optional; defaults are fully portable. Host-relevant keys:
 | `state_dir` | `~/.claude/jstack/review-state` | Claims, debounce markers, slots |
 | `log_file` | `{state_dir}/session-review.log` | Pin to a host path if a dashboard parses it |
 
-Log line contract (dashboards parse this): `YYYY-MM-DD HH:MM:SS SPAWN <sid8> → <agent> (...)` plus `DONE` / `INVALID` / `TIMEOUT` / `BLOCKED` lines.
+Log line contract (dashboards parse this): the self-write emits `YYYY-MM-DD HH:MM:SS SELFWRITE <sid8> → <agent>/<submode>` plus `SELFWRITE_DONE` / `SELFWRITE_FAIL` / `SELFWRITE_TIMEOUT`; the legacy review emits `SPAWN <sid8> → <agent> (...)` plus `DONE` / `INVALID` / `TIMEOUT` / `BLOCKED`.
 
 ## Kill switches & safety
 
@@ -67,7 +84,7 @@ Log line contract (dashboards parse this): `YYYY-MM-DD HH:MM:SS SPAWN <sid8> →
 
 ## Continuity — the running memory
 
-`active.md` is the **active-items index** (one line per open `active/{slug}.md`, nothing else). What a session *did* is not recorded there — it goes to the sub-mode's `continuity.md`, the thread the next run reads on entry so it builds on prior runs instead of starting cold. The review appends one plain-language line per session (Phase D of the skill) via the self-contained `bin/continuity` tool:
+`active.md` is the **active-items index** (one line per open `active/{slug}.md`, nothing else). What a session *did* is not recorded there — it goes to the sub-mode's `continuity.md`, the thread the next run reads on entry so it builds on prior runs instead of starting cold. The session-end self-write reconciles the STANDING and appends one plain-language line per session (the `review` action does the same in Phase D of the skill) via the self-contained `bin/continuity` tool:
 
     continuity append  --agent <A> --mode <M> --summary "what this run did, a sentence or two"
     continuity verdict --agent <A> --mode <M> --verdict shipped|drift|blocked|empty --note "..."
@@ -83,4 +100,4 @@ Writing `continuity.md` is only half the loop: **a file in the workspace is not 
 
 ## Companion rule
 
-`rules-stage/agent-active.md` — active.md discipline: it is the active-items index and nothing else. The review **verifies** it (each active line still valid) and never authors history into it; the running record lives in `continuity.md`.
+`rules-stage/agent-active.md` — active.md discipline: it is the active-items index and nothing else. The `review` action **verifies** it (each active line still valid) and never authors history into it; the self-write leaves it alone. The running record lives in `continuity.md`.

@@ -11,8 +11,8 @@ The action a session end triggers is `session_end_action`:
     (spawn_selfwrite). The write appends to the SAME session JSONL, so nothing new
     lands in the dashboard token view. Thread extraction / doc reconciliation are
     NOT done here — those live only in the manual deep review.
-  - "review" — the legacy fresh-`review/`-session multi-phase review: `claude
-    --print` from {agent_root}/{Name}/review/ running the review skill →
+  - "review" — the legacy fresh-session multi-phase review: `claude
+    --print` from {agent_root}/{Name}/ running the review skill →
     output parser-validated (required sections + timeline-grew) → retry → escalate
     (spawn_review). Still available for hosts that want the full stranger pass.
   - "off" — do nothing on session end.
@@ -23,7 +23,7 @@ with no config it runs portable defaults.
 
 Stack requirements (conventions this engine assumes exist):
   - Agent workspaces under agent_root, one per {Name}/ — an agent is
-    reviewable iff {agent_root}/{Name}/review/ exists.
+    reviewable iff {agent_root}/{Name}/CLAUDE.md exists.
   - The jstack `log_event` + `continuity` tools (self-write) and the review skill
     (default /jstack:post-session-review, "review" action) are installed. This
     engine puts its own bin/ on the spawned PATH.
@@ -230,12 +230,12 @@ def _encode(path: Path) -> str:
 
 
 def reviewable_agents(agent_root: Path) -> dict[str, str]:
-    """{lowercase-agent: Name} for every workspace with a review/ dir."""
+    """{lowercase-agent: Name} for every workspace with a root CLAUDE.md."""
     out: dict[str, str] = {}
     if not agent_root.is_dir():
         return out
     for d in sorted(agent_root.iterdir()):
-        if d.is_dir() and (d / "review").is_dir():
+        if d.is_dir() and (d / "CLAUDE.md").is_file():
             out[d.name.lower()] = d.name
     return out
 
@@ -673,7 +673,9 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
         "--model", str(CFG["selfwrite_model"]),
         "--permission-mode", "bypassPermissions",
         "--max-turns", str(CFG["selfwrite_max_turns"]),
-        "--name", f"Self-write: {agent} ({session_id[:8]})",
+        # NO --name: this resumes the SAME session JSONL, so any --name would
+        # overwrite Boss's own session title with "Self-write: …". The append is
+        # invisible by design; it needs no distinguishing label.
         "--resume", session_id,
         "-p", prompt,
     ]
@@ -715,7 +717,7 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
 
 
 def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
-    workspace = CFG["agent_root"] / agent_title / "review"
+    workspace = CFG["agent_root"] / agent_title
     if not workspace.exists():
         _log(f"SKIP {session_id[:8]}: workspace {workspace} not found")
         return

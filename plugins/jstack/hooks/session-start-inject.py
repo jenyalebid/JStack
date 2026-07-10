@@ -23,7 +23,7 @@ session's transcript and reconciles active.md itself; it needs no injection.
 
 Config: agent_root from $JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json),
 falling back to ~/Agents — the same resolution the review engine uses. An agent
-is recognized iff {agent_root}/{Name}/review/ exists (the reviewable marker).
+is recognized iff {agent_root}/{Name}/CLAUDE.md exists (the reviewable marker).
 
 Defensive: any error → silent exit 0, empty output. A SessionStart hook must
 never block or corrupt a session. Stdlib only, no host dependency.
@@ -57,7 +57,7 @@ def resolve(cwd: Path, root: Path) -> tuple[Path | None, str | None]:
     """(agent_dir, submode) for a workspace session, else (None, None).
 
     submode is the first path segment under {root}/{Name}, or "chat" at the root.
-    Recognized only when {Name}/review/ exists — same gate the engine uses."""
+    Recognized only when {Name}/CLAUDE.md exists — same gate the engine uses."""
     try:
         rel = cwd.resolve().relative_to(root.resolve())
     except (ValueError, OSError):
@@ -65,7 +65,7 @@ def resolve(cwd: Path, root: Path) -> tuple[Path | None, str | None]:
     if not rel.parts:
         return None, None
     agent_dir = root / rel.parts[0]
-    if not (agent_dir / "review").is_dir():
+    if not (agent_dir / "CLAUDE.md").is_file():
         return None, None
     submode = rel.parts[1] if len(rel.parts) >= 2 else "chat"
     return agent_dir, submode

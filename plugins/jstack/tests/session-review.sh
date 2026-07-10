@@ -38,8 +38,9 @@ engine_path, tmp = sys.argv[1], Path(sys.argv[2])
 # Hermetic config BEFORE import (engine loads CFG at import time)
 agent_root = tmp / "Agents"
 for name in ("Jarvis", "Lynda"):
-    (agent_root / name / "review").mkdir(parents=True)
-(agent_root / "NoReview").mkdir(parents=True)  # workspace without review/ — not reviewable
+    (agent_root / name).mkdir(parents=True)
+    (agent_root / name / "CLAUDE.md").write_text("# agent\n")
+(agent_root / "NoClaudeMd").mkdir(parents=True)  # workspace without CLAUDE.md — not reviewable
 
 cfg_path = tmp / "review.json"
 cfg_path.write_text(json.dumps({
@@ -126,7 +127,7 @@ check("normal review output not flagged as session-limit", not eng.is_session_li
 
 # ---- agent resolution ---------------------------------------------------
 agents = eng.reviewable_agents(agent_root)
-check("reviewable = review/-dir convention", sorted(agents) == ["jarvis", "lynda"])
+check("reviewable = root-CLAUDE.md convention", sorted(agents) == ["jarvis", "lynda"])
 
 enc_root = str(agent_root).replace("/", "-").replace(".", "-")
 def res(dirname):
@@ -136,7 +137,7 @@ def res(dirname):
 check("umbrella sub-mode resolves", res(f"{enc_root}-Jarvis-chat") == "jarvis")
 check("umbrella root resolves", res(f"{enc_root}-Lynda") == "lynda")
 check("deep mission path resolves", res(f"{enc_root}-Jarvis-missions-200-dau") == "jarvis")
-check("non-reviewable workspace misses", res(f"{enc_root}-NoReview-chat") is None)
+check("non-reviewable workspace misses", res(f"{enc_root}-NoClaudeMd-chat") is None)
 check("project_dir_map resolves", res("-Users-x-Books-Project") == "lynda")
 home_enc = str(Path.home()).replace("/", "-").replace(".", "-")
 check("home dir → default_agent", res(home_enc) == "jarvis")

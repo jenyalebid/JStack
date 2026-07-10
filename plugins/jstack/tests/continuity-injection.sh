@@ -8,7 +8,7 @@
 #   (b) submode cwd      → injects that submode's continuity.md
 #   (c) review submode   → no output (reviewer reconciles active.md itself)
 #   (d) non-workspace    → no output (silent no-op)
-#   (e) no review/ dir   → not a reviewable agent → no output
+#   (e) no root CLAUDE.md → not a reviewable agent → no output
 #
 # Exit 0 = all pass, 1 = any fail. Hermetic — never touches real workspaces.
 
@@ -24,13 +24,15 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/jstack-injecttest.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 ROOT="$TMP/Agents"
-mkdir -p "$ROOT/Mario/review" "$ROOT/Mario/chat" "$ROOT/Mario/pm" "$ROOT/Loner" "$ROOT/Solo/review"
+mkdir -p "$ROOT/Mario/review" "$ROOT/Mario/chat" "$ROOT/Mario/pm" "$ROOT/Loner" "$ROOT/Solo"
+printf '# Mario\n' > "$ROOT/Mario/CLAUDE.md"
+printf '# Solo\n' > "$ROOT/Solo/CLAUDE.md"
 printf '# Mario — state\n\n## Active items\n- **thing** — doing it. → active/thing.md\n' > "$ROOT/Mario/active.md"
 # Solo is reviewable but has NO continuity yet (only state) → nothing to inject
 printf '# Solo — state\n\n## Active items\n- **x** — y. → active/x.md\n' > "$ROOT/Solo/active.md"
 printf '# Continuity — Mario · chat\n\n## Today\n- Shipped the freeze fix.\n' > "$ROOT/Mario/chat/continuity.md"
 printf '# Continuity — Mario · pm\n\n## Today\n- Reviewed the roadmap.\n' > "$ROOT/Mario/pm/continuity.md"
-# Loner has NO review/ dir → not a reviewable agent
+# Loner has NO root CLAUDE.md → not a reviewable agent
 printf '# Loner — state\n\n_None._\n' > "$ROOT/Loner/active.md"
 
 CFG="$TMP/review.json"
@@ -72,9 +74,9 @@ OUT="$(fire "$ROOT/Mario/review")"
 OUT="$(fire "$TMP/somewhere/else")"
 [[ -z "$OUT" ]] && ok "non-workspace cwd is a no-op" || bad "non-workspace emitted output :: $OUT"
 
-# (e) agent without review/ dir → not recognized → no output
+# (e) agent without root CLAUDE.md → not recognized → no output
 OUT="$(fire "$ROOT/Loner")"
-[[ -z "$OUT" ]] && ok "agent without review/ is not recognized" || bad "unreviewable agent emitted output :: $OUT"
+[[ -z "$OUT" ]] && ok "agent without root CLAUDE.md is not recognized" || bad "unreviewable agent emitted output :: $OUT"
 
 # (f) reviewable agent with state but NO continuity → no output (state is not injected)
 OUT="$(fire "$ROOT/Solo")"

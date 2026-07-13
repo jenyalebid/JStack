@@ -78,7 +78,9 @@ PLUGIN_BIN = Path(__file__).resolve().parent
 
 REVIEW_MARKER = "[POST-SESSION-REVIEW]"
 SELFWRITE_MARKER = "[SESSION-SELF-WRITE]"
-FILER_BRIEFING_MARKER = "You are being briefed on a topic so that when Boss returns to you"
+# Containment prefix — matches the host filer's briefing text without pinning
+# its persona-specific tail, so hosts can word the rest however they like.
+FILER_BRIEFING_MARKER = "You are being briefed on a topic"
 
 # The one turn a resumed session runs to write its own running memory. It ALREADY
 # HAS the whole conversation in context — no file re-reading, no re-derivation.
@@ -91,7 +93,7 @@ context above — do not re-read files, do not analyze, do not touch code, remin
 or any docs. Then stop.
 
 1. TIMELINE — if this session did something day-spine-worthy (shipped code, made a
-   decision, fixed a problem, or a Boss directive that drove real work), log exactly
+   decision, fixed a problem, or a user directive that drove real work), log exactly
    ONE line:
        log_event {agent} --date YYYY-MM-DD --at HH:MM "headline, <=120 chars, present tense"
    Add up to 3 `--detail "..."` bullets only if they earn their place. YYYY-MM-DD and
@@ -120,7 +122,7 @@ Three steps, then stop. Nothing else."""
 # exhausted (e.g. "You've hit your session limit · resets 7am (America/Los_Angeles)").
 # A review spawn that only hit this did no review — but it is transient and self-
 # heals at the reset, so it must NOT be retried in a tight loop or escalated as a
-# broken review (ISS-0076: that false-paged Boss with SC-2026-07-01-003..006).
+# broken review — a limit-only spawn is not a failure worth paging anyone about.
 SESSION_LIMIT_MARKER = "hit your session limit"
 
 
@@ -165,19 +167,19 @@ DEFAULTS = {
     "slot_poll_secs": 10,
     "min_session_bytes": 1000,
     # Optional allowlist of sub-modes to review, as ["agent/submode", ...] with a
-    # "*/submode" wildcard for any agent (e.g. ["*/chat", "lynda/pm"]). None = no
+    # "*/submode" wildcard for any agent (e.g. ["*/chat", "beta/pm"]). None = no
     # scoping, review every resolvable session (the historical default). The set is
     # HOST POLICY and lives in the machine's review.json — never hardcode it here.
     "reviewed_submodes": None,
     # Auto (non-user-driven) sessions normally get NO model review — reviewing the
-    # high-frequency social/relay wake flood is token waste (Boss 2026-07-02), and
-    # their timeline line is written in-session by the Stop hook. EXCEPT the
-    # purpose-built recurring crons named here (same "agent/submode" + "*/submode"
-    # form as reviewed_submodes): their continuity.md is load-bearing running
-    # memory the NEXT run boots on, and the post-session review is its ONLY writer.
-    # Skipping them silently froze Lynda-pm / Mario-nightly / Jarvis-meta continuity
-    # at 07-02 (ISS-0091). HOST POLICY — lives in review.json. None/[] = nothing
-    # auto-reviewed (portable default; no behavior change on machines without it).
+    # high-frequency social/relay wake flood is token waste, and their timeline
+    # line is written in-session by the Stop hook. EXCEPT the purpose-built
+    # recurring crons named here (same "agent/submode" + "*/submode" form as
+    # reviewed_submodes): their continuity.md is load-bearing running memory the
+    # NEXT run boots on, and the post-session review is its ONLY writer —
+    # skipping them silently freezes that continuity. HOST POLICY — lives in
+    # review.json. None/[] = nothing auto-reviewed (portable default; no
+    # behavior change on machines without it).
     "auto_review_submodes": None,
     "recent_activity_secs": 14400,
     "telegram_cooldown_seconds": 300,
@@ -425,8 +427,8 @@ def is_unengaged_filer_briefing(jsonl_path: Path) -> bool:
 
 def is_user_engaged(jsonl_path: Path) -> bool:
     """True iff a human actually drove any part of this session — the defining
-    factor for whether it gets a model review (Boss 2026-07-02: auto work never
-    does). Two harness signals, either sufficient:
+    factor for whether it gets a model review (auto work never does). Two
+    harness signals, either sufficient:
       - a user prompt stamped promptSource="typed" (keyboard input), or
       - a `mode`/`permission-mode` entry — written ONLY when an interactive
         terminal is attached. Gateway/cron/--print sessions never write these
@@ -676,7 +678,7 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
         "--permission-mode", "bypassPermissions",
         "--max-turns", str(CFG["selfwrite_max_turns"]),
         # NO --name: this resumes the SAME session JSONL, so any --name would
-        # overwrite Boss's own session title with "Self-write: …". The append is
+        # overwrite the session's own title with "Self-write: …". The append is
         # invisible by design; it needs no distinguishing label.
         "--resume", session_id,
         "-p", prompt,
@@ -819,7 +821,7 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
     if last_failure and last_failure.startswith("exit -"):
         # Died by signal every attempt: a deliberate kill (board Kill button,
         # operator pkill) or memory pressure — neither is a review-content
-        # failure worth paging Boss about.
+        # failure worth paging anyone about.
         _log(f"KILLED {session_id[:8]} → {agent}: signal death, not escalating")
         return
     if CFG["escalate_cmd"]:
@@ -948,13 +950,13 @@ def main():
     submode = resolve_submode(jsonl_path, CFG["agent_root"], agent_title)
 
     # Auto sessions — no human typed, no TUI attached, not a Telegram
-    # conversation — normally get NO model review (Boss 2026-07-02: reviewing the
-    # high-frequency auto flood is token waste). Their timeline line is written
-    # IN-SESSION by the Stop hook (hooks/stop-timeline-remind.py). EXCEPTION: the
-    # purpose-built recurring crons in auto_review_submodes (Lynda-pm nightly,
-    # Mario nightly-review, Jarvis meta) — their continuity.md is the running
-    # memory the NEXT run boots on, and this review is its ONLY writer. Skipping
-    # them froze that continuity at 07-02 (ISS-0091); they still get reviewed.
+    # conversation — normally get NO model review (reviewing the high-frequency
+    # auto flood is token waste). Their timeline line is written IN-SESSION by
+    # the Stop hook (hooks/stop-timeline-remind.py). EXCEPTION: the purpose-built
+    # recurring crons in auto_review_submodes (e.g. a nightly PM cron, a meta
+    # review) — their continuity.md is the running memory the NEXT run boots on,
+    # and this review is its ONLY writer; skipping them silently freezes that
+    # continuity. They still get reviewed.
     if (not is_user_engaged(jsonl_path)
             and not is_telegram_session(session_id, jsonl_path)):
         if not auto_reviewed(agent, submode, CFG.get("auto_review_submodes")):

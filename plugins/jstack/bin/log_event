@@ -20,12 +20,12 @@ up-to-date block (keeps the earliest matched timestamp unless --at given).
 Self-contained: python3 stdlib only. No venv, no host imports.
 
 Examples:
-    log_event mario --at 09:15 "Pipeline #82 build complete"
-    log_event lynda --at 14:00 "Word Search v3 shipped" \
+    log_event alpha --at 09:15 "Pipeline #82 build complete"
+    log_event beta --at 14:00 "Search v3 shipped" \
         --detail "8 pipeline tasks merged" --detail "44 commits"
-    log_event lynda --at 23:35 --date 2026-04-15 "V2 committed late"
-    log_event mario --at 04:25 --pipeline-task wordy#87 \
-        "Custom WS boards merged to v3" --detail "type discriminator schema"
+    log_event beta --at 23:35 --date 2026-04-15 "V2 committed late"
+    log_event alpha --at 04:25 --pipeline-task appx#87 \
+        "Custom boards merged to v3" --detail "type discriminator schema"
 """
 
 import os
@@ -138,7 +138,7 @@ def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
                                details: list[str] | None = None) -> None:
     """Replace all timeline blocks matching a pipeline task with one summary.
 
-    The task_tag (e.g. "wordy#87") is auto-prepended to the headline so the
+    The task_tag (e.g. "appx#87") is auto-prepended to the headline so the
     block always carries its own marker. The new block keeps the earliest
     matched timestamp unless an explicit timestamp is given.
     """

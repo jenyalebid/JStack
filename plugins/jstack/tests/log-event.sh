@@ -55,11 +55,11 @@ sys.exit(1 if "\n\n\n" in text or not text.endswith("\n") else 0)
 PY
 
 # 5. pipeline-task consolidation: second call replaces first block, keeps earliest ts
-"$LOG_EVENT" bob --at 09:00 --date "$DAY" --pipeline-task "wordy#87" "Build started" >/dev/null
-"$LOG_EVENT" bob --date "$DAY" --pipeline-task "wordy#87" "Merged to v3" --detail "8 tasks" >/dev/null
-count=$(grep -c "wordy#87" "$FILE")
-[[ "$count" == "1" ]] && grep -q "wordy#87 — Merged to v3" "$FILE" \
-  && grep -B1 "wordy#87 — Merged to v3" "$FILE" | grep -q "^09:00" \
+"$LOG_EVENT" bob --at 09:00 --date "$DAY" --pipeline-task "appx#87" "Build started" >/dev/null
+"$LOG_EVENT" bob --date "$DAY" --pipeline-task "appx#87" "Merged to v3" --detail "8 tasks" >/dev/null
+count=$(grep -c "appx#87" "$FILE")
+[[ "$count" == "1" ]] && grep -q "appx#87 — Merged to v3" "$FILE" \
+  && grep -B1 "appx#87 — Merged to v3" "$FILE" | grep -q "^09:00" \
   && pass "pipeline consolidation (1 block, earliest ts)" || fail "pipeline consolidation (count=$count)"
 
 # 6. headline newline collapse

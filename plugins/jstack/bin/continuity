@@ -33,7 +33,7 @@ doc**, not an append-only changelog. It has two parts:
 
 Storage: a JSON sidecar (``.continuity.json``) rendered one-way to
 ``continuity.md`` (never parsed back — corruption-proof). Both live in the mode's
-own dir under the agents root, e.g. ``<AGENTS>/Mario/nightly-review/``.
+own dir under the agents root, e.g. ``<AGENTS>/Gamma/nightly-review/``.
 
 Agents root: $CONTINUITY_ROOT (default ~/Agents). The review engine exports it
 from its ``agent_root`` config so this resolves the same tree the engine reviews.

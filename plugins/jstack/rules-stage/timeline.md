@@ -47,12 +47,12 @@ A reader asks "what happened today?" — not "which simulator on which iOS?".
 
 The headline reads like a news ticker. Short, declarative, present-tense.
 
-✅ `Word Search v3 shipped — 8 pipeline tasks merged to v3.`
-❌ `Pipeline #87 (custom WS boards + Game Send) MERGED to v3 via manual PR after orchestrator failure. Built clean 04:25 (commits 174ff33 + 45b4640 on task/87-ws-custom-boards: generator + profanity list + ...).`
+✅ `Search v3 shipped — 8 pipeline tasks merged to v3.`
+❌ `Pipeline #87 (custom boards + share flow) MERGED to v3 via manual PR after orchestrator failure. Built clean 04:25 (commits 174ff33 + 45b4640 on task/87-custom-boards: generator + profanity list + ...).`
 
 Bullets are punchy too:
 ✅ `- 14 themes, daily seed rotation`
-❌ `- WordSearchThemesService greedy 6×7 placer, longest-first retry shuffles, SplitMix64 seed in .../Services/...`
+❌ `- ThemesService greedy 6×7 placer, longest-first retry shuffles, SplitMix64 seed in .../Services/...`
 
 ## Order is chronological
 
@@ -69,7 +69,7 @@ Pipeline tasks (multi-session work tracked by an issue) **must** use `--pipeline
 ```bash
 log_event {agent} --at HH:MM "headline"
 log_event {agent} --at HH:MM "headline" --detail "bullet" --detail "bullet"
-log_event {agent} --at HH:MM --pipeline-task wordy#89 "headline" --detail "bullet"
+log_event {agent} --at HH:MM --pipeline-task appx#89 "headline" --detail "bullet"
 log_event {agent} --at HH:MM --date 2026-04-28 "late-logged event"
 ```
 

@@ -7,8 +7,6 @@ paths:
 
 Universal design principles for iOS projects. These are the baseline — component-type rules (sheets, lists, screens, etc.) provide specific patterns and load automatically by directory.
 
-Full HIG reference: `~/Research/apple-hig-ios-swiftui-reference.md`
-
 ## Typography
 
 - Use system text styles (`.title`, `.body`, `.caption`, etc.) — they scale with Dynamic Type automatically
@@ -62,6 +60,6 @@ Full HIG reference: `~/Research/apple-hig-ios-swiftui-reference.md`
 `AnyView` is **banned** in SwiftUI code. It erases static view type, breaks SwiftUI's structural diffing, and degrades animations / transitions / identity-based features (`matchedGeometryEffect`, `@FocusState`, scroll position).
 
 - **Container with content slot:** make it generic — `struct Foo<Card: View>: View { @ViewBuilder var card: () -> Card }`. Never store `() -> AnyView`. `ImageRenderer` / `UIHostingController` accept the generic content directly.
-- **Heterogeneous view kinds:** use a `@ViewBuilder` `switch` over an enum, or a typed snapshot struct holding each row. See `StatView.PatternSnapshot` and `GameHeaderView` "Slot dispatch (no AnyView)" for reference shape.
+- **Heterogeneous view kinds:** use a `@ViewBuilder` `switch` over an enum, or a typed snapshot struct holding each row.
 - **Code review:** AnyView is a guideline violation, not a style nit. Fix during review.
 - **Escape hatch:** truly heterogeneous user-config-driven trees only. Must be justified in a comment. Default is no.

@@ -103,7 +103,7 @@ check("'no user turns' literal accepted", ok)
 
 paraphrase = GOOD.replace(
     '- turn 1 [10:02]: "fix the thing" → resolved-in-session → commit landed',
-    "cron-triggered wake, zero boss prose in transcript")
+    "cron-triggered wake, zero user prose in transcript")
 ok, why = eng.validate_review_output(paraphrase, CORE, timeline_grew=True)
 check("cron-spawn paraphrase accepted", ok)
 

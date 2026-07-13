@@ -50,7 +50,7 @@ def mk_transcript(name, entries, pad=15):
 def run_hook(session_id, transcript, stop_active=False, cwd=None, env_extra=None):
     payload = {"session_id": session_id, "transcript_path": str(transcript),
                "stop_hook_active": stop_active,
-               "cwd": cwd or str(Path.home() / "Agents" / "Junior" / "social")}
+               "cwd": cwd or str(Path.home() / "Agents" / "Gamma" / "social")}
     env = os.environ.copy()
     env.update(env_extra or {})
     r = subprocess.run([HOOK], input=json.dumps(payload), env=env,
@@ -68,7 +68,7 @@ t = mk_transcript("auto.jsonl", CRON)
 d = run_hook("sid-auto-1", t)
 check("auto session blocked once", d is not None and d.get("decision") == "block")
 check("reminder names log_event", d is not None and "log_event" in d.get("reason", ""))
-check("reminder carries agent source", d is not None and "log_event junior" in d.get("reason", ""))
+check("reminder carries agent source", d is not None and "log_event gamma" in d.get("reason", ""))
 check("reminder allows the no-op out", d is not None and "do nothing and stop" in d.get("reason", ""))
 
 # second stop of the SAME session → marker present → pass through (no loop)

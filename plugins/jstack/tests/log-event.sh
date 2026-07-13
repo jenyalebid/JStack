@@ -210,6 +210,22 @@ echo "$out" | grep -q "Second seat entry" && ! echo "$out" | grep -q "Other seat
 "$LOG_EVENT" grep "Legacy block" --since 2026-01-11 >/dev/null
 [[ $? -eq 1 ]] && pass "grep: --since filter" || fail "grep --since"
 
+# 24b. arg strictness: a stray token or unknown flag must ERROR (exit 2), never
+#      be silently absorbed as the pattern/seat — a recall surface that answers
+#      the wrong question is worse than one that errors
+"$LOG_EVENT" grep "seat entry" -n 3 >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "grep: unknown flag rejected" || fail "grep unknown flag"
+"$LOG_EVENT" grep seat entry >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "grep: stray positional rejected" || fail "grep stray positional"
+"$LOG_EVENT" tail alpha/chat --oops >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "tail: unknown flag rejected" || fail "tail unknown flag"
+"$LOG_EVENT" tail alpha beta >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "tail: second seat rejected" || fail "tail second seat"
+"$LOG_EVENT" recall "$DAY" alpha extra >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "recall: stray positional rejected" || fail "recall stray positional"
+"$LOG_EVENT" recall "$DAY" --oops >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "recall: unknown flag rejected" || fail "recall unknown flag"
+
 # 25. schema upgrade: a pre-context db (real dbs on installed hosts) gains the
 #     column on first connect — write with --context must not error
 OLD="$TMP/oldschema"; mkdir -p "$OLD"

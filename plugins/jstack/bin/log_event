@@ -577,6 +577,13 @@ def _cmd_tail(rest: list[str]) -> int:
             n = int(rest[i + 1]); i += 2
         elif a == "--json":
             as_json = True; i += 1
+        elif a.startswith("-"):
+            print(f"log_event tail: unknown flag {a}", file=sys.stderr)
+            return 2
+        elif seat is not None:
+            print(f"log_event tail: one seat only (got {seat!r} and {a!r})",
+                  file=sys.stderr)
+            return 2
         else:
             seat = a; i += 1
     if not seat:
@@ -601,6 +608,13 @@ def _cmd_grep(rest: list[str]) -> int:
             since = rest[i + 1]; i += 2
         elif a == "--json":
             as_json = True; i += 1
+        elif a.startswith("-"):
+            print(f"log_event grep: unknown flag {a}", file=sys.stderr)
+            return 2
+        elif pattern is not None:
+            print(f"log_event grep: one pattern only (got {pattern!r} and {a!r})"
+                  " — quote multi-word patterns", file=sys.stderr)
+            return 2
         else:
             pattern = a; i += 1
     if not pattern:
@@ -625,8 +639,15 @@ def _cmd_recall(rest: list[str]) -> int:
             full = True; i += 1
         elif a == "--json":
             as_json = True; i += 1
+        elif a.startswith("-"):
+            print(f"log_event recall: unknown flag {a}", file=sys.stderr)
+            return 2
         else:
             pos.append(a); i += 1
+    if len(pos) > 2:
+        print(f"log_event recall: too many arguments: {' '.join(pos[2:])}",
+              file=sys.stderr)
+        return 2
     if pos:
         dates = pos[0]
     if len(pos) >= 2 and pos[1] != "all":

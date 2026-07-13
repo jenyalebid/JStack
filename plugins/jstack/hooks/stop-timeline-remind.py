@@ -124,8 +124,10 @@ def main():
         "under this source. If this session performed real work (shipped, published, "
         "fixed, replied, decided, learned something durable), append ONE entry now, "
         "written by you from what you actually did:\n\n"
-        f'  {PLUGIN_BIN}/log_event {source} --at "$(date +%H:%M)" "<one-line headline, specific and past-tense>" '
-        '[--detail "<short detail — an open thread, a decision, a do-not-repeat>" ...max 3]\n\n'
+        f'  {PLUGIN_BIN}/log_event {source} "<one-line headline, specific and past-tense>" '
+        '[--detail "<short detail — an open thread, a decision, a do-not-repeat>" ...max 3] '
+        '[--context "<longer state worth on-demand recall — never injected>"]\n\n'
+        "It stamps now automatically — do not pass --at or --date.\n\n"
         "Then stop. If this wake was a no-op (nothing notable happened) or you already "
         "appended this session's entry, do nothing and stop. Do not start new work."
     )

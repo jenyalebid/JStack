@@ -109,8 +109,15 @@ entries under this exact source. Check what's already recorded, then write:
 log_event tail "$SEAT" -n 10
 STAMP=$(python3 -c 'import os,sys,datetime as d;print(d.datetime.fromtimestamp(os.stat(sys.argv[1]).st_mtime).strftime("%Y-%m-%d %H:%M"))' "$JSONL")
 log_event "$SEAT" --at "${STAMP#* }" --date "${STAMP%% *}" --session "$SID" "headline ≤120 chars" \
-  --detail "≤80 chars" --detail "≤80 chars"
+  --detail "≤80 chars" --detail "≤80 chars" [--context "freeform depth, loaded on demand"]
 ```
+
+`--context` is optional depth for the next run: when the session left rich
+state that outgrows three bullets (a design's why, the exact state of a
+half-done thread), park it there — it is stored on the entry but never
+rendered or injected, surfaced only by `log_event show <id>` / `tail --json`.
+The transcript gets cleaned eventually; the entry plus its context must let
+the next session reconstruct the thread without it.
 
 **Timeline-worthy:** code shipped, feature live, decision made, problem fixed, user directive that drove work, significant autonomous work, something durable learned.
 **NOT timeline-worthy:** "reviewed session", build counts, test counts, file paths, commit hashes, session UUIDs, internal cleanup.

@@ -58,6 +58,16 @@ Headline — present-tense, one line, ≤120 chars.
 
 A reader asks "what happened today?" — not "which simulator on which iOS?".
 
+## Depth on demand — `--context`
+
+The block stays lean — it is what every next session boots on. When an event
+carries state worth more than three bullets (a design's why, an incident's
+trace, the exact state of a half-done thread), put it in `--context`: stored
+on the entry, never rendered into the day md, never injected. It surfaces
+only via `log_event show <id>` or `tail --json`. The `--session` link is
+advisory — transcripts get cleaned over time; the entry plus its context
+must stand alone.
+
 ## Headline grade
 
 The headline reads like a news ticker. Short, declarative, present-tense.
@@ -71,13 +81,13 @@ Bullets are punchy too:
 
 ## Order is chronological
 
-**Always pass `--at HH:MM`, machine-local wall clock.** A session's own
-end-of-session self-write stamps `$(date +%H:%M)`; a review writing for an
-already-ended session derives it from the transcript file's **mtime**. Never
+Stamps are machine-local wall clock, and `--at`/`--date` default to now and
+today — **omit both when logging as you go** (a session-end self-write passes
+neither). Pass them only for an event that happened earlier: a review writing
+for an already-ended session stamps the transcript file's **mtime**; a
+late-logged event from a previous local day adds `--date YYYY-MM-DD`. Never
 copy a timestamp from inside a session JSONL — those are UTC and land hours
 ahead (`log_event` clamps impossible future stamps to now as a backstop).
-For in-session direct `log_event` calls, use the actual event time.
-Late-logged events from a previous local day: also pass `--date YYYY-MM-DD`.
 
 ## One event, one entry
 
@@ -92,22 +102,30 @@ live block per task, always current.
 ## How to write
 
 ```bash
-log_event {agent}/{submode} --at HH:MM "headline"
-log_event {agent}/{submode} --at HH:MM "headline" --detail "bullet" --detail "bullet"
-log_event {agent}/{submode} --at HH:MM --pipeline-task appx#89 "headline" --detail "bullet"
-log_event {agent}/{submode} --at HH:MM --date 2026-04-28 "late-logged event"
-log_event {agent}/{submode} --at HH:MM --session {session_id} "headline"   # link the transcript
+log_event {agent}/{submode} "headline"                    # stamps now — the normal self-write
+log_event {agent}/{submode} "headline" --detail "bullet" --detail "bullet"
+log_event {agent}/{submode} "headline" --context "freeform depth, loaded on demand"
+log_event {agent}/{submode} --pipeline-task appx#89 "headline" --detail "bullet"
+log_event {agent}/{submode} --at 14:05 "event from earlier today"
+log_event {agent}/{submode} --at 23:10 --date 2026-04-28 "late-logged event"
+log_event {agent}/{submode} --session {session_id} "headline"   # link the transcript
 ```
 
 Agents write their own seat as source. Reserved sources (e.g. `assistant`)
 belong to the system that owns them.
 
-## Reading back
+## Reading back — the default recall surface
+
+"What did we do?" questions resolve here first, not by digging transcripts:
+a **date** question ("what happened Monday?") → read that day's rendered md;
+a **keyword** question ("when did we ship X?") → `log_event grep`.
 
 ```bash
 log_event tail alpha/chat -n 10     # a seat's recent history (what injection shows)
 log_event tail alpha -n 20          # all of an agent's seats
-log_event tail alpha/chat --json    # structured, with session ids + verdicts
+log_event tail alpha/chat --json    # structured: ids, session ids, verdicts, context
+log_event grep "publish endpoint" --seat alpha/chat --since 2026-04-01
+log_event show 1234                 # everything one entry holds (id from grep / tail --json)
 ```
 
 ## Verdicts — the independent check

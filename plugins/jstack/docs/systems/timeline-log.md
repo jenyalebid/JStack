@@ -15,26 +15,32 @@ The timeline is the single running memory: a sqlite store of seat-tagged entries
 
 ```bash
 log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
-          [--detail "..."]... [--pipeline-task <repo>#<issue>] [--session <sid>]
+          [--detail "..."]... [--context "..."] [--pipeline-task <repo>#<issue>]
+          [--session <sid>]
 ```
 
 - **Source is the seat:** `agent/submode` (e.g. `alpha/chat`) — stored as split columns; always pass the submode when the seat is known, since seat injection filters on it. A bare `agent` source is legal but invisible to seat tails once seat-tagged entries fill the window.
 - **Block format (rendered view):** `HH:MM [agent/submode]` header line, one-line headline, 0–3 `- ` detail bullets. Exactly one blank line between blocks.
 - **Chronological rendering:** entries render sorted by `--at`, not insert order. Late-logged events slot into place.
-- **`--date`** files under a previous local day.
+- **`--at`/`--date` are optional and default to now/today, machine-local** — writers logging as they go pass neither; explicit stamps are for events that happened earlier (`--date` files under a previous local day).
 - **Future stamps are impossible and clamp:** a `--date` after today lands today stamped now; a same-day `--at` past the current minute (2-min grace) becomes now. Backstop for the classic writer error — HH:MM copied from a UTC transcript timestamp.
+- **`--context`** is on-demand depth: stored on the entry, never rendered into the day md, never injected — surfaced only by `show` and `tail --json`. Keeps the boot window lean while the entry stays self-sufficient.
 - **`--pipeline-task <tag>`** consolidates: every existing entry carrying the tag (tagged column or legacy tag-in-text) is replaced by one current entry. The tag is auto-prepended to the headline; the earliest matched timestamp is kept unless `--at` is given. One live entry per task, always current.
-- **`--session <sid>`** links the entry to the transcript that produced it.
+- **`--session <sid>`** links the entry to the transcript that produced it. The link is advisory — transcripts get cleaned over time; anything the future must know rides the entry itself (bullets or `--context`).
 - Headlines collapse internal newlines/whitespace; details are normalized to `- ` bullets.
 
 ## Query / admin contract
 
 ```bash
 log_event tail <agent[/submode]> [-n N] [--json]     # seat history, oldest→newest; bare agent = all seats
+log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]   # recall: case-insensitive over headline+details+context; exit 1 = no match
+log_event show <id>                                  # everything one entry holds, incl. context (id from grep / tail --json)
 log_event verdict <agent[/submode]> shipped|drift|blocked|empty --note "..."
 log_event render [--date YYYY-MM-DD]                 # re-render a day view (repair; writes render automatically)
 log_event migrate [--force]                          # import legacy day-md files (strictly non-destructive)
 ```
+
+Recall routing: a date question ("what happened Monday?") reads that day's rendered md; a keyword question ("when did we ship X?") is `grep`. Both are cheaper and more reliable than transcript archaeology.
 
 Seat tails also match the agent's submode-less rows (pre-seat-era migrations) so seats aren't blind right after migration; those age out of the last-N window naturally. `verdict` stamps an independent review's call on the seat's latest entry — it rides `tail` and injection (`↳ verdict:`), never the day md.
 

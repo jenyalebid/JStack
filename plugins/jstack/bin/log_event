@@ -43,7 +43,7 @@ from pathlib import Path
 _BLOCK_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) \[([^\]]+)\](.*)$")
 _BARE_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) (.+)$")   # pre-block era: no [source]
 _VALID_VERDICTS = {"shipped", "drift", "blocked", "empty"}
-_SUBCOMMANDS = {"tail", "verdict", "render", "migrate"}
+_SUBCOMMANDS = {"tail", "verdict", "render", "migrate", "grep", "show"}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS entries (
     session_id    TEXT,
     verdict       TEXT,
     verdict_note  TEXT,
+    context       TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_entries_seat ON entries(agent, submode, date, time);
@@ -90,6 +91,10 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
     con.executescript(_SCHEMA)
+    # in-place upgrade for dbs created before a column existed
+    cols = {r[1] for r in con.execute("PRAGMA table_info(entries)")}
+    if "context" not in cols:
+        con.execute("ALTER TABLE entries ADD COLUMN context TEXT NOT NULL DEFAULT ''")
     return con
 
 
@@ -277,7 +282,8 @@ def _clamp_future(day: str, ts: str) -> tuple[str, str]:
 def append_timeline(source: str, text: str, day: str | None = None,
                     timestamp: str | None = None,
                     details: list[str] | None = None,
-                    session_id: str | None = None) -> None:
+                    session_id: str | None = None,
+                    context: str | None = None) -> None:
     if not source or not text:
         return
     d = day or datetime.now().strftime("%Y-%m-%d")
@@ -289,11 +295,12 @@ def append_timeline(source: str, text: str, day: str | None = None,
         _absorb_strays(con, d)
         con.execute(
             "INSERT INTO entries (date, time, agent, submode, headline, details,"
-            " pipeline_task, session_id, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+            " pipeline_task, session_id, context, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
             (d, ts, agent, submode, " ".join(text.split()),
              json.dumps(_clean_details(details), ensure_ascii=False),
-             session_id, datetime.now().isoformat(timespec="seconds")),
+             session_id, (context or "").strip(),
+             datetime.now().isoformat(timespec="seconds")),
         )
         render_day(con, d)
     con.close()
@@ -303,7 +310,8 @@ def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
                                day: str | None = None,
                                timestamp: str | None = None,
                                details: list[str] | None = None,
-                               session_id: str | None = None) -> None:
+                               session_id: str | None = None,
+                               context: str | None = None) -> None:
     """One live entry per pipeline task: replace all rows carrying the tag
     (tagged column, or legacy tag-in-text) with one block, earliest ts kept."""
     if not source or not task_tag or not text:
@@ -331,11 +339,12 @@ def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
         _, final_ts = _clamp_future(d, final_ts)
         con.execute(
             "INSERT INTO entries (date, time, agent, submode, headline, details,"
-            " pipeline_task, session_id, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " pipeline_task, session_id, context, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (d, final_ts, agent, submode, headline,
              json.dumps(_clean_details(details), ensure_ascii=False),
-             task_tag, session_id, datetime.now().isoformat(timespec="seconds")),
+             task_tag, session_id, (context or "").strip(),
+             datetime.now().isoformat(timespec="seconds")),
         )
         render_day(con, d)
     con.close()
@@ -374,22 +383,26 @@ def tail_entries(seat: str, n: int) -> list[dict]:
     where = "agent = ?" + (" AND submode IN (?, '')" if submode else "")
     params: tuple = (agent, submode) if submode else (agent,)
     rows = con.execute(
-        f"SELECT date, time, agent, submode, headline, details, verdict,"
-        f" verdict_note FROM entries WHERE {where}"
+        f"SELECT id, date, time, agent, submode, headline, details, verdict,"
+        f" verdict_note, session_id, context FROM entries WHERE {where}"
         " ORDER BY date DESC, time DESC, id DESC LIMIT ?", params + (n,),
     ).fetchall()
     con.close()
     out = []
-    for date, ts, a, s, h, dt, v, vn in reversed(rows):
+    for eid, date, ts, a, s, h, dt, v, vn, sid, ctx in reversed(rows):
         out.append({
-            "date": date, "time": ts, "agent": a, "submode": s,
+            "id": eid, "date": date, "time": ts, "agent": a, "submode": s,
             "headline": h, "details": json.loads(dt),
             "verdict": v, "verdict_note": vn,
+            "session_id": sid, "context": ctx,
         })
     return out
 
 
 def format_tail(entries: list[dict]) -> str:
+    """Default tail text — what seat injection boots on. Lean by design:
+    headline + bullets + verdict only; `context` never rides (on-demand via
+    --json or `show`)."""
     lines = []
     for e in entries:
         lines.append(f"{e['date']} {e['time']} — {e['headline']}")
@@ -399,6 +412,49 @@ def format_tail(entries: list[dict]) -> str:
             note = f" — {e['verdict_note']}" if e["verdict_note"] else ""
             lines.append(f"  ↳ verdict: {e['verdict']}{note}")
     return "\n".join(lines)
+
+
+def grep_entries(pattern: str, seat: str | None = None,
+                 since: str | None = None) -> list[dict]:
+    """Substring search (case-insensitive) over headline + details + context,
+    across all days and seats — the recall surface for 'when did we do X?'."""
+    esc = (pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"))
+    like = f"%{esc}%"
+    where = ["(headline LIKE ? ESCAPE '\\' OR details LIKE ? ESCAPE '\\'"
+             " OR context LIKE ? ESCAPE '\\')"]
+    params: list = [like, like, like]
+    if seat:
+        agent, submode = parse_source(seat)
+        where.append("agent = ?"); params.append(agent)
+        if submode:
+            where.append("submode = ?"); params.append(submode)
+    if since:
+        where.append("date >= ?"); params.append(since)
+    con = connect()
+    rows = con.execute(
+        "SELECT id, date, time, agent, submode, headline FROM entries"
+        f" WHERE {' AND '.join(where)} ORDER BY date, time, id", params,
+    ).fetchall()
+    con.close()
+    return [{"id": i, "date": d, "time": t, "source": format_source(a, s),
+             "headline": h} for i, d, t, a, s, h in rows]
+
+
+def show_entry(entry_id: int) -> dict | None:
+    """Everything one entry holds — the on-demand loader behind a grep/tail hit."""
+    con = connect()
+    row = con.execute(
+        "SELECT id, date, time, agent, submode, headline, details,"
+        " pipeline_task, session_id, verdict, verdict_note, context"
+        " FROM entries WHERE id = ?", (entry_id,),
+    ).fetchone()
+    con.close()
+    if row is None:
+        return None
+    i, d, t, a, s, h, dt, pt, sid, v, vn, ctx = row
+    return {"id": i, "date": d, "time": t, "source": format_source(a, s),
+            "headline": h, "details": json.loads(dt), "pipeline_task": pt,
+            "session_id": sid, "verdict": v, "verdict_note": vn, "context": ctx}
 
 
 # -------------------------------------------------------------------- migrate
@@ -450,9 +506,14 @@ def migrate(force: bool = False) -> int:
 
 def _write_usage() -> str:
     return ('usage: log_event <agent[/submode]> "<headline>" [--at HH:MM] '
-            '[--date YYYY-MM-DD] [--detail "..."]... [--pipeline-task <tag>] '
-            '[--session <id>]\n'
+            '[--date YYYY-MM-DD] [--detail "..."]... [--context "..."] '
+            '[--pipeline-task <tag>] [--session <id>]\n'
+            '       (--at/--date default to now/today, machine-local — omit '
+            'unless logging an earlier event)\n'
             '   or: log_event tail <agent[/submode]> [-n N] [--json]\n'
+            '   or: log_event grep "<substring>" [--seat <agent[/submode]>] '
+            '[--since YYYY-MM-DD] [--json]\n'
+            '   or: log_event show <id>\n'
             '   or: log_event verdict <agent[/submode]> '
             '<shipped|drift|blocked|empty> --note "..."\n'
             '   or: log_event render [--date YYYY-MM-DD]\n'
@@ -478,6 +539,58 @@ def _cmd_tail(rest: list[str]) -> int:
         print(json.dumps(entries, ensure_ascii=False, indent=2))
     elif entries:
         print(format_tail(entries))
+    return 0
+
+
+def _cmd_grep(rest: list[str]) -> int:
+    pattern, seat, since, as_json = None, None, None, False
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--seat":
+            seat = rest[i + 1]; i += 2
+        elif a == "--since":
+            since = rest[i + 1]; i += 2
+        elif a == "--json":
+            as_json = True; i += 1
+        else:
+            pattern = a; i += 1
+    if not pattern:
+        print('log_event grep: pattern required', file=sys.stderr)
+        return 2
+    hits = grep_entries(pattern, seat=seat, since=since)
+    if as_json:
+        print(json.dumps(hits, ensure_ascii=False, indent=2))
+    else:
+        for h in hits:
+            print(f"#{h['id']} {h['date']} {h['time']} [{h['source']}] {h['headline']}")
+    return 0 if hits else 1
+
+
+def _cmd_show(rest: list[str]) -> int:
+    try:
+        entry_id = int(rest[0])
+    except (IndexError, ValueError):
+        print("log_event show: numeric entry id required (from grep/tail --json)",
+              file=sys.stderr)
+        return 2
+    e = show_entry(entry_id)
+    if e is None:
+        print(f"log_event show: no entry #{entry_id}", file=sys.stderr)
+        return 1
+    print(f"#{e['id']} {e['date']} {e['time']} [{e['source']}]")
+    print(e["headline"])
+    for d in e["details"]:
+        print(f"- {d}")
+    if e["pipeline_task"]:
+        print(f"pipeline-task: {e['pipeline_task']}")
+    if e["session_id"]:
+        print(f"session: {e['session_id']}")
+    if e["verdict"]:
+        note = f" — {e['verdict_note']}" if e["verdict_note"] else ""
+        print(f"↳ verdict: {e['verdict']}{note}")
+    if e["context"]:
+        print(f"context:\n{e['context']}")
     return 0
 
 
@@ -522,6 +635,10 @@ def main(argv: list[str]) -> int:
         cmd, rest = argv[0], argv[1:]
         if cmd == "tail":
             return _cmd_tail(rest)
+        if cmd == "grep":
+            return _cmd_grep(rest)
+        if cmd == "show":
+            return _cmd_show(rest)
         if cmd == "verdict":
             return _cmd_verdict(rest)
         if cmd == "render":
@@ -535,7 +652,7 @@ def main(argv: list[str]) -> int:
 
     source = argv[0]
     rest = argv[1:]
-    timestamp = day = pipeline_task = session_id = None
+    timestamp = day = pipeline_task = session_id = context = None
     details: list[str] = []
     words: list[str] = []
 
@@ -550,6 +667,8 @@ def main(argv: list[str]) -> int:
             pipeline_task = rest[i + 1]; i += 2
         elif a == "--detail":
             details.append(rest[i + 1]); i += 2
+        elif a == "--context":
+            context = rest[i + 1]; i += 2
         elif a == "--session":
             session_id = rest[i + 1]; i += 2
         else:
@@ -567,11 +686,11 @@ def main(argv: list[str]) -> int:
     if pipeline_task:
         consolidate_pipeline_entry(source, pipeline_task, text, day=day,
                                    timestamp=timestamp, details=details,
-                                   session_id=session_id)
+                                   session_id=session_id, context=context)
         print(f"consolidated: {source} ({label}) [{pipeline_task}] {text[:80]}")
     else:
         append_timeline(source, text, day=day, timestamp=timestamp,
-                        details=details, session_id=session_id)
+                        details=details, session_id=session_id, context=context)
         print(f"logged: {source} ({label}) {text[:80]}")
     return 0
 

@@ -171,6 +171,81 @@ else
     && pass "future --date clamped to today" || fail "future --date clamped (got $got)"
 fi
 
+# 21. --context: on-demand depth — in the db, absent from day md and default
+#     tail (injection stays lean), surfaced by tail --json (with id + session_id)
+"$LOG_EVENT" alpha/chat --at 15:30 --date "$DAY" "Entry with depth" \
+  --detail "a visible bullet" --context "long freeform recall notes, survives transcript deletion" >/dev/null
+J=$("$LOG_EVENT" tail alpha/chat -n 5 --json)
+! grep -q "long freeform recall" "$FILE" \
+  && ! "$LOG_EVENT" tail alpha/chat -n 5 | grep -q "long freeform recall" \
+  && echo "$J" | grep -q "long freeform recall" \
+  && echo "$J" | grep -q '"session_id": "sess-123"' \
+  && echo "$J" | grep -q '"id":' \
+  && pass "context: db-only, --json carries id/session/context" || fail "context isolation"
+
+# 22. show <id>: the on-demand loader — full entry incl. context; unknown id → exit 1
+ID=$(echo "$J" | python3 -c 'import json,sys; es=json.load(sys.stdin); print([e["id"] for e in es if e["headline"]=="Entry with depth"][0])')
+out=$("$LOG_EVENT" show "$ID")
+echo "$out" | grep -q "Entry with depth" && echo "$out" | grep -q "long freeform recall notes" \
+  && echo "$out" | grep -q "a visible bullet" \
+  && pass "show: full entry by id" || fail "show by id"
+"$LOG_EVENT" show 999999 >/dev/null 2>&1
+[[ $? -eq 1 ]] && pass "show: unknown id exit 1" || fail "show unknown id"
+
+# 23. grep: substring search across days/seats (headline+details+context),
+#     case-insensitive, output carries #id/date/seat; no match → exit 1
+out=$("$LOG_EVENT" grep "legacy block")
+echo "$out" | grep -q "Legacy block one" && echo "$out" | grep -q "2026-01-10" \
+  && echo "$out" | grep -q "\[delta\]" && echo "$out" | grep -qE "^#[0-9]+ " \
+  && pass "grep: cross-day, case-insensitive" || fail "grep basics"
+"$LOG_EVENT" grep "freeform recall" | grep -q "Entry with depth" \
+  && pass "grep: matches context field" || fail "grep context match"
+"$LOG_EVENT" grep "no-such-string-anywhere" >/dev/null
+[[ $? -eq 1 ]] && pass "grep: no match exit 1" || fail "grep no-match exit"
+
+# 24. grep filters: --seat narrows to the seat, --since drops earlier days
+out=$("$LOG_EVENT" grep "seat entry" --seat alpha/chat)
+echo "$out" | grep -q "Second seat entry" && ! echo "$out" | grep -q "Other seat entry" \
+  && pass "grep: --seat filter" || fail "grep --seat"
+"$LOG_EVENT" grep "Legacy block" --since 2026-01-11 >/dev/null
+[[ $? -eq 1 ]] && pass "grep: --since filter" || fail "grep --since"
+
+# 25. schema upgrade: a pre-context db (real dbs on installed hosts) gains the
+#     column on first connect — write with --context must not error
+OLD="$TMP/oldschema"; mkdir -p "$OLD"
+python3 - "$OLD/timeline.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("""CREATE TABLE entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL,
+    agent TEXT NOT NULL, submode TEXT NOT NULL DEFAULT '', headline TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '[]', pipeline_task TEXT, session_id TEXT,
+    verdict TEXT, verdict_note TEXT, created_at TEXT NOT NULL)""")
+con.execute("INSERT INTO entries (date, time, agent, submode, headline, created_at)"
+            " VALUES ('2026-01-05', '09:00', 'old', '', 'Pre-upgrade row', '2026-01-05T09:00:00')")
+con.commit()
+PY
+JSTACK_TIMELINE_DIR="$OLD" "$LOG_EVENT" old --at 10:00 --date 2026-01-05 "Post-upgrade row" \
+  --context "written after ALTER" >/dev/null 2>&1 || fail "upgrade write errored"
+up=$(python3 -c "import sqlite3; print(sqlite3.connect('$OLD/timeline.db').execute(\"SELECT context FROM entries WHERE headline='Post-upgrade row'\").fetchall())")
+[[ "$up" == *"written after ALTER"* ]] \
+  && pass "schema upgrade: old db gains context column" || fail "schema upgrade (got $up)"
+
+# 26. bare write — no --at, no --date: lands today, stamped now (machine-local)
+NOW_MIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+if (( NOW_MIN >= 1435 )); then
+  pass "bare-write defaults (skipped: too close to midnight)"
+else
+  "$LOG_EVENT" defaulty "Stamped by omission" >/dev/null
+  got=$(SQL "SELECT date, time FROM entries WHERE agent='defaulty'")
+  [[ "$got" == *"$TODAY"* ]] || fail "bare write date (got $got)"
+  stored=$(echo "$got" | grep -oE "[0-9]{2}:[0-9]{2}")
+  STORED_MIN=$((10#${stored:0:2} * 60 + 10#${stored:3:2}))
+  diff=$((STORED_MIN - NOW_MIN))
+  (( diff >= -1 && diff <= 2 )) \
+    && pass "bare write defaults to today/now ($stored)" || fail "bare write time (got $stored)"
+fi
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "log-event: $fails FAILED" >&2

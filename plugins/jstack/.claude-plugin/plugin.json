@@ -1,7 +1,7 @@
 {
   "name": "jstack",
-  "description": "Agent workflow skills: get battle-ready on a topic (load every relevant skill, survey recent changes, read core files), file/load active items, hand off sessions, split off a verbatim copy of the session into a new terminal, audit completed work trust-nothing (a subagent reviews from source and reports a triaged verdict back to the session, or a fresh terminal you drive), reverify a whole day's shipped work across every repo against the timeline, show the result of the current topic in its real viewer, commit + push session work, install bundled rules. PreToolUse hook injects path-matched rules at edit time regardless of launch CWD. SessionStart hook injects the sub-mode's continuity.md (running memory) so a session starts sighted, not cold. SessionEnd hook (default 'selfwrite') resumes the just-ended session for one turn to write its OWN timeline line + continuity via bin/log_event + bin/continuity — the cheapest, best-informed writer, folding into the same session transcript instead of spawning a fresh review; a full multi-phase review (thread extraction, doc reconciliation) remains available as the 'review' action and the manual /post-session-review command. Portable across machines via userConfig — no hardcoded paths.",
-  "version": "0.30.1",
+  "description": "Agent workflow skills: get battle-ready on a topic (load every relevant skill, survey recent changes, read core files), hand off sessions, split off a verbatim copy of the session into a new terminal, audit completed work trust-nothing (a subagent reviews from source and reports a triaged verdict back to the session, or a fresh terminal you drive), reverify a whole day's shipped work across every repo against the timeline, show the result of the current topic in its real viewer, commit + push session work, install bundled rules. The timeline is the single running memory: bin/log_event writes a sqlite store (agent/submode/session-tagged entries; day-md files are a one-way rendered view) and serves seat queries via `log_event tail`. PreToolUse hook injects path-matched rules at edit time regardless of launch CWD. SessionStart hook injects the seat's last N timeline entries (timeline_inject config) so a session starts sighted, not cold. SessionEnd hook (default 'selfwrite') resumes the just-ended session for one turn to write its OWN seat-tagged timeline entry via bin/log_event — the cheapest, best-informed writer, folding into the same session transcript instead of spawning a fresh review; a full multi-phase review remains available as the 'review' action and the manual /post-session-review command. Portable across machines via userConfig — no hardcoded paths.",
+  "version": "0.31.0",
   "author": {
     "name": "jenyalebid"
   },
@@ -9,7 +9,7 @@
     "agent_root": {
       "type": "directory",
       "title": "Agent workspaces root",
-      "description": "Directory that contains your per-agent workspaces — each as {Name}/ with a CLAUDE.md and an active/ folder. JStack resolves every agent path under here. Example: ~/Agents or /Users/you/Projects/Agents.",
+      "description": "Directory that contains your per-agent workspaces — each as {Name}/ with a CLAUDE.md. JStack resolves every agent path under here. Example: ~/Agents or /Users/you/Projects/Agents.",
       "default": "~/Agents"
     },
     "repo_root": {

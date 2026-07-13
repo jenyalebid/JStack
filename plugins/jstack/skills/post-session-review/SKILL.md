@@ -1,20 +1,32 @@
 ---
 name: post-session-review
-description: Review the session that just ended — reconcile the agent's active.md and active items with what actually happened, extract dropped threads into follow-ups, and log timeline entries. Spawned by the jstack session-review engine; can also be invoked manually with a session id.
+description: Review the session that just ended — walk the transcript, extract dropped threads into follow-ups, reconcile any docs the session left lying, and write the seat's timeline entry. Spawned by the jstack session-review engine ('review' action); can also be invoked manually with a session id.
 argument-hint: "<session-id>"
 ---
 
 # /jstack:post-session-review — review the session that just ended
 
-You are spawned in `{agent_root}/{Name}/review/`. Session ID is in `$ARGUMENTS`.
+You are spawned in the agent's workspace. Session ID is in `$ARGUMENTS`.
 
-**Why you exist:** the next session boots nearly blind. The one thing loaded into it is `continuity.md`, injected by the SessionStart hook. Everything else — `active.md`, docs — is read only *if* the next session chooses to. So your job is delivery, not tidiness:
+**Why you exist:** the next session boots nearly blind. The one thing loaded
+into it is the seat's recent timeline entries, injected by the SessionStart
+hook. So your job is delivery, not tidiness:
 
-1. **Continuity — the deliverable.** Write `continuity.md` (Phase D): the short, honest, reconciled running memory of what this session did and where things stand, so the next run starts sighted instead of cold. The only artifact with a guaranteed path into the next session — anything the next run must know rides here.
-2. **Thread extraction.** Read the session JSONL. Topics the user raised that this session didn't resolve and aren't filed anywhere get filed or explicitly dropped. **Judgment matters**: "forget it" / "skip" / "moving on" means drop; raised-and-moved-on means file.
-3. **Accuracy — hygiene, not delivery.** `active.md` and `active/*.md` must not lie (the active-items index — pointers only, never a work-log). But a true file nobody opens changed nothing — accuracy never substitutes for the continuity write.
+1. **The timeline entry — the deliverable.** Write the seat-tagged entry
+   (Phase C): the short, honest record of what this session did and what the
+   next run must know. The only artifact with a guaranteed path into the next
+   session — anything the next run must know rides here.
+2. **Thread extraction.** Read the session JSONL. Topics the user raised that
+   this session didn't resolve and aren't filed anywhere get filed or
+   explicitly dropped. **Judgment matters**: "forget it" / "skip" / "moving
+   on" means drop; raised-and-moved-on means file.
+3. **Accuracy — hygiene, not delivery.** Docs the session touched or
+   invalidated must not lie. But a true file nobody opens changed nothing —
+   accuracy never substitutes for the timeline write.
 
-Your output is parsed by the engine. Missing required sections OR empty sections without per-item citation = rejected, re-spawned. Don't write "clean" or "none" without an evidence trail.
+Your output is parsed by the engine. Missing required sections OR empty
+sections without per-item citation = rejected, re-spawned. Don't write
+"clean" or "none" without an evidence trail.
 
 ---
 
@@ -29,6 +41,17 @@ echo "session=$SID agent=$AGENT_TITLE jsonl=$JSONL"
 ```
 
 If `$JSONL` is empty, emit a single-line `## SUMMARY` saying so and exit — the engine will surface it.
+
+Resolve the seat the session ran in — it MUST match how the SessionStart
+injector reads entries back (first path segment under the agent dir; agent
+root → `chat`), or the next run won't find what you wrote:
+
+```bash
+CWD=$(jq -r 'select(.cwd) | .cwd' "$JSONL" | head -1)
+REL="${CWD#*/"$AGENT_TITLE"}"; REL="${REL#/}"
+SUBMODE="${REL%%/*}"; SUBMODE="${SUBMODE:-chat}"
+SEAT="$AGENT/$SUBMODE"
+```
 
 ---
 
@@ -47,7 +70,7 @@ jq -r 'select(.type == "user") | .message.content
 For each distinct topic the user raised, classify into **exactly one** of:
 
 - `resolved-in-session` — addressed before session ended; cite the resolution turn or artifact.
-- `filed-elsewhere` — landed in `active/*.md`, a PR, a commit, a follow-up; cite destination.
+- `filed-elsewhere` — landed in a PR, a commit, a follow-up, an issue; cite destination.
 - `user-dropped` — the user said skip / forget / moving on / actually-don't / later; cite the exact line.
 - `unfinished-active-work` — the user was actively engaged on this topic in the last exchanges before session ended, work did NOT complete, no resolution reached.
 - `silently-dropped` — raised mid-session, work moved on, never came back, not in any file.
@@ -58,83 +81,46 @@ For each `unfinished-active-work` or `silently-dropped` topic, file a follow-up:
 file-followup "Glanceable issue title" "1–2 plain sentences: what's unfinished and why it matters."
 ```
 
-(`file-followup` ships in the plugin's `bin/` — backend chosen by the plugin's `followup_backend` userConfig; with backend `none` it's a no-op, so add the unresolved thread to `active.md` as an active-items line — an open thread the next session must pick up IS an active item — so it isn't lost.)
+(`file-followup` ships in the plugin's `bin/` — backend chosen by the plugin's `followup_backend` userConfig; with backend `none` it's a no-op, so carry the open thread as a detail bullet on the timeline entry (Phase C) — the injected entry is what the next session actually sees.)
 
 Follow-up wording rules:
 - **Title:** one short line, issue stated plainly — not "Approve X" / "Decide Y" action framing.
 - **Body:** 1–2 plain sentences. No commit hashes, no GUIDs, no file paths, no hour estimates.
 - **No duplicate filings.** If the same issue is already filed, update/skip — never stack a "still pending" copy.
 
-If a topic is a correction or new rule the user gave, apply it at the most specific place that loads when the behavior matters (project CLAUDE.md, agent CLAUDE.md, a path-scoped rule, or memory) — never park corrections in `active.md`.
+If a topic is a correction or new rule the user gave, apply it at the most specific place that loads when the behavior matters (project CLAUDE.md, agent CLAUDE.md, a path-scoped rule, or memory) — never park corrections in a follow-up.
 
 ## Phase B — Accuracy
 
-Reconcile docs in the agent workspace against what the session actually did:
-
-```bash
-cd "$(dirname "$PWD")"   # agent root
-grep -rni "<phase-A-topic-keywords>" active.md active/*.md 2>/dev/null
-```
-
-For each match, classify and act:
+Reconcile docs against what the session actually did. Scope: the docs this
+session **touched, referenced, or invalidated** (from Phase A's walk — CLAUDE
+mds, project docs, configs it edited):
 
 - `agree` — doc and reality consistent — no action.
 - `fossil` — doc references work that's done/superseded — **`Edit` the doc to remove/rewrite the line**.
-- `phantom` — an in-flight item with no doc mention — **add its one-line pointer to `active.md`** (the active-items index); the run's narrative belongs in `continuity.md`, not here.
-- `stale-active` — `active/*.md` untouched ≥ 7d — flag in DOC_RECONCILE; don't auto-prune.
+- `phantom` — the session claimed a doc update that never landed — apply it now, cite the edit.
 
-Then reconcile `active.md` — **verify it, don't author it** (see the `agent-state` rule). `active.md` is the **active-items index**: one line per open `active/{slug}.md`, nothing else — not a work-log, not history.
-- Confirm each active line is still valid — item still open, status accurate, its `active/{slug}.md` exists. Fix or remove any that drifted.
-- Add a line only for genuine new in-flight work (a phantom active item with no pointer). What this session *did* is NOT recorded here — it goes to `continuity.md` (Phase D).
-- No active items → `_None._` is complete and correct. An active.md that grows past its active items is a bug.
+## Phase C — Timeline (the running memory — THE deliverable)
 
-## Phase C — Timeline
-
-The day's spine lives at `$JSTACK_TIMELINE_DIR/$(date +%F).md` (default `~/Logs/Timeline/`). If this session produced something day-spine-worthy, it gets a `log_event` entry. Otherwise it doesn't.
-
-**Read today's timeline first** — if your event is already covered by another block, don't duplicate; extend the existing block via `Edit` or skip. Format spec lives in the jstack `timeline.md` rule.
+The timeline is the seat's memory: the next `$SEAT` session boots on the last
+entries under this exact source. Check what's already recorded, then write:
 
 ```bash
-cat "${JSTACK_TIMELINE_DIR:-$HOME/Logs/Timeline}/$(date +%F).md" 2>/dev/null
-log_event $AGENT --at HH:MM "headline ≤120 chars" --detail "≤80 chars" --detail "≤80 chars"
+log_event tail "$SEAT" -n 10
+log_event "$SEAT" --at HH:MM --session "$SID" "headline ≤120 chars" \
+  --detail "≤80 chars" --detail "≤80 chars"
 ```
 
-**Timeline-worthy:** code shipped, feature live, decision made, problem fixed, user directive that drove work, significant autonomous work.
-**NOT timeline-worthy:** "reviewed session", "updated active.md", build counts, test counts, file paths, commit hashes, session UUIDs, internal cleanup.
+**Timeline-worthy:** code shipped, feature live, decision made, problem fixed, user directive that drove work, significant autonomous work, something durable learned.
+**NOT timeline-worthy:** "reviewed session", build counts, test counts, file paths, commit hashes, session UUIDs, internal cleanup.
+
+Detail bullets earn their place by serving the NEXT run: an open thread, a
+decision and its why, a do-not-repeat. If the event is already covered by
+another block, don't duplicate.
 
 `HH:MM` is **the timestamp of the LAST message in the reviewed conversation** in machine-local time. Not now. Session JSONL records UTC (`...Z` suffix) — convert before passing to `--at`. Sanity-check: the value must be ≤ current local time. If the session's last message is from a previous local day, pass `--date YYYY-MM-DD` too.
 
 If nothing this session belongs, the `## TIMELINE` section says `none — {brief reason}`. Empty section without a reason = rejected.
-
-## Phase D — Continuity (the running memory — THE deliverable)
-
-`active.md` is the index; **`continuity.md` is the memory the mode's *next* run reads on entry** (SessionStart injects it). It is a **reconciled working doc, not an append-only log**: two moves, in order.
-
-```bash
-CWD=$(jq -r 'select(.cwd) | .cwd' "$JSONL" | head -1)
-REL="${CWD#"$CONTINUITY_ROOT/$AGENT_TITLE"}"; REL="${REL#/}"   # path under the agent dir
-SUBMODE="${REL%%/*}"; SUBMODE="${SUBMODE:-chat}"               # first segment; root → "chat"
-continuity show --agent "$AGENT_TITLE" --mode "$SUBMODE"       # READ current standing + log FIRST
-```
-
-The sub-mode MUST resolve the same way the SessionStart injector reads it back (first segment under the agent dir, root → `chat`) or the next run won't find what you wrote.
-
-**1. Reconcile the standing (the merge).** Rewrite "Where things stand" to reflect *current reality*: a thread this session finished → remove or restate as its outcome (never leave a stale "unfinished X" beside a later "finished X"); a thread that advanced → update it; genuinely new open work → add it; superseded → drop it. Only threads actually open right now — the tool hard-rejects a bloated standing, so reconcile down.
-
-```bash
-printf -- '- thread one: where it stands\n- thread two: where it stands' \
-  | continuity standing --agent "$AGENT_TITLE" --mode "$SUBMODE"
-# nothing open? clear it:  echo '' | continuity standing --agent "$AGENT_TITLE" --mode "$SUBMODE"
-```
-
-**2. Log the arc.** One dated line: what this session did (appended + aged automatically).
-
-```bash
-continuity append --agent "$AGENT_TITLE" --mode "$SUBMODE" \
-  --summary "one sentence or two: what this session actually DID, readable cold months from now"
-```
-
-Substance, not data: `"Fixed the freeze-timer regression, verified on sim."` — NOT `"4.2 · freeze-timer · ISS-0032 · b70b551"`. `continuity` ships in the plugin's `bin/` (self-contained; the engine points it at the right tree via `CONTINUITY_ROOT`). Report both moves under `ACTIONS_TAKEN`.
 
 ---
 
@@ -147,22 +133,22 @@ Substance, not data: `"Fixed the freeze-timer regression, verified on sim."` —
 (every distinct user turn. **If there were none, the FIRST line of this section MUST start with the literal phrase `no user turns` — verbatim, lowercase. Example: `no user turns — automation-triggered session (skill payload only)`.**)
 
 ## DOC_RECONCILE
-- {file:line} — {fossil/phantom/stale-active} — {action taken or flag}
+- {file:line} — {fossil/phantom} — {action taken}
 OR
-- clean — examined: active.md ({N} topic matches), active/ ({K} files); all consistent.
+- clean — examined: {docs checked, one line each}; all consistent.
 
 ## ACTIONS_TAKEN
 - Edit {path:line} — {what changed}
 - file-followup "{title}" "{body}"
 - ...
 OR
-- none — {N} user turns walked, {K} docs grepped; no action because:
+- none — {N} user turns walked, {K} docs checked; no action because:
   - {topic 1}: {per-topic reasoning}
 
 ## TIMELINE
-- log_event {agent} --at HH:MM "headline" [--detail "..." --detail "..."]
+- log_event {agent}/{submode} --at HH:MM "headline" [--detail "..." --detail "..."]
 OR
-- none — {brief reason: routine maintenance / already covered by {agent} block at HH:MM / no day-spine-worthy event}
+- none — {brief reason: routine maintenance / already covered by {seat} block at HH:MM / no timeline-worthy event}
 
 ## SUMMARY
 One sentence: most important thing about this session (or the biggest miss).
@@ -175,4 +161,4 @@ One sentence: most important thing about this session (or the biggest miss).
 - **One pass.** Don't fork, don't sub-spawn.
 - **Read the JSONL once** at Phase A start. Don't re-walk it for Phase B.
 - **Output structured sections verbatim** — exact headers, in order.
-- **Agent-specific glue** in `{agent_root}/{Name}/review/CLAUDE.md` (walk-up loaded) applies after this skill's procedure — read it.
+- **Agent-specific glue** in the agent's walk-up CLAUDE.md applies after this skill's procedure — read it.

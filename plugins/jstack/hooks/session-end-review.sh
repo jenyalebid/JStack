@@ -4,8 +4,8 @@
 # Reads the hook's stdin JSON ({session_id, transcript_path, ...}) and hands
 # both to bin/session-review-spawn, which does all gating (agent resolution,
 # loop prevention, debounce, slots) and then runs session_end_action: by default
-# "selfwrite" (resume the ended session for one turn to write its own timeline +
-# continuity), or the legacy "review" (fresh review/ session). Safe to fire from
+# "selfwrite" (resume the ended session for one turn to write its own timeline
+# entry), or the legacy "review" (fresh review/ session). Safe to fire from
 # multiple entry points — it claims each session atomically, so a host-level
 # SessionEnd hook and this plugin hook never double-act.
 #

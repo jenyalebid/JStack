@@ -4,26 +4,24 @@ Cross-machine Claude Code skills for agent workflows. Built around the `{agent_r
 
 ## What this gives you
 
-Eight slash commands (all namespaced as `/jstack:*`):
+Slash commands (all namespaced as `/jstack:*`):
 
 | Command | What it does |
 |---|---|
 | `/work` | Get battle-ready on a topic — orient, load every relevant skill, survey recent changes, read the core files, report a grounded lay of the land. `[@project] <topic>` |
-| `/active` | List active items for the current agent, or load one to resume |
-| `/save` | File the current conversation as an active item under the agent's `active/` |
 | `/handoff` | Hand off the session to a fresh terminal with context preserved |
 | `/audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
 | `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
 | `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
-| `/install-rules` | Symlink the 19 bundled rules into `~/.claude/rules/` |
+| `/install-rules` | Symlink the 17 bundled rules into `~/.claude/rules/` |
 | `/post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
 
 Plus two **whole systems** that run themselves once installed:
 
-- **Post-session review** — a SessionEnd hook spawns a validated review of every session that ends inside an agent workspace: reconciles `active.md` + `active/` with what actually happened, extracts dropped threads into follow-ups, logs timeline entries. Output is machine-validated (required sections, evidence floors, a timeline-grew gate); rejected output re-spawns once, persistent failure escalates. See **Post-session review + timeline** below.
-- **Timeline log** — `bin/log_event` writes daily `{YYYY-MM-DD}.md` timeline files (the day's spine) with strict block format, chronological insertion, and pipeline-task consolidation.
+- **Session-end self-write** — a SessionEnd hook resumes every session that ends inside an agent workspace for one turn so it writes its own seat-tagged timeline entry (the cheapest, best-informed writer); a full validated multi-phase review remains available as the `review` action. See **Session-end engine + timeline** below.
+- **Timeline** — the single running memory: `bin/log_event` writes a sqlite store (`timeline.db`; daily `{YYYY-MM-DD}.md` files are a one-way rendered view) with seat-tagged sources (`agent/submode`), session-id linkage, chronological rendering, pipeline-task consolidation, seat queries (`log_event tail`), and review verdict stamps (`log_event verdict`). A SessionStart hook injects each seat's last N entries into its next session (`timeline_inject` config), so sessions start sighted.
 
-And the supporting machinery: 18 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, four bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `log_event`, `session-review-spawn`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
+And the supporting machinery: 17 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, four bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `log_event`, `session-review-spawn`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
 
 ---
 
@@ -58,7 +56,7 @@ JStack reads its paths from **plugin config** — no path is hardcoded. Three op
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `agent_root` | directory | `~/Agents` | Directory that contains your per-agent workspaces (`{Name}/CLAUDE.md`, `{Name}/active/`). |
-| `followup_backend` | string | `none` | How `/save` files a reminder: `none` \| `todo` \| `reminders` \| `slack`. |
+| `followup_backend` | string | `none` | How the review skill files a follow-up reminder: `none` \| `todo` \| `reminders` \| `slack`. |
 | `followup_target` | string | _(empty)_ | For `todo`: a file path (default `<agent_root>/followups.md`). For `reminders`: the macOS Reminders list name (default `Follow-ups`). |
 
 Set them in Claude Code's plugin config UI, or directly in `settings.json`:
@@ -83,7 +81,7 @@ If you leave `agent_root` at the default, JStack uses `~/Agents/`.
 ### 4. Create at least one agent workspace
 
 ```bash
-mkdir -p "$AGENT_ROOT"/{YourAgentName}/active     # $AGENT_ROOT = whatever you set above
+mkdir -p "$AGENT_ROOT"/{YourAgentName}     # $AGENT_ROOT = whatever you set above
 cat > "$AGENT_ROOT"/{YourAgentName}/CLAUDE.md <<'EOF'
 # {YourAgentName}
 
@@ -101,7 +99,7 @@ After restarting Claude Code so the plugin loads:
 /install-rules
 ```
 
-Confirms and symlinks 18 rules into `~/.claude/rules/` (agent-active, canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-charts, ios-design-ethos, ios-forms, ios-lists, ios-modifiers, ios-screens, ios-services, ios-sheets, ios-style, rules, timeline, visual-assets). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
+Confirms and symlinks 17 rules into `~/.claude/rules/` (canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-charts, ios-design-ethos, ios-forms, ios-lists, ios-modifiers, ios-screens, ios-services, ios-sheets, ios-style, rules, timeline, visual-assets). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
 
 ### 6. Verify end-to-end
 
@@ -112,44 +110,37 @@ cd "$AGENT_ROOT"/{YourAgentName}
 claude
 ```
 
-In the session, run `/active`. It should list your active items (or report an empty list). If it says you're "not inside an agent tree," check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists.
+In the session, run `/jstack:work <any topic>`. If it reports you're not inside an agent tree, check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists.
 
 ---
 
-## Post-session review + timeline (the self-running systems)
+## Session-end engine + timeline (the self-running systems)
 
 Once the plugin is installed, the SessionEnd hook is live — but it only does anything when a session ends inside a reviewable agent workspace, so installing the plugin never spawns surprise reviews on a machine that isn't set up for it.
 
 ### What makes an agent reviewable
 
 ```
-{agent_root}/{Name}/review/        ← this directory existing IS the opt-in
-{agent_root}/{Name}/review/CLAUDE.md   (optional but recommended: agent-specific review glue,
-                                        auto-loaded by walk-up when the review spawns there)
-{agent_root}/{Name}/active.md       ← what the review reconciles (see the agent-state rule)
+{agent_root}/{Name}/CLAUDE.md      ← this file existing IS the opt-in (the agent identity)
 ```
 
-That's the whole setup for the default experience:
-
-```bash
-mkdir -p "$AGENT_ROOT"/{YourAgentName}/review
-```
-
-End a session inside that agent's tree → the engine resolves the owner, spawns `claude --print` from `review/` running `/post-session-review <session-id>`, validates the output, retries once on rejection. Reviews log to `~/.claude/jstack/review-state/session-review.log` by default.
+End a session inside that agent's tree → the engine resolves the owner and (default `session_end_action: "selfwrite"`) resumes the ended session for one turn so it logs its own seat-tagged timeline entry. Set `session_end_action: "review"` for the legacy fresh multi-phase review (`/jstack:post-session-review`, output machine-validated, retried once on rejection). Engine activity logs to `~/.claude/jstack/review-state/session-review.log` by default.
 
 ### Timeline
 
-The review (and anything else) writes the day's spine with the bundled CLI — it's on PATH for review spawns, or call it via the plugin cache:
+The self-write (and anything else) writes the running memory with the bundled CLI — it's on PATH for engine spawns, or call it via the plugin cache:
 
 ```bash
-log_event <agent> --at HH:MM "headline" [--detail "..."] [--pipeline-task repo#42]
+log_event <agent>/<submode> --at HH:MM "headline" [--detail "..."] [--pipeline-task repo#42] [--session <sid>]
+log_event tail <agent>/<submode> -n 10        # a seat's recent history (what injection shows)
+log_event verdict <agent>/<submode> blocked --note "do not repeat: ..."
 ```
 
-Files land at `~/Logs/Timeline/{YYYY-MM-DD}.md` (`JSTACK_TIMELINE_DIR` overrides). Format spec + editorial bar: the `timeline` rule. The `agent-state` rule carries the active.md discipline (the review is the only writer; ≤50 lines, ≤10 per entry). Install both via `/install-rules`.
+Store: `~/Logs/Timeline/timeline.db` (`JSTACK_TIMELINE_DIR` overrides); daily `{YYYY-MM-DD}.md` files are a one-way rendered view — never hand-edit them. Which seats get their history injected on session start, and how many entries, is the `timeline_inject` map in the review config. Format spec + editorial bar: the `timeline` rule (install via `/install-rules`).
 
 ### Machine config (optional — defaults are fully portable)
 
-`~/.claude/jstack/review.json` (env override: `JSTACK_REVIEW_CONFIG`). You only need it to change defaults — e.g. point `skill_invocation` at a richer host playbook, extend `required_sections` to that playbook's output contract, add host tool dirs to the spawned PATH, or wire `escalate_cmd` / `tg_classify_cmd` adapters. Full key reference: `plugins/jstack/docs/systems/post-session-review.md`. Model/budget defaults: opus, 50 turns, 1200s × 2 attempts, 2 concurrent reviews.
+`~/.claude/jstack/review.json` (env override: `JSTACK_REVIEW_CONFIG`). You only need it to change defaults — e.g. point `skill_invocation` at a richer host playbook, extend `required_sections` to that playbook's output contract, add host tool dirs to the spawned PATH, or wire `escalate_cmd` / `tg_classify_cmd` adapters. Full key reference: `plugins/jstack/docs/systems/session-end-engine.md`. Model/budget defaults: opus, 50 turns, 1200s × 2 attempts, 2 concurrent reviews.
 
 **Single entry point rule:** the plugin's SessionEnd hook is the only review spawner. Don't add a second hook in `settings.json` — and if a host ever has one anyway, the engine's per-session atomic claim still guarantees exactly one review.
 
@@ -178,7 +169,7 @@ Opens a new Claude Code terminal at a directory. Self-detects the terminal:
 
 **Contract:** `open-terminal-here <cwd> [extra-claude-args...]`. To override on a machine, put your own `open-terminal-here` earlier in `PATH`.
 
-### `file-followup` — used by `/save`
+### `file-followup` — used by the review skill
 
 Files a follow-up reminder, routed by the `followup_backend` config:
 
@@ -194,33 +185,6 @@ Files a follow-up reminder, routed by the `followup_backend` config:
 ## How the skills work (so you can predict behavior)
 
 `{root}` below = the configured `agent_root`.
-
-### `/active [n|last|oldest]`
-
-- No arg: lists every `*.md` under `{root}/{Name}/active/`, sorted by `filed:` date ascending. Up to 3 items.
-- Numeric arg: loads that item (1 = oldest) and briefs on its Goal / Where I am now / Next moves / Reference.
-- `last` / `oldest`: aliases.
-
-### `/save [slug] [--title "..."] [--paused] [--resume "..."]`
-
-Reads the current conversation, distills it into an active doc, writes to `{root}/{Name}/active/{slug}.md` with this frontmatter:
-
-```yaml
----
-title: <title>
-slug: <slug>
-status: in-progress | paused
-filed: YYYY-MM-DD
-last_touched: YYYY-MM-DD HH:MM
-lead: <agent name>
-resume_trigger: <only if paused>
----
-```
-
-Then:
-1. If `{root}/{Name}/active.md` exists with a `## Active items` section, appends a one-liner pointer there.
-2. Calls `file-followup` with `<title>` and `<body>` (body includes a one-line "why" + path to the active doc). With `followup_backend: none` this is a silent no-op.
-3. Confirms with a one-line receipt.
 
 ### `/handoff [focus]`
 
@@ -304,10 +268,9 @@ done
 
 1. **Agent root** — `{agent_root}/{Name}/` (configured, not hardcoded)
 2. **Identity** — `{agent_root}/{Name}/CLAUDE.md` (auto-loaded by walk-up)
-3. **Cross-mode state** — `{agent_root}/{Name}/active.md` (optional; if present, `save` mirrors to its `## Active items` section)
-4. **In-progress items** — `{agent_root}/{Name}/active/{slug}.md` (format defined above)
-5. **Sub-modes** — subdirectories of the agent root, same identity in a different context (walk-up handles inheritance)
-6. **Adapters** — bundled in the plugin's `bin/`, configured via `followup_backend` / `followup_target`
+3. **Running memory** — the timeline: each seat's `log_event` entries, injected back on session start (`timeline_inject`)
+4. **Sub-modes** — subdirectories of the agent root, same identity in a different context (walk-up handles inheritance)
+5. **Adapters** — bundled in the plugin's `bin/`, configured via `followup_backend` / `followup_target`
 
 Set `agent_root` to wherever your workspaces live and JStack works out of the box on any machine.
 
@@ -315,7 +278,7 @@ Set `agent_root` to wherever your workspaces live and JStack works out of the bo
 
 ## Deep docs
 
-- `plugins/jstack/docs/systems/post-session-review.md` — the review engine: gating table, full config key reference, log-line contract, safety switches.
+- `plugins/jstack/docs/systems/session-end-engine.md` — the review engine: gating table, full config key reference, log-line contract, safety switches.
 - `plugins/jstack/docs/systems/timeline-log.md` — the timeline writer: CLI contract, consolidation semantics, host-parity rule.
 - `plugins/jstack/docs/systems/path-rule-injection.md` — the PreToolUse hook internals.
 - `docs/agents-dashboard.md` — pattern spec for building a local dashboard that surfaces every agent + session (pattern-only — implement against your environment). A host dashboard can federate `plugins/jstack/systems.json` to surface and test the bundled systems alongside its own.
@@ -361,6 +324,6 @@ JStack/
 
 If you're a Claude session setting this up on a fresh machine, execute steps 1–6 in order. All steps are mechanical now: there are no adapters to hand-write (they're bundled and self-detecting). The only choices are the `agent_root` path and, optionally, the `followup_backend`. After step 6 returns a successful `/active` listing, JStack is installed and verified.
 
-To activate the self-running systems, add the **Post-session review + timeline** section's one `mkdir` (the `review/` dir per agent), run `/install-rules` (the `timeline` + `agent-state` rules carry the format discipline), and run the two test scripts under **Verify it works**. No config file is required unless you're overriding defaults — read `plugins/jstack/docs/systems/post-session-review.md` before writing one.
+To activate the self-running systems, add the **Post-session review + timeline** section's one `mkdir` (the `review/` dir per agent), run `/install-rules` (the `timeline` + `agent-state` rules carry the format discipline), and run the two test scripts under **Verify it works**. No config file is required unless you're overriding defaults — read `plugins/jstack/docs/systems/session-end-engine.md` before writing one.
 
 If `/install-rules` would overwrite anything important on the target machine, ask the user first (default behavior skips existing files, so this only matters with `--force`).

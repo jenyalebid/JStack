@@ -61,12 +61,17 @@ def is_user_engaged(jsonl_path: Path) -> bool:
 
 
 def agent_source(cwd: str) -> str:
-    """Timeline [source] from the session's workspace: ~/Agents/<Name>/** → name."""
+    """Timeline [source] from the session's workspace: ~/Agents/<Name>/<sub>/**
+    → name/sub (same seat resolution as the review engine and the SessionStart
+    injector: first path segment under the agent dir; at the agent root → chat)."""
     try:
         parts = Path(cwd).resolve().parts
         agents_root = Path.home() / "Agents"
         if parts[:len(agents_root.parts)] == agents_root.parts:
-            return parts[len(agents_root.parts)].lower()
+            rest = parts[len(agents_root.parts):]
+            agent = rest[0].lower()
+            submode = rest[1].lower() if len(rest) >= 2 else "chat"
+            return f"{agent}/{submode}"
     except (ValueError, IndexError, OSError):
         pass
     return "auto"
@@ -114,11 +119,13 @@ def main():
 
     source = agent_source(d.get("cwd") or "")
     reason = (
-        "Final step before this session ends — the daily timeline. "
-        "If this session performed real work (shipped, published, fixed, replied, "
-        "decided), append ONE entry now, written by you from what you actually did:\n\n"
-        f'  {PLUGIN_BIN}/log_event {source} "<one-line headline, specific and past-tense>" '
-        '[--detail "<short detail>" ...max 3]\n\n'
+        "Final step before this session ends — the daily timeline. It is also your "
+        f"seat's running memory: the next {source} session boots on the last entries "
+        "under this source. If this session performed real work (shipped, published, "
+        "fixed, replied, decided, learned something durable), append ONE entry now, "
+        "written by you from what you actually did:\n\n"
+        f'  {PLUGIN_BIN}/log_event {source} --at HH:MM "<one-line headline, specific and past-tense>" '
+        '[--detail "<short detail — an open thread, a decision, a do-not-repeat>" ...max 3]\n\n'
         "Then stop. If this wake was a no-op (nothing notable happened) or you already "
         "appended this session's entry, do nothing and stop. Do not start new work."
     )

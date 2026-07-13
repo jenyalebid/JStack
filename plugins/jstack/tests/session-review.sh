@@ -192,12 +192,12 @@ check("typed prompt → user-engaged", eng.is_user_engaged(f))
 f = _mk_jsonl("tui.jsonl", CRON_LINES + [{"type": "permission-mode"}])
 check("TUI attach (permission-mode) → user-engaged", eng.is_user_engaged(f))
 
-# ---- auto-review carve-out (continuity-critical crons) -------------------
+# ---- auto-review carve-out (timeline-critical crons) ---------------------
 # Auto sessions are normally skipped (their timeline is written in-session by the
-# Stop hook), EXCEPT the purpose-built recurring crons whose continuity.md is the
-# running memory their next run boots on — the post-session review is its ONLY
-# writer, so skipping them silently froze that continuity (ISS-0091). Same match
-# form as reviewed_submodes: "agent/submode" or "*/submode".
+# Stop hook), EXCEPT the purpose-built recurring crons named here — they get the
+# engine self-write instead (a purpose-prompted seat-tagged timeline line + the
+# dashboard stamp). Same match form as reviewed_submodes: "agent/submode" or
+# "*/submode".
 AUTO_LIST = ["beta/pm", "gamma/nightly-review", "*/meta"]
 check("auto-review: nightly PM cron carved in",
       eng.auto_reviewed("beta", "pm", AUTO_LIST))
@@ -227,8 +227,9 @@ sw = eng.SELFWRITE_PROMPT.format(
     marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
     submode="chat", session_id="abcd1234-....",
 )
-check("selfwrite prompt formats + names log_event",  "log_event alpha" in sw)
-check("selfwrite prompt names continuity",           "continuity" in sw and "--mode chat" in sw)
+check("selfwrite prompt formats + names seat source", "log_event alpha/chat" in sw)
+check("selfwrite prompt links the session",          "--session abcd1234-...." in sw)
+check("selfwrite prompt does NOT name continuity",   "continuity" not in sw)
 check("selfwrite prompt names the review stamp",     "stamp abcd1234-.... assistant" in sw)
 
 # The SELFWRITE log line the engine emits must match the (updated) dashboard

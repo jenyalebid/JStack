@@ -1,40 +1,68 @@
 #!/usr/bin/env python3
-"""log_event <source> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
-                                   [--detail "..."] [--detail "..."]
-                                   [--pipeline-task <repo>#<issue>]
+"""log_event — the timeline: sqlite store, day-md as a rendered view.
 
-Add a block-format entry to the daily timeline file — the day's spine.
+Write (unchanged CLI):
+    log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
+              [--detail "..."]... [--pipeline-task <repo>#<issue>] [--session <id>]
 
-Timeline dir: $JSTACK_TIMELINE_DIR (default ~/Logs/Timeline), one file per
-day: {YYYY-MM-DD}.md. Format spec lives in the jstack rule `timeline.md`.
+Query / admin (first positional is the subcommand):
+    log_event tail <agent[/submode]> [-n N] [--json]
+        Last N entries for a seat, oldest→newest. Seat form filters agent+submode;
+        bare agent matches all its submodes. Human format includes verdict lines.
+    log_event verdict <agent[/submode]> <shipped|drift|blocked|empty> --note "..."
+        Stamp the seat's LATEST entry with an independent verdict (meta review's
+        "do not repeat" loop). Verdicts ride tail/injection output — they are NOT
+        rendered into the day md, which stays strictly the day's spine.
+    log_event render [--date YYYY-MM-DD]
+        Re-render a day's md from the db (repair tool; writes happen automatically).
+    log_event migrate [--force]
+        Import legacy day-md files into the db. Idempotent: a date that already
+        has rows is skipped (--force re-imports it). Reports per-file whether the
+        re-render is byte-identical or reformatted (content preserved either way).
 
-Block format:
-    HH:MM [source]
-    headline (single line)
-    - optional detail bullet (max 3, each short)
+Store: {timeline_dir}/timeline.db (sqlite, WAL — concurrent writers safe).
+The day file {YYYY-MM-DD}.md is a ONE-WAY render, never parsed back; the single
+exception is migrate (and the automatic import-before-first-write of a legacy
+date), which exists precisely so no pre-db content is ever silently dropped.
 
-Entries are inserted in chronological order by HH:MM. --pipeline-task
-consolidates: all blocks containing the task tag are replaced by one
-up-to-date block (keeps the earliest matched timestamp unless --at given).
+Timeline dir: $JSTACK_TIMELINE_DIR (default ~/Logs/Timeline). Format spec lives
+in the jstack rule `timeline.md`. Source is `agent` or `agent/submode` — always
+pass the submode when the seat is known (e.g. alpha/chat).
 
 Self-contained: python3 stdlib only. No venv, no host imports.
-
-Examples:
-    log_event alpha --at 09:15 "Pipeline #82 build complete"
-    log_event beta --at 14:00 "Search v3 shipped" \
-        --detail "8 pipeline tasks merged" --detail "44 commits"
-    log_event beta --at 23:35 --date 2026-04-15 "V2 committed late"
-    log_event alpha --at 04:25 --pipeline-task appx#87 \
-        "Custom boards merged to v3" --detail "type discriminator schema"
 """
 
+import json
 import os
 import re
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
 
-_BLOCK_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) \[")
+_BLOCK_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) \[([^\]]+)\](.*)$")
+_BARE_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) (.+)$")   # pre-block era: no [source]
+_VALID_VERDICTS = {"shipped", "drift", "blocked", "empty"}
+_SUBCOMMANDS = {"tail", "verdict", "render", "migrate"}
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS entries (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    date          TEXT NOT NULL,
+    time          TEXT NOT NULL,
+    agent         TEXT NOT NULL,
+    submode       TEXT NOT NULL DEFAULT '',
+    headline      TEXT NOT NULL,
+    details       TEXT NOT NULL DEFAULT '[]',
+    pipeline_task TEXT,
+    session_id    TEXT,
+    verdict       TEXT,
+    verdict_note  TEXT,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entries_seat ON entries(agent, submode, date, time);
+CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date, time);
+"""
 
 
 def timeline_dir() -> Path:
@@ -51,137 +79,444 @@ def timeline_path(day: str | None = None) -> Path:
     return root / f"{d}.md"
 
 
-def _format_block(source: str, headline: str, details: list[str], ts: str) -> str:
-    """Build a multi-line entry block: header line + headline + bullets."""
-    headline = " ".join(headline.split())
-    out = [f"{ts} [{source}]", headline]
+def db_path() -> Path:
+    root = timeline_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "timeline.db"
+
+
+def connect() -> sqlite3.Connection:
+    con = sqlite3.connect(db_path(), timeout=10)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
+    con.executescript(_SCHEMA)
+    return con
+
+
+def parse_source(source: str) -> tuple[str, str]:
+    """'alpha/chat' → ('alpha', 'chat'); 'alpha' → ('alpha', '')."""
+    source = source.strip().strip("/")
+    if "/" in source:
+        agent, submode = source.split("/", 1)
+        return agent.strip(), submode.strip()
+    return source, ""
+
+
+def format_source(agent: str, submode: str) -> str:
+    return f"{agent}/{submode}" if submode else agent
+
+
+def _clean_details(details: list[str] | None) -> list[str]:
+    out = []
     for d in details or []:
         d = d.strip()
         if not d:
             continue
         if d.startswith("- "):
             d = d[2:].strip()
-        d = " ".join(d.split())
+        out.append(" ".join(d.split()))
+    return out
+
+
+def _format_block(source: str, headline: str, details: list[str], ts: str) -> str:
+    """Header line + headline + bullets — the strict day-md block format."""
+    headline = " ".join(headline.split())
+    out = [f"{ts} [{source}]", headline]
+    for d in details:
         out.append(f"- {d}")
     return "\n".join(out)
 
 
-def _split_blocks(text: str) -> list[tuple[str | None, str]]:
-    """Parse a timeline file into [(timestamp, block_text), ...].
+def render_day_text(con: sqlite3.Connection, day: str) -> str | None:
+    """Render a date's rows to md text. No rows → None."""
+    rows = con.execute(
+        "SELECT time, agent, submode, headline, details FROM entries "
+        "WHERE date = ? ORDER BY time, id", (day,),
+    ).fetchall()
+    if not rows:
+        return None
+    blocks = [
+        _format_block(format_source(a, s), h, json.loads(dt), t)
+        for t, a, s, h, dt in rows
+    ]
+    return "\n\n".join(blocks) + "\n"
 
-    A block starts at a line matching `HH:MM [` and runs until the next such
-    header or a blank line. Legacy single-line entries (`HH:MM [src] text`)
-    are treated as their own block.
+
+def render_day(con: sqlite3.Connection, day: str) -> None:
+    """One-way render of a date's rows to its md file. No rows → no write."""
+    text = render_day_text(con, day)
+    if text is not None:
+        timeline_path(day).write_text(text)
+
+
+# ---------------------------------------------------------------- legacy parse
+
+def _split_blocks(text: str) -> list[tuple[str, str, str, list[str]]]:
+    """Parse a legacy day-md into [(time, source, headline, details), ...].
+
+    Handles every historical form so nothing is ever dropped:
+    - block format: `HH:MM [source]` header, headline line, `- ` bullets
+    - single-line:  `HH:MM [source] headline`
+    - pre-block:    `HH:MM headline` (no source — imported as 'unknown')
+    - orphan text before any header — imported as its own 'unknown' entry
+    Non-bullet body lines inside a block are preserved as details.
     """
-    blocks: list[tuple[str | None, str]] = []
-    current: list[str] = []
-    current_ts: str | None = None
+    entries: list[tuple[str, str, str, list[str]]] = []
+    cur: dict | None = None
 
     def flush():
-        nonlocal current, current_ts
-        if current:
-            blocks.append((current_ts, "\n".join(current).rstrip()))
-        current = []
-        current_ts = None
+        nonlocal cur
+        if cur is None:
+            return
+        headline = cur["headline"] or "(no headline)"
+        entries.append((cur["time"], cur["source"], headline, cur["details"]))
+        cur = None
+
+    def start(time: str, source: str, headline: str):
+        nonlocal cur
+        flush()
+        cur = {"time": time, "source": source,
+               "headline": headline.strip(), "details": []}
 
     for line in text.splitlines():
         m = _BLOCK_HEADER_RE.match(line)
         if m:
+            start(m.group(1), m.group(2), m.group(3))
+            continue
+        if line.strip() == "":
             flush()
-            current_ts = m.group(1)
-            current = [line]
-        elif line.strip() == "":
-            flush()
+            continue
+        if cur is not None and not cur["headline"]:
+            cur["headline"] = line.strip()   # block header's pending headline
+            continue
+        b = _BARE_HEADER_RE.match(line)
+        if b:   # pre-block era entry — starts its own block even mid-entry
+            start(b.group(1), "unknown", b.group(2))
+            continue
+        if cur is not None:
+            body = line.strip()
+            if body.startswith("- "):
+                body = body[2:].strip()
+            cur["details"].append(body)
         else:
-            if current:
-                current.append(line)
-            # else: orphan body line before any header — drop
+            start("00:00", "unknown", line.strip())
     flush()
-    return blocks
+    return entries
 
 
-def _join_blocks(blocks: list[tuple[str | None, str]]) -> str:
-    return "\n\n".join(b[1] for b in blocks) + "\n"
+def import_day_md(con: sqlite3.Connection, day: str, path: Path) -> int:
+    """Insert a legacy day-md's blocks as rows. Caller ensures date has no rows."""
+    now = datetime.now().isoformat(timespec="seconds")
+    n = 0
+    for ts, source, headline, details in _split_blocks(path.read_text()):
+        agent, submode = parse_source(source)
+        con.execute(
+            "INSERT INTO entries (date, time, agent, submode, headline, details,"
+            " pipeline_task, session_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)",
+            (day, ts, agent, submode, headline, json.dumps(details, ensure_ascii=False), now),
+        )
+        n += 1
+    return n
 
 
-def _insert_block(blocks: list[tuple[str | None, str]], ts: str, block: str) -> list[tuple[str | None, str]]:
-    out = list(blocks)
-    for i, (b_ts, _) in enumerate(out):
-        if b_ts and b_ts > ts:
-            out.insert(i, (ts, block))
-            return out
-    out.append((ts, block))
-    return out
+def _absorb_strays(con: sqlite3.Connection, day: str) -> None:
+    """Before any write+render, absorb md blocks the db doesn't know about.
 
+    The md is a rendered view, but if ANYTHING else ever writes it directly (a
+    stale plugin cache mid-upgrade, a hand edit, a rogue tool), a naive render
+    would silently erase that entry — the exact two-writer clobber that killed
+    the old continuity system. So: parse the current md, insert any block with
+    no matching (time, agent, submode, headline) row, THEN render. Self-healing
+    beats trusting every writer forever. Also covers first-write-to-a-legacy-day
+    (all its blocks are strays → full import)."""
+    path = timeline_dir() / f"{day}.md"
+    try:
+        text = path.read_text()
+    except OSError:
+        return
+    if not text.strip():
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    for ts, source, headline, details in _split_blocks(text):
+        agent, submode = parse_source(source)
+        headline = " ".join(headline.split())
+        known = con.execute(
+            "SELECT 1 FROM entries WHERE date = ? AND time = ? AND agent = ?"
+            " AND submode = ? AND headline = ? LIMIT 1",
+            (day, ts, agent, submode, headline),
+        ).fetchone()
+        if not known:
+            con.execute(
+                "INSERT INTO entries (date, time, agent, submode, headline,"
+                " details, pipeline_task, session_id, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)",
+                (day, ts, agent, submode, headline,
+                 json.dumps(details, ensure_ascii=False), now),
+            )
+
+
+# --------------------------------------------------------------------- writes
 
 def append_timeline(source: str, text: str, day: str | None = None,
                     timestamp: str | None = None,
-                    details: list[str] | None = None) -> None:
+                    details: list[str] | None = None,
+                    session_id: str | None = None) -> None:
     if not source or not text:
         return
-    path = timeline_path(day)
+    d = day or datetime.now().strftime("%Y-%m-%d")
     ts = timestamp or datetime.now().strftime("%H:%M")
-    new_block = _format_block(source, text, details or [], ts)
-
-    if not path.exists() or path.read_text().strip() == "":
-        path.write_text(new_block + "\n")
-        return
-
-    blocks = _split_blocks(path.read_text())
-    blocks = _insert_block(blocks, ts, new_block)
-    path.write_text(_join_blocks(blocks))
+    agent, submode = parse_source(source)
+    con = connect()
+    with con:
+        _absorb_strays(con, d)
+        con.execute(
+            "INSERT INTO entries (date, time, agent, submode, headline, details,"
+            " pipeline_task, session_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+            (d, ts, agent, submode, " ".join(text.split()),
+             json.dumps(_clean_details(details), ensure_ascii=False),
+             session_id, datetime.now().isoformat(timespec="seconds")),
+        )
+        render_day(con, d)
+    con.close()
 
 
 def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
                                day: str | None = None,
                                timestamp: str | None = None,
-                               details: list[str] | None = None) -> None:
-    """Replace all timeline blocks matching a pipeline task with one summary.
-
-    The task_tag (e.g. "appx#87") is auto-prepended to the headline so the
-    block always carries its own marker. The new block keeps the earliest
-    matched timestamp unless an explicit timestamp is given.
-    """
+                               details: list[str] | None = None,
+                               session_id: str | None = None) -> None:
+    """One live entry per pipeline task: replace all rows carrying the tag
+    (tagged column, or legacy tag-in-text) with one block, earliest ts kept."""
     if not source or not task_tag or not text:
         return
     headline = " ".join(text.split())
     if task_tag not in headline:
         headline = f"{task_tag} — {headline}"
+    d = day or datetime.now().strftime("%Y-%m-%d")
+    agent, submode = parse_source(source)
 
-    path = timeline_path(day)
-    if not path.exists() or path.read_text().strip() == "":
-        append_timeline(source, headline, day=day, timestamp=timestamp, details=details)
-        return
+    con = connect()
+    with con:
+        _absorb_strays(con, d)
+        matched = con.execute(
+            "SELECT id, time FROM entries WHERE date = ? AND"
+            " (pipeline_task = ? OR headline LIKE ? OR details LIKE ?)",
+            (d, task_tag, f"%{task_tag}%", f"%{task_tag}%"),
+        ).fetchall()
+        earliest = min((t for _, t in matched), default=None)
+        if matched:
+            con.executemany("DELETE FROM entries WHERE id = ?",
+                            [(i,) for i, _ in matched])
+        final_ts = timestamp or earliest or datetime.now().strftime("%H:%M")
+        con.execute(
+            "INSERT INTO entries (date, time, agent, submode, headline, details,"
+            " pipeline_task, session_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (d, final_ts, agent, submode, headline,
+             json.dumps(_clean_details(details), ensure_ascii=False),
+             task_tag, session_id, datetime.now().isoformat(timespec="seconds")),
+        )
+        render_day(con, d)
+    con.close()
 
-    blocks = _split_blocks(path.read_text())
-    kept: list[tuple[str | None, str]] = []
-    earliest_ts: str | None = None
-    for ts_b, block in blocks:
-        if task_tag in block:
-            if ts_b and (earliest_ts is None or ts_b < earliest_ts):
-                earliest_ts = ts_b
+
+def set_verdict(seat: str, verdict: str, note: str) -> str | None:
+    """Stamp the seat's latest entry. Returns the stamped headline, or None."""
+    agent, submode = parse_source(seat)
+    con = connect()
+    with con:
+        where = "agent = ?" + (" AND submode = ?" if submode else "")
+        params: tuple = (agent, submode) if submode else (agent,)
+        row = con.execute(
+            f"SELECT id, headline FROM entries WHERE {where}"
+            " ORDER BY date DESC, time DESC, id DESC LIMIT 1", params,
+        ).fetchone()
+        if row is None:
+            return None
+        con.execute("UPDATE entries SET verdict = ?, verdict_note = ? WHERE id = ?",
+                    (verdict, note, row[0]))
+    con.close()
+    return row[1]
+
+
+# -------------------------------------------------------------------- queries
+
+def tail_entries(seat: str, n: int) -> list[dict]:
+    """Last n entries for a seat, oldest→newest. Bare agent = all submodes.
+
+    A seat query also matches the agent's submode-less rows — entries migrated
+    from the pre-seat era (and any bare-source writes). They age out of the
+    last-n window as seat-tagged entries accrue; without this, every seat would
+    boot blind right after migration."""
+    agent, submode = parse_source(seat)
+    con = connect()
+    where = "agent = ?" + (" AND submode IN (?, '')" if submode else "")
+    params: tuple = (agent, submode) if submode else (agent,)
+    rows = con.execute(
+        f"SELECT date, time, agent, submode, headline, details, verdict,"
+        f" verdict_note FROM entries WHERE {where}"
+        " ORDER BY date DESC, time DESC, id DESC LIMIT ?", params + (n,),
+    ).fetchall()
+    con.close()
+    out = []
+    for date, ts, a, s, h, dt, v, vn in reversed(rows):
+        out.append({
+            "date": date, "time": ts, "agent": a, "submode": s,
+            "headline": h, "details": json.loads(dt),
+            "verdict": v, "verdict_note": vn,
+        })
+    return out
+
+
+def format_tail(entries: list[dict]) -> str:
+    lines = []
+    for e in entries:
+        lines.append(f"{e['date']} {e['time']} — {e['headline']}")
+        for d in e["details"]:
+            lines.append(f"- {d}")
+        if e["verdict"]:
+            note = f" — {e['verdict_note']}" if e["verdict_note"] else ""
+            lines.append(f"  ↳ verdict: {e['verdict']}{note}")
+    return "\n".join(lines)
+
+
+# -------------------------------------------------------------------- migrate
+
+def migrate(force: bool = False) -> int:
+    """Import legacy day-mds. STRICTLY non-destructive: a file whose re-render
+    is not byte-identical is rolled back and left as md-only history — the
+    original file is never rewritten. --force imports it anyway (rows land in
+    the db, the md is still left untouched)."""
+    root = timeline_dir()
+    con = connect()
+    day_files = sorted(p for p in root.glob("????-??-??.md"))
+    if not day_files:
+        print(f"migrate: no day files in {root}")
+        return 0
+    md_only = 0
+    for path in day_files:
+        day = path.stem
+        original = path.read_text()
+        if not original.strip():
+            print(f"  {day}: empty — skipped")
+            continue
+        has_rows = con.execute(
+            "SELECT COUNT(*) FROM entries WHERE date = ?", (day,)
+        ).fetchone()[0]
+        if has_rows:
+            print(f"  {day}: skipped ({has_rows} rows already in db)")
+            continue
+        con.execute("BEGIN")
+        n = import_day_md(con, day, path)
+        rendered = render_day_text(con, day)
+        if rendered == original:
+            con.execute("COMMIT")
+            print(f"  {day}: {n} entries — byte-identical")
+        elif force:
+            con.execute("COMMIT")
+            print(f"  {day}: {n} entries — imported (md left untouched, render differs)")
         else:
-            kept.append((ts_b, block))
+            con.execute("ROLLBACK")
+            md_only += 1
+            print(f"  {day}: left as md-only (pre-block format — rerun with --force to import)")
+    con.close()
+    if md_only:
+        print(f"migrate: {md_only} file(s) left md-only; their content stays exactly as-is either way")
+    return 0
 
-    final_ts = timestamp or earliest_ts or datetime.now().strftime("%H:%M")
-    new_block = _format_block(source, headline, details or [], final_ts)
-    kept = _insert_block(kept, final_ts, new_block)
-    path.write_text(_join_blocks(kept))
+
+# ------------------------------------------------------------------------ CLI
+
+def _write_usage() -> str:
+    return ('usage: log_event <agent[/submode]> "<headline>" [--at HH:MM] '
+            '[--date YYYY-MM-DD] [--detail "..."]... [--pipeline-task <tag>] '
+            '[--session <id>]\n'
+            '   or: log_event tail <agent[/submode]> [-n N] [--json]\n'
+            '   or: log_event verdict <agent[/submode]> '
+            '<shipped|drift|blocked|empty> --note "..."\n'
+            '   or: log_event render [--date YYYY-MM-DD]\n'
+            '   or: log_event migrate [--force]')
+
+
+def _cmd_tail(rest: list[str]) -> int:
+    seat, n, as_json = None, 10, False
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "-n":
+            n = int(rest[i + 1]); i += 2
+        elif a == "--json":
+            as_json = True; i += 1
+        else:
+            seat = a; i += 1
+    if not seat:
+        print("log_event tail: seat required (agent or agent/submode)", file=sys.stderr)
+        return 2
+    entries = tail_entries(seat, n)
+    if as_json:
+        print(json.dumps(entries, ensure_ascii=False, indent=2))
+    elif entries:
+        print(format_tail(entries))
+    return 0
+
+
+def _cmd_verdict(rest: list[str]) -> int:
+    note = ""
+    pos: list[str] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--note":
+            note = rest[i + 1]; i += 2
+        else:
+            pos.append(rest[i]); i += 1
+    if len(pos) != 2 or pos[1] not in _VALID_VERDICTS:
+        print(f"log_event verdict: need <agent[/submode]> <{'|'.join(sorted(_VALID_VERDICTS))}> --note",
+              file=sys.stderr)
+        return 2
+    stamped = set_verdict(pos[0], pos[1], note)
+    if stamped is None:
+        print(f"log_event verdict: no entries for {pos[0]}", file=sys.stderr)
+        return 1
+    print(f"verdict[{pos[1]}] → {pos[0]}: {stamped[:80]}")
+    return 0
+
+
+def _cmd_render(rest: list[str]) -> int:
+    day = datetime.now().strftime("%Y-%m-%d")
+    if "--date" in rest:
+        day = rest[rest.index("--date") + 1]
+    con = connect()
+    render_day(con, day)
+    con.close()
+    print(f"rendered: {timeline_path(day)}")
+    return 0
 
 
 def main(argv: list[str]) -> int:
+    if not argv:
+        print(_write_usage(), file=sys.stderr)
+        return 2
+
+    if argv[0] in _SUBCOMMANDS:
+        cmd, rest = argv[0], argv[1:]
+        if cmd == "tail":
+            return _cmd_tail(rest)
+        if cmd == "verdict":
+            return _cmd_verdict(rest)
+        if cmd == "render":
+            return _cmd_render(rest)
+        if cmd == "migrate":
+            return migrate(force="--force" in rest)
+
     if len(argv) < 2:
-        print('usage: log_event <source> "<headline>" [--at HH:MM] '
-              '[--date YYYY-MM-DD] [--detail "..."]... [--pipeline-task <tag>]',
-              file=sys.stderr)
+        print(_write_usage(), file=sys.stderr)
         return 2
 
     source = argv[0]
     rest = argv[1:]
-
-    timestamp = None
-    day = None
-    pipeline_task = None
+    timestamp = day = pipeline_task = session_id = None
     details: list[str] = []
     words: list[str] = []
 
@@ -196,6 +531,8 @@ def main(argv: list[str]) -> int:
             pipeline_task = rest[i + 1]; i += 2
         elif a == "--detail":
             details.append(rest[i + 1]); i += 2
+        elif a == "--session":
+            session_id = rest[i + 1]; i += 2
         else:
             words.append(a); i += 1
 
@@ -210,10 +547,12 @@ def main(argv: list[str]) -> int:
     label = day if day else "today"
     if pipeline_task:
         consolidate_pipeline_entry(source, pipeline_task, text, day=day,
-                                   timestamp=timestamp, details=details)
+                                   timestamp=timestamp, details=details,
+                                   session_id=session_id)
         print(f"consolidated: {source} ({label}) [{pipeline_task}] {text[:80]}")
     else:
-        append_timeline(source, text, day=day, timestamp=timestamp, details=details)
+        append_timeline(source, text, day=day, timestamp=timestamp,
+                        details=details, session_id=session_id)
         print(f"logged: {source} ({label}) {text[:80]}")
     return 0
 

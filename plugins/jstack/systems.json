@@ -41,18 +41,18 @@
       "notes": "Registered in hooks/hooks.json — Claude Code auto-loads when the plugin is installed. Kill switch: JSTACK_PATH_RULES_DISABLED=1. Re-fire threshold: JSTACK_RULE_REINJECT_BYTES (default 400000 ≈ 100K tokens). Defensive: any exception → silent exit 0, never blocks the tool. Marker files live at /tmp/jstack-rule-cache/<session_id>/<rule>.marker storing the transcript byte offset at last injection."
     },
     {
-      "id": "continuity-injection",
+      "id": "timeline-injection",
       "kind": "hook",
-      "name": "SessionStart Continuity Injection",
+      "name": "SessionStart Timeline Injection",
       "status": "live",
-      "description": "SessionStart hook that injects the sub-mode's continuity.md (running memory) into every new session as additionalContext — the READ half of the post-session-review loop (the WRITE half is the review's Phase D). continuity.md is not context just by existing on disk; this makes a session start sighted instead of cold. active.md is NOT injected (it's the active-items index, read as a file). Sub-mode resolves from cwd: first segment under {agent_root}/{Name}, else 'chat' (cockpit sessions stay at the agent root, so the project-dir key / memory is never moved); 'review' is skipped.",
+      "description": "SessionStart hook that injects the seat's last N timeline entries (via bin/log_event tail) into every new session as additionalContext — the READ half of the running-memory loop (the WRITE half is the session-end self-write / Stop-hook line). Which seats get injected and how many entries is the timeline_inject map in the review config ({\"agent/submode\": N, \"*/submode\": N}); unlisted seats get nothing. Sub-mode resolves from cwd: first segment under {agent_root}/{Name}, else 'chat' (cockpit sessions stay at the agent root, so the project-dir key / memory is never moved); 'review' is skipped.",
       "code": [
         "hooks/session-start-inject.py",
         "hooks/hooks.json"
       ],
       "config": [],
       "docs": [
-        "docs/systems/post-session-review.md"
+        "docs/systems/session-end-engine.md"
       ],
       "test": {
         "type": "script",
@@ -60,7 +60,7 @@
         "description": "Live test of the real hook via its SessionStart JSON stdin contract against a hermetic temp agents tree (JSTACK_REVIEW_CONFIG override): agent-root cwd → 'chat' injects chat continuity and NOT active.md; explicit submode cwd → that submode's continuity; 'review' submode → no output; non-workspace cwd → no-op; agent without review/ → not recognized; reviewable agent with state but no continuity → no output; emitted payload is valid SessionStart hook JSON."
       },
       "subsystems": [],
-      "notes": "Registered in hooks/hooks.json — auto-loads when the plugin is installed. Kill switch: JSTACK_CONTINUITY_INJECT_DISABLED=1. Reads agent_root from JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json), same as the engine. Defensive: any error → exit 0, never blocks a session. Sub-mode resolution is kept identical to bin/session-review-spawn resolve_submode and the skill's Phase D writer — if they drift, the next run won't find what the review wrote."
+      "notes": "Registered in hooks/hooks.json — auto-loads when the plugin is installed. Kill switch: JSTACK_TIMELINE_INJECT_DISABLED=1 (legacy JSTACK_CONTINUITY_INJECT_DISABLED honored). Reads agent_root + timeline_inject from JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json), same as the engine. Defensive: any error → exit 0, never blocks a session. Sub-mode resolution is kept identical to bin/session-review-spawn resolve_submode and the Stop hook's agent_source — if they drift, a seat reads back entries it never wrote."
     },
     {
       "id": "install-rules",
@@ -87,7 +87,7 @@
       "kind": "skill",
       "name": "Work",
       "status": "live",
-      "description": "Gets the agent battle-ready on a topic before doing the work: orient (date + own active.md), resolve project → repo, determine stack, load every relevant skill via the Skill tool, survey recent changes (git log/status + topic file search), read the core files, and report a grounded lay of the land. Preparation only — no code changes, no state writes, no PR.",
+      "description": "Gets the agent battle-ready on a topic before doing the work: orient (date + injected seat timeline), resolve project → repo, determine stack, load every relevant skill via the Skill tool, survey recent changes (git log/status + topic file search), read the core files, and report a grounded lay of the land. Preparation only — no code changes, no state writes, no PR.",
       "code": [
         "skills/work/SKILL.md"
       ],
@@ -142,45 +142,6 @@
       "notes": "Args: [focus] [@agent], order-agnostic. @agent resolves like handoff under agent_root (auditor boots under that agent's identity). Caution Flags section is mandatory — user-stated 'don't break X' constraints verbatim, verified first. Auto-start: kickoff prompt passed as a pre-quoted positional claude arg (adapter flattens args via $*). Auditor asks first only if genuinely blocked, else begins immediately. /jstack:audit."
     },
     {
-      "id": "save",
-      "kind": "skill",
-      "name": "Save",
-      "status": "live",
-      "description": "Files the current conversation as an active item under {agent_root}/{Name}/active/{slug}.md with structured progress + reference + a follow-up filed via bin/file-followup.",
-      "code": [
-        "skills/save/SKILL.md",
-        "bin/file-followup"
-      ],
-      "config": [],
-      "docs": [],
-      "test": {
-        "type": "script",
-        "path": "tests/skills.sh",
-        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/file-followup adapter is executable."
-      },
-      "subsystems": [],
-      "notes": "Resolves the running agent from cwd via the userConfig.agent_root. Enforces convention max 3 active items per agent. Mirrors a one-line entry to active.md if present. Follow-up backend (none/todo/reminders/slack) routed by userConfig.followup_backend + userConfig.followup_target. /jstack:save."
-    },
-    {
-      "id": "active",
-      "kind": "skill",
-      "name": "Active",
-      "status": "live",
-      "description": "Lists or loads active items for the running agent — sorted by filed date, numbered stably (1 = oldest), max 3 per convention.",
-      "code": [
-        "skills/active/SKILL.md"
-      ],
-      "config": [],
-      "docs": [],
-      "test": {
-        "type": "script",
-        "path": "tests/skills.sh",
-        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
-      },
-      "subsystems": [],
-      "notes": "List mode (no arg): one line per active item. Load mode (n | last | oldest): brief on goal, where-I-am, next moves, reference. Post-brief work mutates the active doc in-place: bumps last_touched, appends progress log entry, revises next-moves checkboxes. /jstack:active."
-    },
-    {
       "id": "timeline-log",
       "kind": "system",
       "name": "Timeline Log",
@@ -207,19 +168,18 @@
       "kind": "system",
       "name": "Session-End Engine",
       "status": "live",
-      "description": "SessionEnd hook → bin/session-review-spawn engine → session_end_action. Default 'selfwrite': resume the just-ended session for ONE turn to write its own timeline line + continuity (cheap, folds into the same JSONL, no fresh review conversation). Legacy 'review': claude --print from {agent_root}/{Name}/review/ running the review skill → output parser-validated → retry → escalate (thread extraction + doc reconciliation). Keeps the timeline + continuity truthful after every session.",
+      "description": "SessionEnd hook → bin/session-review-spawn engine → session_end_action. Default 'selfwrite': resume the just-ended session for ONE turn to write its own seat-tagged timeline entry (cheap, folds into the same JSONL, no fresh review conversation). Legacy 'review': claude --print from {agent_root}/{Name}/review/ running the review skill → output parser-validated → retry → escalate (thread extraction + doc reconciliation). Keeps the timeline truthful after every session.",
       "code": [
         "bin/session-review-spawn",
         "hooks/session-end-review.sh",
         "hooks/hooks.json",
-        "skills/post-session-review/SKILL.md",
-        "rules-stage/agent-active.md"
+        "skills/post-session-review/SKILL.md"
       ],
       "config": [
         "~/.claude/jstack/review.json"
       ],
       "docs": [
-        "docs/systems/post-session-review.md"
+        "docs/systems/session-end-engine.md"
       ],
       "test": {
         "type": "script",
@@ -227,7 +187,7 @@
         "description": "Imports the real engine under a hermetic temp config: output validator (good passes; missing section / evidence-free walk / log_event-claimed-but-timeline-didn't-grow reject; 'no user turns' + cron paraphrases accepted; host-extended section lists enforced), agent resolution (umbrella dirs, project_dir_map, $HOME → default_agent, review/-dir reviewable convention), atomic claim dedup (live pid loses, stale pid taken over), SPAWN log-line dashboard contract."
       },
       "subsystems": [],
-      "notes": "session_end_action selects the behavior: 'selfwrite' (default) resumes the ended session (bin/log_event + bin/continuity on the spawned PATH, selfwrite_model/selfwrite_max_turns/selfwrite_timeout_secs) and re-records the reviewed offset past the appended write so a reopen doesn't re-fire; 'review' runs the fresh review/ session (skill_invocation, required_sections, model, max_turns, timeout_secs, tg_classify_cmd, escalate_cmd); 'off' does nothing. Stack requirements: agent workspaces under agent_root with {Name}/review/ (reviewable convention). Config: JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json) — agent_root, default_agent, project_dir_map, extra_path, log_file, plus the action-specific keys above. Kill switch: JSTACK_REVIEW_DISABLED=1. Loop guard: SKIP_SESSION_HOOK=1 on every spawn. Multi-entry-point safe: per-session atomic claim means a host SessionEnd hook and the plugin hook never double-act."
+      "notes": "session_end_action selects the behavior: 'selfwrite' (default) resumes the ended session (bin/log_event on the spawned PATH, selfwrite_model/selfwrite_max_turns/selfwrite_timeout_secs) and re-records the reviewed offset past the appended write so a reopen doesn't re-fire; 'review' runs the fresh review/ session (skill_invocation, required_sections, model, max_turns, timeout_secs, tg_classify_cmd, escalate_cmd); 'off' does nothing. Stack requirements: agent workspaces under agent_root with {Name}/review/ (reviewable convention). Config: JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json) — agent_root, default_agent, project_dir_map, extra_path, log_file, plus the action-specific keys above. Kill switch: JSTACK_REVIEW_DISABLED=1. Loop guard: SKIP_SESSION_HOOK=1 on every spawn. Multi-entry-point safe: per-session atomic claim means a host SessionEnd hook and the plugin hook never double-act."
     },
     {
       "id": "push",

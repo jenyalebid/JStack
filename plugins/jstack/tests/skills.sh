@@ -121,8 +121,6 @@ run_skill work
 run_skill install-rules
 run_skill handoff open-terminal-here
 run_skill audit open-terminal-here
-run_skill save file-followup
-run_skill active
 run_skill push
 run_skill post-session-review file-followup log_event
 run_skill showme open-artifact

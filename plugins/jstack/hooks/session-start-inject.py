@@ -1,60 +1,60 @@
 #!/usr/bin/env python3
-"""SessionStart hook — inject the sub-mode's running memory into every new session.
+"""SessionStart hook — inject the seat's recent timeline history into new sessions.
 
-``continuity.md`` is not read just because it exists on disk — a file in the
-workspace is not context in the session. This hook closes that loop: on session
-start it resolves the agent + sub-mode from the session's cwd and injects the
-sub-mode's ``continuity.md`` (what past runs did) as SessionStart
-additionalContext, so the session starts sighted instead of cold. It is the READ
-half of the post-session-review loop, whose WRITE half is the review's Phase D.
+A file on disk is not context in a session. This hook closes the loop on the
+timeline (the single running memory): on session start it resolves the agent +
+sub-mode from the session's cwd and injects that seat's last N timeline entries
+as SessionStart additionalContext, so the session starts sighted instead of
+cold. The WRITE half is the session-end engine (selfwrite/review) and the Stop
+hook for auto sessions — both log via `log_event <agent/submode> ...`; the
+injection reads back through `log_event tail`.
 
-(``active.md`` is deliberately NOT injected — it's the active-items index, read
-as a file when needed; the running memory is what a cold start actually lacks.)
+Which seats get injected, and how many entries, is host config — the
+`timeline_inject` map in $JSTACK_REVIEW_CONFIG (~/.claude/jstack/review.json):
 
-Sub-mode resolution (MUST match the review's Phase D writer and the engine's
-resolve_submode): the first path component of cwd under {agent_root}/{Name};
-empty (cwd == the agent root) → "chat", the default cockpit mode. Cockpit
-sessions run at the agent root — they are NOT required to cd into chat/, so the
-project-dir key (transcripts + memory) is never disturbed; "chat" is only the
-label under which their continuity is stored ({Name}/chat/continuity.md).
+    "timeline_inject": {"alpha/chat": 10, "*/pm": 10, "*/social": 10}
 
-The "review" sub-mode is skipped — the automated reviewer operates on the ended
-session's transcript and reconciles active.md itself; it needs no injection.
+Match forms: exact "agent/submode" wins over wildcard "*/submode". Seats not
+matched get nothing. No config key → no injection anywhere (opt-in).
 
-Config: agent_root from $JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json),
-falling back to ~/Agents — the same resolution the review engine uses. An agent
-is recognized iff {agent_root}/{Name}/CLAUDE.md exists (the reviewable marker).
+Sub-mode resolution (MUST match the engine's resolve_submode and the Stop
+hook): the first path component of cwd under {agent_root}/{Name}; empty (cwd ==
+the agent root) → "chat", the default cockpit mode. Cockpit sessions run at the
+agent root — they are NOT required to cd into chat/, so the project-dir key
+(transcripts + memory) is never disturbed. The "review" sub-mode is skipped.
 
 Defensive: any error → silent exit 0, empty output. A SessionStart hook must
 never block or corrupt a session. Stdlib only, no host dependency.
+Kill switch: JSTACK_TIMELINE_INJECT_DISABLED=1 (legacy
+JSTACK_CONTINUITY_INJECT_DISABLED honored too).
 """
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
+PLUGIN_BIN = Path(__file__).resolve().parent.parent / "bin"
 
-def _agent_root() -> Path:
+
+def _config() -> dict:
     cfg_path = Path(
         os.environ.get(
             "JSTACK_REVIEW_CONFIG",
             str(Path.home() / ".claude" / "jstack" / "review.json"),
         )
     ).expanduser()
-    root = "~/Agents"
     try:
         data = json.loads(cfg_path.read_text())
-        if isinstance(data, dict) and data.get("agent_root"):
-            root = data["agent_root"]
+        return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError, ValueError):
-        pass
-    return Path(root).expanduser()
+        return {}
 
 
-def resolve(cwd: Path, root: Path) -> tuple[Path | None, str | None]:
-    """(agent_dir, submode) for a workspace session, else (None, None).
+def resolve(cwd: Path, root: Path) -> tuple[str | None, str | None]:
+    """(agent, submode) for a workspace session, else (None, None).
 
     submode is the first path segment under {root}/{Name}, or "chat" at the root.
     Recognized only when {Name}/CLAUDE.md exists — same gate the engine uses."""
@@ -68,32 +68,50 @@ def resolve(cwd: Path, root: Path) -> tuple[Path | None, str | None]:
     if not (agent_dir / "CLAUDE.md").is_file():
         return None, None
     submode = rel.parts[1] if len(rel.parts) >= 2 else "chat"
-    return agent_dir, submode
+    return agent_dir.name.lower(), submode.lower()
 
 
-def _read(path: Path) -> str:
+def inject_count(cfg: dict, agent: str, submode: str) -> int:
+    inject = cfg.get("timeline_inject")
+    if not isinstance(inject, dict):
+        return 0
+    for key in (f"{agent}/{submode}", f"*/{submode}"):
+        if key in inject:
+            try:
+                return int(inject[key])
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def tail(seat: str, n: int) -> str:
     try:
-        return path.read_text().strip()
-    except OSError:
+        r = subprocess.run(
+            [str(PLUGIN_BIN / "log_event"), "tail", seat, "-n", str(n)],
+            capture_output=True, text=True, timeout=8,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
         return ""
 
 
-def build_context(agent_dir: Path, submode: str) -> str:
-    cont = _read(agent_dir / submode / "continuity.md")
-    if not cont:
-        return ""
+def build_context(agent: str, submode: str, entries: str, n: int) -> str:
+    seat = f"{agent}/{submode}"
     return (
-        "<jstack-continuity>\n"
-        f"Injected on entry by JStack — {agent_dir.name} · {submode} running memory. "
-        "This is what prior runs already did; you are not starting cold. Build on it — "
-        "don't re-discover or re-propose what's already below.\n\n"
-        f"{cont}\n"
-        "</jstack-continuity>"
+        "<jstack-timeline>\n"
+        f"Injected on entry by JStack — the last timeline entries {seat} (your seat) "
+        "wrote, oldest first. This is your own recent history: you are not starting "
+        "cold. Build on it — don't re-discover, re-propose, or re-litigate what's "
+        "already below. A `↳ verdict:` line is the independent review's call on that "
+        "run — if its note names a move to avoid, pick differently.\n\n"
+        f"{entries}\n"
+        "</jstack-timeline>"
     )
 
 
 def main() -> int:
-    if os.environ.get("JSTACK_CONTINUITY_INJECT_DISABLED"):
+    if os.environ.get("JSTACK_TIMELINE_INJECT_DISABLED") or \
+            os.environ.get("JSTACK_CONTINUITY_INJECT_DISABLED"):
         return 0
     try:
         payload = json.load(sys.stdin)
@@ -101,12 +119,17 @@ def main() -> int:
         payload = {}
     cwd = payload.get("cwd") or os.getcwd()
 
-    agent_dir, submode = resolve(Path(cwd), _agent_root())
-    if agent_dir is None or submode == "review":
+    cfg = _config()
+    root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
+    agent, submode = resolve(Path(cwd), root)
+    if agent is None or submode == "review":
         return 0
 
-    context = build_context(agent_dir, submode)
-    if not context:
+    n = inject_count(cfg, agent, submode)
+    if n <= 0:
+        return 0
+    entries = tail(f"{agent}/{submode}", n)
+    if not entries:
         return 0
 
     sys.stdout.write(
@@ -114,7 +137,7 @@ def main() -> int:
             {
                 "hookSpecificOutput": {
                     "hookEventName": "SessionStart",
-                    "additionalContext": context,
+                    "additionalContext": build_context(agent, submode, entries, n),
                 }
             }
         )

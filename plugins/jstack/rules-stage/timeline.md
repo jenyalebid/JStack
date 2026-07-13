@@ -117,15 +117,19 @@ belong to the system that owns them.
 ## Reading back — the default recall surface
 
 "What did we do?" questions resolve here first, not by digging transcripts:
-a **date** question ("what happened Monday?") → read that day's rendered md;
-a **keyword** question ("when did we ship X?") → `log_event grep`.
+a **date** question ("what happened Monday?") → `log_event recall`; a
+**keyword** question ("when did we ship X?") → `log_event grep`. Injection
+and recall are the same mechanism — one store, different read shapes.
 
 ```bash
 log_event tail alpha/chat -n 10     # a seat's recent history (what injection shows)
 log_event tail alpha -n 20          # all of an agent's seats
 log_event tail alpha/chat --json    # structured: ids, session ids, verdicts, context
+log_event recall 2026-04-28                    # a day replayed, all seats
+log_event recall 2026-04-28 alpha              # one agent's day (alpha/chat = one seat)
+log_event recall 2026-04-21..2026-04-27 --full # a week, context blobs included
 log_event grep "publish endpoint" --seat alpha/chat --since 2026-04-01
-log_event show 1234                 # everything one entry holds (id from grep / tail --json)
+log_event show 1234                 # everything one entry holds (id from grep/recall/tail --json)
 ```
 
 ## Verdicts — the independent check

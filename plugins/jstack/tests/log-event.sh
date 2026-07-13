@@ -231,6 +231,38 @@ up=$(python3 -c "import sqlite3; print(sqlite3.connect('$OLD/timeline.db').execu
 [[ "$up" == *"written after ALTER"* ]] \
   && pass "schema upgrade: old db gains context column" || fail "schema upgrade (got $up)"
 
+# 26a. recall <date>: full blocks for a day, all seats, chronological, with #ids
+out=$("$LOG_EVENT" recall "$LEGACY_DAY")
+echo "$out" | grep -q "Legacy block one" && echo "$out" | grep -q "Legacy block two" \
+  && echo "$out" | grep -q "\[delta\]" && echo "$out" | grep -q "\[gamma/social\]" \
+  && echo "$out" | grep -qE "^#[0-9]+ $LEGACY_DAY 08:00" \
+  && [[ $(echo "$out" | grep -oE "0[89]:[0-9]{2}" | head -1) == "08:00" ]] \
+  && pass "recall day: all seats, chronological" || fail "recall day"
+
+# 26b. recall <date> <seat>: seat filter — exact seat narrows, bare agent spans seats,
+#      verdicts ride (recall shows what injection would have shown that day)
+out=$("$LOG_EVENT" recall "$DAY" alpha/chat)
+echo "$out" | grep -q "Seat-tagged entry" && ! echo "$out" | grep -q "Other seat entry" \
+  && echo "$out" | grep -q "↳ verdict: blocked" \
+  && pass "recall seat filter + verdict rides" || fail "recall seat filter"
+"$LOG_EVENT" recall "$DAY" alpha | grep -q "Other seat entry" \
+  && pass "recall bare agent spans seats" || fail "recall bare agent"
+
+# 26b2. recall --full: detailed recall — context blobs ride; default stays lean
+! "$LOG_EVENT" recall "$DAY" alpha/chat | grep -q "long freeform recall" \
+  && "$LOG_EVENT" recall "$DAY" alpha/chat --full | grep -q "long freeform recall" \
+  && pass "recall --full carries context, default lean" || fail "recall --full"
+
+# 26c. recall range from..to; 'all' explicit; no rows → exit 1; bad date → exit 2
+out=$("$LOG_EVENT" recall "$LEGACY_DAY..$LEGACY2_DAY" all)
+echo "$out" | grep -q "Legacy block one" && echo "$out" | grep -q "Pre-db entry that must survive" \
+  && ! echo "$out" | grep -q "First thing shipped" \
+  && pass "recall range" || fail "recall range"
+"$LOG_EVENT" recall 2001-01-01 >/dev/null
+[[ $? -eq 1 ]] && pass "recall empty day exit 1" || fail "recall empty day exit"
+"$LOG_EVENT" recall jan-24 >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "recall bad date exit 2" || fail "recall bad date exit"
+
 # 26. bare write — no --at, no --date: lands today, stamped now (machine-local)
 NOW_MIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
 if (( NOW_MIN >= 1435 )); then

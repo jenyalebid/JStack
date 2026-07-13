@@ -43,7 +43,7 @@ from pathlib import Path
 _BLOCK_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) \[([^\]]+)\](.*)$")
 _BARE_HEADER_RE = re.compile(r"^(\d{2}:\d{2}) (.+)$")   # pre-block era: no [source]
 _VALID_VERDICTS = {"shipped", "drift", "blocked", "empty"}
-_SUBCOMMANDS = {"tail", "verdict", "render", "migrate", "grep", "show"}
+_SUBCOMMANDS = {"tail", "verdict", "render", "migrate", "grep", "show", "recall"}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -440,6 +440,52 @@ def grep_entries(pattern: str, seat: str | None = None,
              "headline": h} for i, d, t, a, s, h in rows]
 
 
+def recall_entries(day_from: str, day_to: str,
+                   seat: str | None = None) -> list[dict]:
+    """A day (or range) replayed — the recall surface for date questions
+    ('what happened Monday?'), optionally narrowed to one seat. Same store,
+    same seat semantics as tail (bare agent = all its seats)."""
+    where = ["date >= ?", "date <= ?"]
+    params: list = [day_from, day_to]
+    if seat:
+        agent, submode = parse_source(seat)
+        where.append("agent = ?"); params.append(agent)
+        if submode:
+            where.append("submode IN (?, '')"); params.append(submode)
+    con = connect()
+    rows = con.execute(
+        "SELECT id, date, time, agent, submode, headline, details, verdict,"
+        " verdict_note, session_id, context FROM entries"
+        f" WHERE {' AND '.join(where)} ORDER BY date, time, id", params,
+    ).fetchall()
+    con.close()
+    out = []
+    for i, d, t, a, s, h, dt, v, vn, sid, ctx in rows:
+        out.append({"id": i, "date": d, "time": t,
+                    "source": format_source(a, s), "headline": h,
+                    "details": json.loads(dt), "verdict": v,
+                    "verdict_note": vn, "session_id": sid, "context": ctx})
+    return out
+
+
+def format_recall(entries: list[dict], full: bool = False) -> str:
+    """Day-md-shaped blocks plus what the md never shows: ids, seat verdicts,
+    and (with full) each entry's context."""
+    blocks = []
+    for e in entries:
+        lines = [f"#{e['id']} {e['date']} {e['time']} [{e['source']}]",
+                 e["headline"]]
+        for d in e["details"]:
+            lines.append(f"- {d}")
+        if e["verdict"]:
+            note = f" — {e['verdict_note']}" if e["verdict_note"] else ""
+            lines.append(f"  ↳ verdict: {e['verdict']}{note}")
+        if full and e["context"]:
+            lines.append(f"context:\n{e['context']}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 def show_entry(entry_id: int) -> dict | None:
     """Everything one entry holds — the on-demand loader behind a grep/tail hit."""
     con = connect()
@@ -513,6 +559,8 @@ def _write_usage() -> str:
             '   or: log_event tail <agent[/submode]> [-n N] [--json]\n'
             '   or: log_event grep "<substring>" [--seat <agent[/submode]>] '
             '[--since YYYY-MM-DD] [--json]\n'
+            '   or: log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> '
+            '[<agent[/submode]>|all] [--full] [--json]\n'
             '   or: log_event show <id>\n'
             '   or: log_event verdict <agent[/submode]> '
             '<shipped|drift|blocked|empty> --note "..."\n'
@@ -565,6 +613,41 @@ def _cmd_grep(rest: list[str]) -> int:
         for h in hits:
             print(f"#{h['id']} {h['date']} {h['time']} [{h['source']}] {h['headline']}")
     return 0 if hits else 1
+
+
+def _cmd_recall(rest: list[str]) -> int:
+    dates, seat, full, as_json = None, None, False, False
+    pos: list[str] = []
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--full":
+            full = True; i += 1
+        elif a == "--json":
+            as_json = True; i += 1
+        else:
+            pos.append(a); i += 1
+    if pos:
+        dates = pos[0]
+    if len(pos) >= 2 and pos[1] != "all":
+        seat = pos[1]
+    if not dates:
+        print("log_event recall: date required (YYYY-MM-DD or "
+              "YYYY-MM-DD..YYYY-MM-DD)", file=sys.stderr)
+        return 2
+    day_from, _, day_to = dates.partition("..")
+    day_to = day_to or day_from
+    if not (re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_from)
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_to)):
+        print(f"log_event recall: bad date '{dates}' (expected YYYY-MM-DD or "
+              "YYYY-MM-DD..YYYY-MM-DD)", file=sys.stderr)
+        return 2
+    entries = recall_entries(day_from, day_to, seat=seat)
+    if as_json:
+        print(json.dumps(entries, ensure_ascii=False, indent=2))
+    elif entries:
+        print(format_recall(entries, full=full))
+    return 0 if entries else 1
 
 
 def _cmd_show(rest: list[str]) -> int:
@@ -637,6 +720,8 @@ def main(argv: list[str]) -> int:
             return _cmd_tail(rest)
         if cmd == "grep":
             return _cmd_grep(rest)
+        if cmd == "recall":
+            return _cmd_recall(rest)
         if cmd == "show":
             return _cmd_show(rest)
         if cmd == "verdict":

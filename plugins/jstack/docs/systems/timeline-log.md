@@ -33,14 +33,15 @@ log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
 
 ```bash
 log_event tail <agent[/submode]> [-n N] [--json]     # seat history, oldest→newest; bare agent = all seats
-log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]   # recall: case-insensitive over headline+details+context; exit 1 = no match
-log_event show <id>                                  # everything one entry holds, incl. context (id from grep / tail --json)
+log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]   # keyword recall: case-insensitive over headline+details+context; exit 1 = no match
+log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> [<seat>|all] [--full] [--json]   # date recall: a day or range replayed, optionally one seat; --full rides context blobs
+log_event show <id>                                  # everything one entry holds, incl. context (id from grep / recall / tail --json)
 log_event verdict <agent[/submode]> shipped|drift|blocked|empty --note "..."
 log_event render [--date YYYY-MM-DD]                 # re-render a day view (repair; writes render automatically)
 log_event migrate [--force]                          # import legacy day-md files (strictly non-destructive)
 ```
 
-Recall routing: a date question ("what happened Monday?") reads that day's rendered md; a keyword question ("when did we ship X?") is `grep`. Both are cheaper and more reliable than transcript archaeology.
+Recall routing: a date question ("what happened Monday?") is `recall`; a keyword question ("when did we ship X?") is `grep`; either chains into `show <id>` for one entry's full depth. All are cheaper and more reliable than transcript archaeology — and they are the same mechanism as seat injection: one store, different read shapes (`tail` = last-N per seat, `recall` = per date, `grep` = per keyword, `show` = per entry).
 
 Seat tails also match the agent's submode-less rows (pre-seat-era migrations) so seats aren't blind right after migration; those age out of the last-N window naturally. `verdict` stamps an independent review's call on the seat's latest entry — it rides `tail` and injection (`↳ verdict:`), never the day md.
 

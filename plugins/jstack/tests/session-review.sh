@@ -117,6 +117,22 @@ extra = ["TRANSCRIPT_WALK", "J_LIST_LIVE", "DOC_RECONCILE", "ACTIONS_TAKEN", "TI
 ok, why = eng.validate_review_output(GOOD, extra, timeline_grew=True)
 check("host-extended section list enforced", not ok and "J_LIST_LIVE" in why)
 
+# ---- timeline dir stat ---------------------------------------------------
+# log_event may file under a PRIOR day (--date of the last real message when a
+# session ends days later) — the growth gate must watch the whole dir, not
+# just today's file.
+import time as _time
+tl_dir = tmp / "Timeline"
+tl_dir.mkdir(parents=True, exist_ok=True)
+prior_day = tl_dir / "2026-07-10.md"
+prior_day.write_text("09:00 [x]\nold entry\n")
+pre = eng._timeline_dir_stat(tl_dir)
+_time.sleep(0.02)
+prior_day.write_text("09:00 [x]\nold entry\n\n15:39 [x]\nlate-filed entry\n")
+post = eng._timeline_dir_stat(tl_dir)
+check("prior-day file growth detected dir-wide", post[0] > pre[0] and post[1] > pre[1])
+check("missing timeline dir → zero stat", eng._timeline_dir_stat(tmp / "NoSuchDir") == (0, 0.0))
+
 # ---- session limit (rate limit) ----------------------------------------
 # A review spawn that only hit the Claude usage limit exits 1 with a one-line
 # limit message. That is transient — not a review-content failure — so it must

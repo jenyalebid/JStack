@@ -93,10 +93,12 @@ or any docs. Then stop.
 1. TIMELINE — if this session did something day-spine-worthy (shipped code, made a
    decision, fixed a problem, or a Boss directive that drove real work), log exactly
    ONE line:
-       log_event {agent} --at HH:MM "headline, <=120 chars, present tense"
-   Add up to 3 `--detail "..."` bullets only if they earn their place. HH:MM is the
-   local time of the last real message (run `date +%H:%M` if unsure). If nothing this
-   session is timeline-worthy, SKIP this step — never invent an entry.
+       log_event {agent} --date YYYY-MM-DD --at HH:MM "headline, <=120 chars, present tense"
+   Add up to 3 `--detail "..."` bullets only if they earn their place. YYYY-MM-DD and
+   HH:MM are the local date and time of the last REAL message — not now. A session can
+   end days after its last real work (terminal left open), and without --date the
+   entry files under the wrong day. If nothing this session is timeline-worthy, SKIP
+   this step — never invent an entry.
 
 2. CONTINUITY — refresh your running memory so your next run starts sighted:
        continuity show --agent {agent_title} --mode {submode}
@@ -758,9 +760,10 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
         # So `continuity` (bin/) writes to the same tree the engine reviews.
         env["CONTINUITY_ROOT"] = str(CFG["agent_root"])
 
-        timeline_path = CFG["timeline_dir"] / f"{time.strftime('%Y-%m-%d')}.md"
-        pre_size = timeline_path.stat().st_size if timeline_path.exists() else 0
-        pre_mtime = timeline_path.stat().st_mtime if timeline_path.exists() else 0.0
+        # Watch the whole timeline dir, not just today's file: log_event may
+        # legitimately file under a prior day (--date of the last real message
+        # when a session ends days after its last real work).
+        pre_size, pre_mtime = _timeline_dir_stat(CFG["timeline_dir"])
 
         _log(f"SPAWN {session_id[:8]} → {agent} (attempt {attempt}, workspace: {workspace.name})")
 
@@ -799,8 +802,7 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
                 time.sleep(backoff)
             continue
 
-        post_size = timeline_path.stat().st_size if timeline_path.exists() else 0
-        post_mtime = timeline_path.stat().st_mtime if timeline_path.exists() else 0.0
+        post_size, post_mtime = _timeline_dir_stat(CFG["timeline_dir"])
         ok, reason = validate_review_output(
             result.stdout,
             CFG["required_sections"],
@@ -839,12 +841,26 @@ def _extract_section(output: str, header: str) -> str:
     return m.group(1) if m else ""
 
 
+def _timeline_dir_stat(timeline_dir: Path) -> tuple[int, float]:
+    """(total bytes, latest mtime) across every day file in the timeline dir.
+
+    Dir-wide because log_event may file under a prior day (--date of the last
+    real message), so watching only today's file would miss a real write."""
+    total, latest = 0, 0.0
+    if timeline_dir.exists():
+        for f in timeline_dir.glob("*.md"):
+            st = f.stat()
+            total += st.st_size
+            latest = max(latest, st.st_mtime)
+    return total, latest
+
+
 def validate_review_output(output: str, required_sections: list[str],
                            timeline_grew: bool = True) -> tuple[bool, str]:
     """(ok, reason). Required-section presence + per-section evidence floors.
 
-    timeline_grew: did the day's timeline file actually gain bytes during the
-    spawn — if the model claimed `log_event` but the file didn't grow, the
+    timeline_grew: did the timeline dir actually gain bytes during the
+    spawn — if the model claimed `log_event` but no day file grew, the
     call never executed (the silent-pass bug this gate exists for)."""
     missing = [s for s in required_sections if f"## {s}" not in output]
     if missing:

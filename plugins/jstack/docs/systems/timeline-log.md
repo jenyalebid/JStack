@@ -22,6 +22,7 @@ log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
 - **Block format (rendered view):** `HH:MM [agent/submode]` header line, one-line headline, 0–3 `- ` detail bullets. Exactly one blank line between blocks.
 - **Chronological rendering:** entries render sorted by `--at`, not insert order. Late-logged events slot into place.
 - **`--date`** files under a previous local day.
+- **Future stamps are impossible and clamp:** a `--date` after today lands today stamped now; a same-day `--at` past the current minute (2-min grace) becomes now. Backstop for the classic writer error — HH:MM copied from a UTC transcript timestamp.
 - **`--pipeline-task <tag>`** consolidates: every existing entry carrying the tag (tagged column or legacy tag-in-text) is replaced by one current entry. The tag is auto-prepended to the headline; the earliest matched timestamp is kept unless `--at` is given. One live entry per task, always current.
 - **`--session <sid>`** links the entry to the transcript that produced it.
 - Headlines collapse internal newlines/whitespace; details are normalized to `- ` bullets.

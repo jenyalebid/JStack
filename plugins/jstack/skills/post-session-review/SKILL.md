@@ -107,7 +107,8 @@ entries under this exact source. Check what's already recorded, then write:
 
 ```bash
 log_event tail "$SEAT" -n 10
-log_event "$SEAT" --at HH:MM --session "$SID" "headline ≤120 chars" \
+STAMP=$(python3 -c 'import os,sys,datetime as d;print(d.datetime.fromtimestamp(os.stat(sys.argv[1]).st_mtime).strftime("%Y-%m-%d %H:%M"))' "$JSONL")
+log_event "$SEAT" --at "${STAMP#* }" --date "${STAMP%% *}" --session "$SID" "headline ≤120 chars" \
   --detail "≤80 chars" --detail "≤80 chars"
 ```
 
@@ -118,7 +119,7 @@ Detail bullets earn their place by serving the NEXT run: an open thread, a
 decision and its why, a do-not-repeat. If the event is already covered by
 another block, don't duplicate.
 
-`HH:MM` is **the timestamp of the LAST message in the reviewed conversation** in machine-local time. Not now. Session JSONL records UTC (`...Z` suffix) — convert before passing to `--at`. Sanity-check: the value must be ≤ current local time. If the session's last message is from a previous local day, pass `--date YYYY-MM-DD` too.
+`$STAMP` is the transcript file's mtime — the moment the session's last message landed, already machine-local. Use it verbatim; never copy a timestamp from inside the JSONL into `--at` — those are UTC (`...Z`) and stamp the entry hours ahead. (`log_event` clamps impossible future stamps to now as a backstop, but the mtime is the honest time.)
 
 If nothing this session belongs, the `## TIMELINE` section says `none — {brief reason}`. Empty section without a reason = rejected.
 

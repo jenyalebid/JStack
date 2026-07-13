@@ -148,6 +148,29 @@ grep -q "Stray block written behind the db" "$TMP/$LEGACY2_DAY.md" \
   && [[ $(SQL "SELECT COUNT(*) FROM entries WHERE date='$LEGACY2_DAY' AND agent='rogue'") == "[(1,)]" ]] \
   && pass "stray md block absorbed into db" || fail "stray md block absorbed into db"
 
+# 19. future --at on today is impossible — clamped to current local time
+#     (the classic writer error: HH:MM copied from a UTC transcript timestamp)
+TODAY=$(date +%Y-%m-%d)
+NOW_MIN=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+if (( NOW_MIN >= 1435 )); then
+  pass "future --at clamp (skipped: too close to midnight)"
+  pass "future --date clamp (skipped: too close to midnight)"
+else
+  "$LOG_EVENT" clampy --at 23:59 --date "$TODAY" "Stamped from a UTC transcript" >/dev/null
+  got=$(SQL "SELECT time FROM entries WHERE agent='clampy'")
+  stored=${got:3:5}
+  STORED_MIN=$((10#${stored:0:2} * 60 + 10#${stored:3:2}))
+  diff=$((STORED_MIN - NOW_MIN))
+  (( diff >= -1 && diff <= 2 )) \
+    && pass "future --at clamped to now ($stored)" || fail "future --at clamped (got $stored, now_min=$NOW_MIN)"
+
+  # 20. future --date is impossible too (UTC date rollover after ~5pm PT) — lands today, stamped now
+  "$LOG_EVENT" clampy2 --at 00:15 --date 2099-01-01 "Dated tomorrow by UTC rollover" >/dev/null
+  got=$(SQL "SELECT date FROM entries WHERE agent='clampy2'")
+  [[ "$got" == *"$TODAY"* ]] \
+    && pass "future --date clamped to today" || fail "future --date clamped (got $got)"
+fi
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "log-event: $fails FAILED" >&2

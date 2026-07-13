@@ -71,11 +71,13 @@ Bullets are punchy too:
 
 ## Order is chronological
 
-**Always pass `--at HH:MM`** — for a session's own end-of-session self-write,
-this is the **timestamp of the LAST message in the reviewed conversation**
-(machine-local time, not UTC). For in-session direct `log_event` calls, use
-the actual event time. Late-logged events from a previous local day: also
-pass `--date YYYY-MM-DD`.
+**Always pass `--at HH:MM`, machine-local wall clock.** A session's own
+end-of-session self-write stamps `$(date +%H:%M)`; a review writing for an
+already-ended session derives it from the transcript file's **mtime**. Never
+copy a timestamp from inside a session JSONL — those are UTC and land hours
+ahead (`log_event` clamps impossible future stamps to now as a backstop).
+For in-session direct `log_event` calls, use the actual event time.
+Late-logged events from a previous local day: also pass `--date YYYY-MM-DD`.
 
 ## One event, one entry
 

@@ -258,6 +258,22 @@ def _absorb_strays(con: sqlite3.Connection, day: str) -> None:
 
 # --------------------------------------------------------------------- writes
 
+def _clamp_future(day: str, ts: str) -> tuple[str, str]:
+    """The timeline records what happened — a stamp in the future is always a
+    writer error (the classic: HH:MM or date copied from a UTC transcript
+    timestamp). Future date → today, stamped now. Same-day future time (2-min
+    grace) → now. Past days pass through untouched (legit late logging)."""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    if day > today:
+        return today, now.strftime("%H:%M")
+    if day == today:
+        h, m = ts.split(":")
+        if int(h) * 60 + int(m) > now.hour * 60 + now.minute + 2:
+            return day, now.strftime("%H:%M")
+    return day, ts
+
+
 def append_timeline(source: str, text: str, day: str | None = None,
                     timestamp: str | None = None,
                     details: list[str] | None = None,
@@ -266,6 +282,7 @@ def append_timeline(source: str, text: str, day: str | None = None,
         return
     d = day or datetime.now().strftime("%Y-%m-%d")
     ts = timestamp or datetime.now().strftime("%H:%M")
+    d, ts = _clamp_future(d, ts)
     agent, submode = parse_source(source)
     con = connect()
     with con:
@@ -295,6 +312,7 @@ def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
     if task_tag not in headline:
         headline = f"{task_tag} — {headline}"
     d = day or datetime.now().strftime("%Y-%m-%d")
+    d, _ = _clamp_future(d, "00:00")   # day first — the tag match below runs on it
     agent, submode = parse_source(source)
 
     con = connect()
@@ -310,6 +328,7 @@ def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
             con.executemany("DELETE FROM entries WHERE id = ?",
                             [(i,) for i, _ in matched])
         final_ts = timestamp or earliest or datetime.now().strftime("%H:%M")
+        _, final_ts = _clamp_future(d, final_ts)
         con.execute(
             "INSERT INTO entries (date, time, agent, submode, headline, details,"
             " pipeline_task, session_id, created_at)"

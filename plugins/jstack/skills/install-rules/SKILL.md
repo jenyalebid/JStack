@@ -50,7 +50,6 @@ Installing N rules into ~/.claude/rules/:
   - ios-style.md
   - rules.md
   - visual-assets.md
-  - x-compound-tools.md
 
 Mode: symlink (use --copy for copies, --force to overwrite existing)
 ```

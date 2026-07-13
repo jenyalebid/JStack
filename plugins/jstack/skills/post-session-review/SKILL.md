@@ -22,8 +22,8 @@ Your output is parsed by the engine. Missing required sections OR empty sections
 
 ```bash
 SID="$ARGUMENTS"
-AGENT_TITLE=$(basename "$(dirname "$PWD")")                              # Lynda, Jarvis, ...
-AGENT=$(echo "$AGENT_TITLE" | tr '[:upper:]' '[:lower:]')                # lynda, jarvis, ...
+AGENT_TITLE=$(basename "$(dirname "$PWD")")                              # the agent dir name, title case
+AGENT=$(echo "$AGENT_TITLE" | tr '[:upper:]' '[:lower:]')                # lowercased
 JSONL=$(find ~/.claude/projects -name "${SID}.jsonl" -print -quit 2>/dev/null)
 echo "session=$SID agent=$AGENT_TITLE jsonl=$JSONL"
 ```

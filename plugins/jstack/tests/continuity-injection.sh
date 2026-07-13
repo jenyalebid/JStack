@@ -24,14 +24,14 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/jstack-injecttest.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 ROOT="$TMP/Agents"
-mkdir -p "$ROOT/Mario/review" "$ROOT/Mario/chat" "$ROOT/Mario/pm" "$ROOT/Loner" "$ROOT/Solo"
-printf '# Mario\n' > "$ROOT/Mario/CLAUDE.md"
+mkdir -p "$ROOT/Gamma/review" "$ROOT/Gamma/chat" "$ROOT/Gamma/pm" "$ROOT/Loner" "$ROOT/Solo"
+printf '# Gamma\n' > "$ROOT/Gamma/CLAUDE.md"
 printf '# Solo\n' > "$ROOT/Solo/CLAUDE.md"
-printf '# Mario — state\n\n## Active items\n- **thing** — doing it. → active/thing.md\n' > "$ROOT/Mario/active.md"
+printf '# Gamma — state\n\n## Active items\n- **thing** — doing it. → active/thing.md\n' > "$ROOT/Gamma/active.md"
 # Solo is reviewable but has NO continuity yet (only state) → nothing to inject
 printf '# Solo — state\n\n## Active items\n- **x** — y. → active/x.md\n' > "$ROOT/Solo/active.md"
-printf '# Continuity — Mario · chat\n\n## Today\n- Shipped the freeze fix.\n' > "$ROOT/Mario/chat/continuity.md"
-printf '# Continuity — Mario · pm\n\n## Today\n- Reviewed the roadmap.\n' > "$ROOT/Mario/pm/continuity.md"
+printf '# Continuity — Gamma · chat\n\n## Today\n- Shipped the freeze fix.\n' > "$ROOT/Gamma/chat/continuity.md"
+printf '# Continuity — Gamma · pm\n\n## Today\n- Reviewed the roadmap.\n' > "$ROOT/Gamma/pm/continuity.md"
 # Loner has NO root CLAUDE.md → not a reviewable agent
 printf '# Loner — state\n\n_None._\n' > "$ROOT/Loner/active.md"
 
@@ -53,21 +53,21 @@ ok()   { echo "  ok: $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 
 # (a) agent root → chat: chat continuity present; active.md NOT injected
-OUT="$(ctx "$ROOT/Mario")"
+OUT="$(ctx "$ROOT/Gamma")"
 echo "$OUT" | grep -q "Shipped the freeze fix" && echo "$OUT" | grep -q "chat" \
   && ! echo "$OUT" | grep -q "active-items" \
   && ok "agent-root injects chat continuity (and not active.md)" \
   || bad "agent-root injection wrong :: $OUT"
 
 # (b) explicit submode cwd → that submode's continuity, not chat's
-OUT="$(ctx "$ROOT/Mario/pm")"
+OUT="$(ctx "$ROOT/Gamma/pm")"
 echo "$OUT" | grep -q "Reviewed the roadmap" && echo "$OUT" | grep -q " pm " \
   && ! echo "$OUT" | grep -q "Shipped the freeze fix" \
   && ok "submode cwd injects that submode's continuity" \
   || bad "submode cwd resolution wrong :: $OUT"
 
 # (c) review submode → no output
-OUT="$(fire "$ROOT/Mario/review")"
+OUT="$(fire "$ROOT/Gamma/review")"
 [[ -z "$OUT" ]] && ok "review submode is skipped" || bad "review submode emitted output :: $OUT"
 
 # (d) non-workspace cwd → no output
@@ -83,7 +83,7 @@ OUT="$(fire "$ROOT/Solo")"
 [[ -z "$OUT" ]] && ok "no continuity → no output (active.md alone is not injected)" || bad "injected with no continuity :: $OUT"
 
 # valid-JSON check on the one that emits
-OUT="$(fire "$ROOT/Mario")"
+OUT="$(fire "$ROOT/Gamma")"
 echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["hookSpecificOutput"]["hookEventName"]=="SessionStart"' 2>/dev/null \
   && ok "output is valid SessionStart hook JSON" || bad "output not valid hook JSON :: $OUT"
 

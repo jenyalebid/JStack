@@ -37,7 +37,7 @@ engine_path, tmp = sys.argv[1], Path(sys.argv[2])
 
 # Hermetic config BEFORE import (engine loads CFG at import time)
 agent_root = tmp / "Agents"
-for name in ("Jarvis", "Lynda"):
+for name in ("Alpha", "Beta"):
     (agent_root / name).mkdir(parents=True)
     (agent_root / name / "CLAUDE.md").write_text("# agent\n")
 (agent_root / "NoClaudeMd").mkdir(parents=True)  # workspace without CLAUDE.md — not reviewable
@@ -45,8 +45,8 @@ for name in ("Jarvis", "Lynda"):
 cfg_path = tmp / "review.json"
 cfg_path.write_text(json.dumps({
     "agent_root": str(agent_root),
-    "default_agent": "jarvis",
-    "project_dir_map": {"-Users-x-Books-Project": "mario"},
+    "default_agent": "alpha",
+    "project_dir_map": {"-Users-x-Some-Project": "gamma"},
     "state_dir": str(tmp / "state"),
     "timeline_dir": str(tmp / "Timeline"),
 }))
@@ -74,7 +74,7 @@ GOOD = """## TRANSCRIPT_WALK
 - Edit active.md:4 — removed fossil entry
 
 ## TIMELINE
-- log_event jarvis --at 10:30 "Thing fixed"
+- log_event alpha --at 10:30 "Thing fixed"
 
 ## SUMMARY
 Fixed the thing.
@@ -90,7 +90,7 @@ check("missing section rejected", not ok and "SUMMARY" in why)
 ok, why = eng.validate_review_output(GOOD, CORE, timeline_grew=False)
 check("log_event without file growth rejected", not ok and "did not grow" in why)
 
-none_tl = GOOD.replace('- log_event jarvis --at 10:30 "Thing fixed"',
+none_tl = GOOD.replace('- log_event alpha --at 10:30 "Thing fixed"',
                        "- none — routine maintenance")
 ok, why = eng.validate_review_output(none_tl, CORE, timeline_grew=False)
 check(f"timeline 'none — reason' passes without growth ({why or 'ok'})", ok)
@@ -143,20 +143,20 @@ check("normal review output not flagged as session-limit", not eng.is_session_li
 
 # ---- agent resolution ---------------------------------------------------
 agents = eng.reviewable_agents(agent_root)
-check("reviewable = root-CLAUDE.md convention", sorted(agents) == ["jarvis", "lynda"])
+check("reviewable = root-CLAUDE.md convention", sorted(agents) == ["alpha", "beta"])
 
 enc_root = str(agent_root).replace("/", "-").replace(".", "-")
 def res(dirname):
     return eng.resolve_agent(dirname, agent_root, agents,
-                             {"-Users-x-Books-Project": "lynda"}, "jarvis")
+                             {"-Users-x-Some-Project": "beta"}, "alpha")
 
-check("umbrella sub-mode resolves", res(f"{enc_root}-Jarvis-chat") == "jarvis")
-check("umbrella root resolves", res(f"{enc_root}-Lynda") == "lynda")
-check("deep mission path resolves", res(f"{enc_root}-Jarvis-missions-200-dau") == "jarvis")
+check("umbrella sub-mode resolves", res(f"{enc_root}-Alpha-chat") == "alpha")
+check("umbrella root resolves", res(f"{enc_root}-Beta") == "beta")
+check("deep mission path resolves", res(f"{enc_root}-Alpha-missions-200-dau") == "alpha")
 check("non-reviewable workspace misses", res(f"{enc_root}-NoClaudeMd-chat") is None)
-check("project_dir_map resolves", res("-Users-x-Books-Project") == "lynda")
+check("project_dir_map resolves", res("-Users-x-Some-Project") == "beta")
 home_enc = str(Path.home()).replace("/", "-").replace(".", "-")
-check("home dir → default_agent", res(home_enc) == "jarvis")
+check("home dir → default_agent", res(home_enc) == "alpha")
 check("unrelated dir misses", res("-Users-x-Random-Thing") is None)
 
 # ---- claim dedup --------------------------------------------------------
@@ -198,24 +198,24 @@ check("TUI attach (permission-mode) → user-engaged", eng.is_user_engaged(f))
 # running memory their next run boots on — the post-session review is its ONLY
 # writer, so skipping them silently froze that continuity (ISS-0091). Same match
 # form as reviewed_submodes: "agent/submode" or "*/submode".
-AUTO_LIST = ["lynda/pm", "mario/nightly-review", "*/meta"]
+AUTO_LIST = ["beta/pm", "gamma/nightly-review", "*/meta"]
 check("auto-review: nightly PM cron carved in",
-      eng.auto_reviewed("lynda", "pm", AUTO_LIST))
+      eng.auto_reviewed("beta", "pm", AUTO_LIST))
 check("auto-review: wildcard sub-mode carved in",
-      eng.auto_reviewed("jarvis", "meta", AUTO_LIST))
+      eng.auto_reviewed("alpha", "meta", AUTO_LIST))
 check("auto-review: ordinary social wake stays skipped",
-      not eng.auto_reviewed("lynda", "social", AUTO_LIST))
+      not eng.auto_reviewed("beta", "social", AUTO_LIST))
 check("auto-review: empty/None allowlist reviews nothing auto",
-      not eng.auto_reviewed("lynda", "pm", None))
+      not eng.auto_reviewed("beta", "pm", None))
 check("auto-review: None sub-mode never carved in",
-      not eng.auto_reviewed("lynda", None, AUTO_LIST))
+      not eng.auto_reviewed("beta", None, AUTO_LIST))
 
 # ---- log format contract (dashboard parses SPAWN lines) -----------------
 import re
-eng._log("SPAWN abcd1234 → jarvis (attempt 1, workspace: review)")
+eng._log("SPAWN abcd1234 → alpha (attempt 1, workspace: review)")
 line = eng.CFG["log_file"].read_text().strip().splitlines()[-1]
 m = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) SPAWN (\w{8})\S* . (\w+)", line)
-check("SPAWN log line matches dashboard regex", bool(m) and m.group(3) == "jarvis")
+check("SPAWN log line matches dashboard regex", bool(m) and m.group(3) == "alpha")
 
 # ---- self-write path (default session_end_action) -----------------------
 check("session_end_action defaults to selfwrite",
@@ -224,19 +224,19 @@ check("session_end_action defaults to selfwrite",
 # The one-turn resume prompt must format cleanly with all placeholders and
 # name the three writes it drives.
 sw = eng.SELFWRITE_PROMPT.format(
-    marker=eng.SELFWRITE_MARKER, agent="jarvis", agent_title="Jarvis",
+    marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
     submode="chat", session_id="abcd1234-....",
 )
-check("selfwrite prompt formats + names log_event",  "log_event jarvis" in sw)
+check("selfwrite prompt formats + names log_event",  "log_event alpha" in sw)
 check("selfwrite prompt names continuity",           "continuity" in sw and "--mode chat" in sw)
 check("selfwrite prompt names the review stamp",     "stamp abcd1234-.... assistant" in sw)
 
 # The SELFWRITE log line the engine emits must match the (updated) dashboard
 # regex, which accepts SELFWRITE alongside legacy SPAWN.
-eng._log("SELFWRITE abcd1234 → jarvis/chat")
+eng._log("SELFWRITE abcd1234 → alpha/chat")
 line = eng.CFG["log_file"].read_text().strip().splitlines()[-1]
 m2 = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?:SELFWRITE|SPAWN) (\w{8})\S* . (\w+)", line)
-check("SELFWRITE log line matches dashboard regex", bool(m2) and m2.group(3) == "jarvis")
+check("SELFWRITE log line matches dashboard regex", bool(m2) and m2.group(3) == "alpha")
 
 print()
 if fails:

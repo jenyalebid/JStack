@@ -13,7 +13,7 @@ User invoked showme. They don't want a text summary of what you produced — the
 `$ARGUMENTS` = `[mode] [focus]`, both optional.
 
 - **`mode`** — a reserved token, `raw`, `live`, or `location`, anywhere in the args. Omitted = **default** (preview-preferred). `raw`/`default`/`live` set where on the fidelity ladder to land (below); `location` is off the ladder — it reveals the artifact in Finder instead of rendering it (see below).
-- **`focus`** — everything that isn't the mode token. Narrows which artifact when the session touched several ("the icon", "the settings screen", "the retro doc"). It's an explicit narrowing instruction — don't try to be balanced. Omitted: show the most recent salient result; if two candidates are equally central and the wrong pick wastes Boss's time, ask one short question, otherwise take the most recent.
+- **`focus`** — everything that isn't the mode token. Narrows which artifact when the session touched several ("the icon", "the settings screen", "the retro doc"). It's an explicit narrowing instruction — don't try to be balanced. Omitted: show the most recent salient result; if two candidates are equally central and the wrong pick wastes the user's time, ask one short question, otherwise take the most recent.
 
 ## The fidelity ladder — what `mode` selects
 
@@ -31,7 +31,7 @@ For a static artifact already produced (image, PDF), `default` and `live` collap
 
 Reflect on this conversation. What is the concrete result of the current topic — the thing worth looking at? Resolve it to an **absolute path** (or URL, for web/live). If you produced it this session you know where it is; otherwise locate it before opening — never open a guessed path. Apply `focus` to narrow.
 
-**The result is not always an artifact you made — sometimes it's an action Boss must take.** If the session ended with the ball in *Boss's* court (a cloud console to configure, billing to enable, a dashboard toggle, an OAuth/API grant, a service to sign up for), the "thing worth looking at" is **the place where they do it**, not a tool you built or a file you wrote. Surfacing a CLI demo or a code path here is a miss — open the console and tell them what to do. See the *Pending external setup* row below.
+**The result is not always an artifact you made — sometimes it's an action the user must take.** If the session ended with the ball in *the user's* court (a cloud console to configure, billing to enable, a dashboard toggle, an OAuth/API grant, a service to sign up for), the "thing worth looking at" is **the place where they do it**, not a tool you built or a file you wrote. Surfacing a CLI demo or a code path here is a miss — open the console and tell them what to do. See the *Pending external setup* row below.
 
 ## Step 2 — Pick the surface (by mode), then open
 
@@ -47,19 +47,19 @@ Reflect on this conversation. What is the concrete result of the current topic �
 | **Markdown / doc** | the `.md`/source in editor | Quick Look render (macOS `qlmanage -p`) / default app | same as default |
 | **Data (csv/json)** | raw file in editor | compact table inline if clearer, else default app | same as default |
 | **Code change / diff** | the changed file(s) in editor/IDE | the diff inline, or in the editor | run it, if it has a runtime surface |
-| **Pending external setup** (a console/dashboard *Boss* must configure) | the script/command/doc that drives the setup, in the editor | **open the deepest direct link to the exact page** (not the product homepage) + outline the numbered steps inline and name what info you need back | same — open the page(s), walk the steps with them |
+| **Pending external setup** (a console/dashboard *the user* must configure) | the script/command/doc that drives the setup, in the editor | **open the deepest direct link to the exact page** (not the product homepage) + outline the numbered steps inline and name what info you need back | same — open the page(s), walk the steps with them |
 
-**When the result is a setup Boss must perform.** Open the **deepest** deep-link that lands them on the exact action — the specific project's IAM page, the billing screen, the integration's settings tab — never just `console.cloud.google.com`. Open every distinct page they'll touch (you can open several). Then give a tight numbered checklist of what to click/enter and, crucially, **what to hand back to you** (an ID, a downloaded key, a confirmation) so the loop closes. The artifact is the button, not your code.
+**When the result is a setup the user must perform.** Open the **deepest** deep-link that lands them on the exact action — the specific project's IAM page, the billing screen, the integration's settings tab — never just `console.cloud.google.com`. Open every distinct page they'll touch (you can open several). Then give a tight numbered checklist of what to click/enter and, crucially, **what to hand back to you** (an ID, a downloaded key, a confirmation) so the loop closes. The artifact is the button, not your code.
 
 **Features: preview by default, sim on `live`, code on `raw`.** "Show me the settings screen" → its SwiftUI preview in Xcode. "Show me the settings screen live" → running on the sim. "Show me the settings screen raw" → the Swift file in Xcode. Reach for the project's launch skill before hand-building.
 
 ## Step 3 — Confirm
 
-One line: what you opened and where (`SettingsView.swift open in Xcode`, `settings-screen preview in Xcode's canvas`, `Wordy running on the sim — settings screen`, `<url> in the browser`, `Opened icon.png in Preview`, `Revealed firebase-keys.tar.gz.enc in Finder`). For anything you ran or previewed, attach or reference the screenshot so the visual is captured, not just asserted.
+One line: what you opened and where (`SettingsView.swift open in Xcode`, `settings-screen preview in Xcode's canvas`, `the app running on the sim — settings screen`, `<url> in the browser`, `Opened icon.png in Preview`, `Revealed firebase-keys.tar.gz.enc in Finder`). For anything you ran or previewed, attach or reference the screenshot so the visual is captured, not just asserted.
 
 ## Fallbacks
 
 - **Nothing visual exists** (the topic produced only a decision, a config value, an explanation): say so plainly and give the best textual rendering — a tight table, the key diff, the value. Don't fabricate an artifact to open.
 - **Requested surface unavailable** (no `#Preview` for a `default` request, no running server for `live`, no source for `raw`): drop to the nearest rung, open that, and say which rung you landed on and why.
-- **`open-artifact` / `xed` exits nonzero** (no opener, no Xcode, bad path): report the absolute path and what failed so Boss can open it manually.
-- **Ambiguous topic, no focus**: pick the most recent salient artifact and open it; mention the others in one line so Boss can `/jstack:showme <focus>` to switch.
+- **`open-artifact` / `xed` exits nonzero** (no opener, no Xcode, bad path): report the absolute path and what failed so the user can open it manually.
+- **Ambiguous topic, no focus**: pick the most recent salient artifact and open it; mention the others in one line so the user can `/jstack:showme <focus>` to switch.

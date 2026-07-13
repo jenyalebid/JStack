@@ -1,14 +1,11 @@
 ---
 paths:
-  - "Books-Project/**/*.swift"
-  - "Wordy-Project/**/*.swift"
-  - "Gamebit-Project/**/*.swift"
-  - "Packages/**/*.swift"
+  - "**/*.swift"
 ---
 
 # iOS Design Foundations
 
-Universal design principles for all J&J iOS projects. These are the baseline — component-type rules (sheets, lists, screens, etc.) provide specific patterns and load automatically by directory.
+Universal design principles for iOS projects. These are the baseline — component-type rules (sheets, lists, screens, etc.) provide specific patterns and load automatically by directory.
 
 Full HIG reference: `~/Research/apple-hig-ios-swiftui-reference.md`
 
@@ -62,7 +59,7 @@ Full HIG reference: `~/Research/apple-hig-ios-swiftui-reference.md`
 
 ## Type Safety — No AnyView
 
-`AnyView` is **banned** in J&J SwiftUI code. It erases static view type, breaks SwiftUI's structural diffing, and degrades animations / transitions / identity-based features (`matchedGeometryEffect`, `@FocusState`, scroll position).
+`AnyView` is **banned** in SwiftUI code. It erases static view type, breaks SwiftUI's structural diffing, and degrades animations / transitions / identity-based features (`matchedGeometryEffect`, `@FocusState`, scroll position).
 
 - **Container with content slot:** make it generic — `struct Foo<Card: View>: View { @ViewBuilder var card: () -> Card }`. Never store `() -> AnyView`. `ImageRenderer` / `UIHostingController` accept the generic content directly.
 - **Heterogeneous view kinds:** use a `@ViewBuilder` `switch` over an enum, or a typed snapshot struct holding each row. See `StatView.PatternSnapshot` and `GameHeaderView` "Slot dispatch (no AnyView)" for reference shape.

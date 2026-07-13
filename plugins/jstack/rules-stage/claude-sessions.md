@@ -5,23 +5,16 @@ paths:
 
 # Claude Session Files
 
-**Never read raw JSONL directly** — these files are large and mostly token noise.
+**Never read raw session JSONL directly** — transcript files are large and mostly token noise; a full read can blow the context window.
 
-## Tools
+## Working with transcripts
 
-All scripts at `~/Operations/Infrastructure/scripts/`, run with `.venv/bin/python3`.
+- **This session's own transcript path**: `/jstack:print` emits it.
+- **Extract, don't read.** Pull only what you need with `jq` — e.g. the last N user/assistant texts:
 
-**Single session digest:**
 ```bash
-.venv/bin/python3 scripts/review_sessions.py digest <session-id>
+jq -r 'select(.type == "user" or .type == "assistant") | .message.content | if type == "array" then .[] | select(.type == "text") | .text else . end' <session>.jsonl | tail -50
 ```
 
-**List unreviewed sessions for an agent:**
-```bash
-.venv/bin/python3 scripts/review_sessions.py list <agent>
-```
-
-**Stamp session as reviewed:**
-```bash
-.venv/bin/python3 scripts/review_sessions.py stamp <session-id> <agent>
-```
+- **Counts / shape first**: `wc -l`, `jq -r .type | sort | uniq -c` — decide what to extract before extracting.
+- Reviewing a finished session is what the jstack session-review engine and `/jstack:post-session-review <session-id>` are for — prefer them over hand-parsing.

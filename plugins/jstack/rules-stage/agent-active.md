@@ -5,7 +5,7 @@ paths:
 
 # Agent Active-Items Discipline — active.md
 
-`{agent_root}/{Name}/active.md` holds **one thing: the agent's active-items index** — a one-line pointer to each open `active/{slug}.md`. Nothing else. Not a work-log, not history, not a watch-list, not pending-Boss notes. Every session reads it on entry to know what's in flight.
+`{agent_root}/{Name}/active.md` holds **one thing: the agent's active-items index** — a one-line pointer to each open `active/{slug}.md`. Nothing else. Not a work-log, not history, not a watch-list, not pending-owner notes. Every session reads it on entry to know what's in flight.
 
 ## The only content
 
@@ -20,7 +20,7 @@ No active items → `_None._`. That is a complete, correct active.md.
 
 Everything that used to sprawl here now lives where it belongs:
 - **What got done** → the sub-mode's `continuity.md` + the timeline.
-- **Decisions / blockers / Boss-facing** → reminders (J List / J Pending) + the issue ledger.
+- **Decisions / blockers / owner-facing** → the host's reminder system + the issue ledger.
 - **The full dossier for an in-flight item** → its `active/{slug}.md`.
 
 ## Who touches it

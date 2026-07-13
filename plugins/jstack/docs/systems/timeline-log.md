@@ -33,7 +33,7 @@ Self-contained python3 stdlib — no venv, no host imports. Safe to call from ho
 
 ## Host parity
 
-A host machine may have its own in-process timeline writer (e.g. a daemon module that logs events without shelling out). That is allowed **only with a parity test**: run both writers on the same inputs and assert byte-identical output, so the format can never drift between implementations. The Jarvis host pins this with `tests/test_jstack_timeline_parity.py` in its infrastructure repo.
+A host machine may have its own in-process timeline writer (e.g. a daemon module that logs events without shelling out). That is allowed **only with a parity test**: run both writers on the same inputs and assert byte-identical output, so the format can never drift between implementations. A host that does this must pin the parity test in its own infrastructure repo.
 
 ## Editorial bar (enforced by the rule, summarized)
 

@@ -2,7 +2,7 @@
 """JStack Stop hook — auto sessions append their OWN timeline line before dying.
 
 Auto work (cron/gateway/--print sessions nobody typed into) gets no post-session
-review (Boss 2026-07-02) — but its work must still land on the daily timeline,
+review (by design) — but its work must still land on the daily timeline,
 written by the model that did the work while its context is still loaded, not
 scraped or generated after the fact. Mechanism: block the FIRST stop of an auto
 session once, with a reminder to append via log_event (or do nothing if the

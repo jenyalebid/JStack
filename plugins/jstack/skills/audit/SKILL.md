@@ -10,15 +10,15 @@ A handoff doc is a continuation briefing. An audit brief is its inverse — a **
 
 Two modes, same trust-nothing core:
 
-- **`internal` (default)** — the auditor runs as a **subagent of this session**. It returns *structured* findings to this model. This model then **independently re-verifies each finding from source**, fixes the ones it confirms real, refutes the noise, flags the genuinely-unclear ones, and hands Boss a **condensed report**. No wall of raw auditor text — Boss reads a triaged verdict, not a transcript.
-- **`external`** — opens a fresh terminal preloaded with the brief; the auditor reports its verdict to Boss *in that terminal*. Use when Boss wants to drive the audit himself with full context separation.
+- **`internal` (default)** — the auditor runs as a **subagent of this session**. It returns *structured* findings to this model. This model then **independently re-verifies each finding from source**, fixes the ones it confirms real, refutes the noise, flags the genuinely-unclear ones, and hands the user a **condensed report**. No wall of raw auditor text — The user reads a triaged verdict, not a transcript.
+- **`external`** — opens a fresh terminal preloaded with the brief; the auditor reports its verdict to the user *in that terminal*. Use when the user wants to drive the audit themselves with full context separation.
 
 ## Arguments
 
 `$ARGUMENTS` = `[focus] [@agent] [internal|external]`, all optional, order-agnostic.
 
 - **`internal` / `external`** (the mode token): selects the mode. Default `internal` if absent.
-- **`@agent`** (the `@`-prefixed token, wherever it appears): run the audit under a different agent's identity. Resolve the target workspace under `${user_config.agent_root}`: match `{Name}` against agent subdirectories case-insensitively (`@mario` → `Mario/`). Target cwd = the agent's `chat/` subdir if it exists, else the agent root. No matching directory → list the available agent directories and stop; do not guess.
+- **`@agent`** (the `@`-prefixed token, wherever it appears): run the audit under a different agent's identity. Resolve the target workspace under `${user_config.agent_root}`: match `{Name}` against agent subdirectories case-insensitively (`@atlas` → `Atlas/`). Target cwd = the agent's `chat/` subdir if it exists, else the agent root. No matching directory → list the available agent directories and stop; do not guess.
 - **`focus`** (everything that isn't a recognized token): narrow the audit to that part of the work. The brief covers only claims relevant to the focus and the auditor goes deep on it. Omitted → audit everything this session claims to have done.
 
 With no `@agent`, the target cwd is the current cwd.
@@ -116,7 +116,7 @@ Write the file to `{TARGET_CWD}/audit-brief.md` with the Write tool (target cwd 
 trash "$TARGET_CWD/audit-brief.md" 2>/dev/null || rm -f "$TARGET_CWD/audit-brief.md"
 ```
 
-Then output the **brief part** (not the protocol boilerplate) to Boss so he can correct a wrong premise. In external mode, wait a beat for correction. In internal mode, proceed immediately — the triage step catches a slightly-off premise, and Boss can interrupt.
+Then output the **brief part** (not the protocol boilerplate) to the user so they can correct a wrong premise. In external mode, wait a beat for correction. In internal mode, proceed immediately — the triage step catches a slightly-off premise, and the user can interrupt.
 
 ## Step 2 (internal mode) — Dispatch the auditor subagent
 
@@ -139,7 +139,7 @@ This is the point of internal mode. The auditor's findings are **input, not verd
 
 - **REAL** — your own check confirms the issue. Fix it. The fix is justified by *your verification of the issue*, never by "the auditor flagged it." Re-verify the fix (build/test/read the result).
 - **REFUTED** — your own check shows it's not an issue (auditor misread, stale line, false positive). Drop it, and record the one-line source evidence that refutes it.
-- **UNCLEAR** — you can't determine it from source, or it's a judgment call / depends on intent (e.g. "is this the behavior Boss wanted?"). **Do not silently drop it and do not blind-fix it.** Surface it to Boss as a question.
+- **UNCLEAR** — you can't determine it from source, or it's a judgment call / depends on intent (e.g. "is this the behavior the user wanted?"). **Do not silently drop it and do not blind-fix it.** Surface it to the user as a question.
 
 Hard rules:
 
@@ -147,7 +147,7 @@ Hard rules:
 - **No silent drops.** Every finding the auditor raised appears in the report under exactly one of fixed / refuted / needs-you. Hiding a finding is the bug this skill exists to prevent.
 - **A fix that touches a Caution Flag area stops and asks first**, even if the issue is real.
 
-## Step 4 (internal mode) — Condensed report to Boss
+## Step 4 (internal mode) — Condensed report to the user
 
 Deliver in this session, scannable, no transcript:
 
@@ -156,7 +156,7 @@ Deliver in this session, scannable, no transcript:
 - **Refuted** — per dismissed finding: one line, what the auditor claimed + why it's not real.
 - **Needs you** — unclear / judgment-call findings, as direct questions.
 
-Boss reads a triaged verdict and pushes back on any line — that's the back-and-forth. Leave `audit-brief.md` in place as the record.
+The user reads a triaged verdict and pushes back on any line — that's the back-and-forth. Leave `audit-brief.md` in place as the record.
 
 ## External mode — open the auditor terminal (replaces Steps 2–4)
 
@@ -166,7 +166,7 @@ Call the bundled terminal-open adapter (on PATH while jstack is enabled). The au
 open-terminal-here "$TARGET_CWD" --append-system-prompt-file "$TARGET_CWD/audit-brief.md" "\"Audit session. Your system prompt carries an Audit Protocol and an Audit Brief. Follow the protocol: if genuinely blocked, ask now; otherwise begin the audit immediately and report your verdict here.\""
 ```
 
-**If the adapter exits nonzero** (no supported terminal, unsupported platform), tell Boss:
+**If the adapter exits nonzero** (no supported terminal, unsupported platform), tell the user:
 
 > Couldn't open a new terminal automatically. Audit brief is at `<target cwd>/audit-brief.md`. Open a new Claude session there manually with `--append-system-prompt-file audit-brief.md` and tell it to begin the audit.
 

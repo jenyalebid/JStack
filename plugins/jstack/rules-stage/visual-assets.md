@@ -1,7 +1,7 @@
 ---
 paths:
   - "Assets/**"
-  - "**/GameIcons/**"
+  - "**/*.xcassets/**"
   - "**/AppIcon/**"
 ---
 
@@ -19,7 +19,7 @@ If `rsvg-convert` is not installed: `brew install librsvg`
 
 ## Self-Verification (mandatory)
 
-Before showing ANY visual asset to Boss or opening it externally:
+Before showing ANY visual asset to the user or opening it externally:
 
 1. Convert to PNG using `rsvg-convert`
 2. Read the PNG with the Read tool (Claude Code can view images)
@@ -30,7 +30,7 @@ Never `open` an SVG/PNG for user review without first verifying it yourself. The
 
 ## Icon Design Constraints
 
-When creating game/app icons:
+When creating app icons:
 - Use the app's color palette (read from codebase, not guessed)
 - No outer padding unless explicitly requested
 - Square aspect ratio with matching visual weight across a set

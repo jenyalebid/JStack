@@ -23,7 +23,7 @@ Plus two **whole systems** that run themselves once installed:
 - **Post-session review** — a SessionEnd hook spawns a validated review of every session that ends inside an agent workspace: reconciles `active.md` + `active/` with what actually happened, extracts dropped threads into follow-ups, logs timeline entries. Output is machine-validated (required sections, evidence floors, a timeline-grew gate); rejected output re-spawns once, persistent failure escalates. See **Post-session review + timeline** below.
 - **Timeline log** — `bin/log_event` writes daily `{YYYY-MM-DD}.md` timeline files (the day's spine) with strict block format, chronological insertion, and pipeline-task consolidation.
 
-And the supporting machinery: 19 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, four bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `log_event`, `session-review-spawn`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
+And the supporting machinery: 18 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, four bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `log_event`, `session-review-spawn`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
 
 ---
 
@@ -101,7 +101,7 @@ After restarting Claude Code so the plugin loads:
 /install-rules
 ```
 
-Confirms and symlinks 19 rules into `~/.claude/rules/` (agent-state, canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-charts, ios-design-ethos, ios-forms, ios-lists, ios-modifiers, ios-screens, ios-services, ios-sheets, ios-style, rules, timeline, visual-assets, x-compound-tools). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
+Confirms and symlinks 18 rules into `~/.claude/rules/` (agent-active, canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-charts, ios-design-ethos, ios-forms, ios-lists, ios-modifiers, ios-screens, ios-services, ios-sheets, ios-style, rules, timeline, visual-assets). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
 
 ### 6. Verify end-to-end
 
@@ -240,7 +240,7 @@ Symlinks every `.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/` into `~/.claude/rul
 
 ## The PreToolUse hook: cross-tree rule injection
 
-Native rules in `~/.claude/rules/*.md` auto-load by `paths:` glob, but only against files **inside the session's launch CWD**. If your editor is launched from one tree (`~/Agents/Mario/`) and the code you're editing lives in a sibling tree (`~/Wordy-Project/`), no rule fires — a real gap for agents that span multiple projects.
+Native rules in `~/.claude/rules/*.md` auto-load by `paths:` glob, but only against files **inside the session's launch CWD**. If your editor is launched from one tree (`~/Agents/AgentA/`) and the code you're editing lives in a sibling tree (`~/Some-Project/`), no rule fires — a real gap for agents that span multiple projects.
 
 JStack ships a PreToolUse hook (`plugins/jstack/hooks/inject-path-rules.py`, auto-registered via `plugins/jstack/hooks/hooks.json`) that closes that gap. Whenever Claude Code is about to invoke `Edit`, `Write`, `MultiEdit`, or `NotebookEdit`, the hook:
 

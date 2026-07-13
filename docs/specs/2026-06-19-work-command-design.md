@@ -1,10 +1,10 @@
 # `/jstack:work` — get battle-ready on a topic
 
-**Status:** design approved 2026-06-19 · **Author:** Jarvis (chat)
+**Status:** design approved 2026-06-19 · **Author:** agent chat session
 
 ## Problem
 
-When Boss sits down to work with an agent, he has to re-explain context every time: which app, which area, "go read the recent changes, load the SwiftUI skills first." Maggie did the right thing once by hand (session `8a047492`): loaded the SwiftUI skills, surveyed recent game-screen commits, read the core files, then gave a grounded lay-of-the-land before touching anything. `/work` makes that the one command — the agent gathers all the knowledge and loads every relevant skill to become the best it can be on that topic, with no re-explaining.
+When the user sits down to work with an agent, they have to re-explain context every time: which app, which area, "go read the recent changes, load the SwiftUI skills first." One agent did the right thing once by hand (session `8a047492`): loaded the SwiftUI skills, surveyed recent game-screen commits, read the core files, then gave a grounded lay-of-the-land before touching anything. `/work` makes that the one command — the agent gathers all the knowledge and loads every relevant skill to become the best it can be on that topic, with no re-explaining.
 
 ## End goal
 
@@ -12,24 +12,24 @@ When Boss sits down to work with an agent, he has to re-explain context every ti
 
 ## Non-goals (YAGNI)
 
-- **No project registry, no `pipeline.json` read.** The agent already knows its own identity, project, and stack from its loaded `CLAUDE.md` walk-up. `/work` leans on that context — it does not look anything up in J&J-specific config. This keeps it a clean, portable jstack skill.
+- **No project registry, no `pipeline.json` read.** The agent already knows its own identity, project, and stack from its loaded `CLAUDE.md` walk-up. `/work` leans on that context — it does not look anything up in host-specific config. This keeps it a clean, portable jstack skill.
 - **No state writes.** Interactive command; never touches `active.md`.
-- **No code changes.** `/work` ends *ready to work*; the actual work is whatever Boss asks next.
+- **No code changes.** `/work` ends *ready to work*; the actual work is whatever the user asks next.
 - **No hardcoded stack→skill table.** Skill selection is by matching live skill descriptions, so new skills are picked up automatically.
 
 ## Arguments
 
 `$ARGUMENTS` is free text. `argument-hint: "[@project] <topic>"`.
 
-- **Project (optional).** If the first token is `@`-prefixed (e.g. `@wordy`), it's an explicit project override. Otherwise the agent uses **its own project** — the one its loaded identity already establishes (Lynda's essence is Wordy; she runs `/work review ui` and never names a project).
+- **Project (optional).** If the first token is `@`-prefixed (e.g. `@appx`), it's an explicit project override. Otherwise the agent uses **its own project** — the one its loaded identity already establishes (a single-project agent runs `/work review ui` and never names a project).
 - **Topic (required).** Everything after the optional `@project`. Drives both which skills load and which area of code gets surveyed. Examples: `review ui`, `game screen ui changes`, `the hint flow`.
 
 Examples:
-- Lynda: `/work review ui` → Wordy (her project), Swift/iOS skills, recent Wordy UI changes.
-- Mario: `/work @wordy review ui` → resolve Wordy's repo, Swift/iOS skills, recent Wordy UI changes.
-- Mario: `/work review the map heat` → multi-project agent, no `@`; infer project from topic ("map heat" → MapCity). If genuinely ambiguous, ask one quick question rather than guess.
+- Single-project agent: `/work review ui` → its own app, Swift/iOS skills, recent UI changes.
+- Multi-project agent: `/work @appx review ui` → resolve that app's repo, Swift/iOS skills, recent UI changes.
+- Multi-project agent, no `@`: `/work review the map heat` → infer the project from the topic. If genuinely ambiguous, ask one quick question rather than guess.
 
-## Procedure (the spine — mirrors Maggie's session)
+## Procedure (the spine — mirrors that hand-run session)
 
 1. **Orient.** `date`. Read own `active.md` for cross-mode context (read-only).
 2. **Resolve project → repo.**
@@ -49,10 +49,10 @@ A single grounded summary message covering: project + repo resolved, stack, skil
 
 - Ships in `plugins/jstack/skills/work/SKILL.md`, namespaced `/jstack:work`.
 - Reuses the existing `${user_config.repo_root}` / `agent_root` seam for repo resolution; adds **no** new `userConfig` keys.
-- Fully portable: every project/stack fact comes from the agent's own loaded identity + repo sniffing, never from J&J config.
-- Register in `plugins/jstack/systems.json` if it warrants a test; bump plugin version; update `README.md` skill list/count. Push JStack after the change (per Jarvis JStack-maintenance rule).
+- Fully portable: every project/stack fact comes from the agent's own loaded identity + repo sniffing, never from host config.
+- Register in `plugins/jstack/systems.json` if it warrants a test; bump plugin version; update `README.md` skill list/count. Push JStack after the change (per the JStack maintenance rule).
 
 ## Open edges (decide at implementation)
 
-- How forcefully to cap skill loading (a topic could match many skills). Lean inclusive — Boss's intent is "become the best," so over-load rather than under-load, but skip clearly-irrelevant ones.
+- How forcefully to cap skill loading (a topic could match many skills). Lean inclusive — the user's intent is "become the best," so over-load rather than under-load, but skip clearly-irrelevant ones.
 - Whether to also read the project's `CLAUDE.md` / nearest project doc as part of step 6 grounding (likely yes when present).

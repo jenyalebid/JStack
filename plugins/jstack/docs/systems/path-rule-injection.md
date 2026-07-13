@@ -6,7 +6,7 @@ This doc is the canonical reference for the hook system. Read it before extendin
 
 ## Why the hook exists
 
-`~/.claude/rules/*.md` files declare path-scoped conventions via a `paths:` frontmatter glob. Claude Code's native rule resolution matches those globs against files *under the session's launch CWD*. That breaks the moment an agent runs from one tree and edits files in a sibling tree — e.g. a cron-launched session in `~/Agents/Mario/` touching `~/Wordy-Project/Views/Foo.swift` got zero rules fired, even though `ios-sheets.md` clearly claims `**/Sheets/**.swift`.
+`~/.claude/rules/*.md` files declare path-scoped conventions via a `paths:` frontmatter glob. Claude Code's native rule resolution matches those globs against files *under the session's launch CWD*. That breaks the moment an agent runs from one tree and edits files in a sibling tree — e.g. a cron-launched session in `~/Agents/AgentA/` touching `~/Some-Project/Views/Foo.swift` got zero rules fired, even though `ios-sheets.md` clearly claims `**/Sheets/**.swift`.
 
 The hook closes that gap. PreToolUse fires *before every tool call*, with the absolute file path Claude is about to touch. The hook reads each rule's `paths:` glob, matches against the absolute path, and injects matched rule bodies as `additionalContext` — independent of session CWD.
 
@@ -95,7 +95,7 @@ The parser converts each glob to a regex:
 
 The match runs twice:
 1. **Anchored full-path match** — `^<glob>$` against the absolute file path.
-2. **Tail match fallback** — iteratively strips leading path segments and retries. This is what makes `**/Sheets/**.swift` match `/Users/jarvis/Wordy-Project/Views/Sheets/SearchSheet.swift` even though the glob has no `/Users/...` prefix.
+2. **Tail match fallback** — iteratively strips leading path segments and retries. This is what makes `**/Sheets/**.swift` match `/Users/me/Some-Project/Views/Sheets/SearchSheet.swift` even though the glob has no `/Users/...` prefix.
 
 If neither matches, the rule is skipped for this call.
 
@@ -254,6 +254,6 @@ No tests live inside the script; all live tests live in `plugins/jstack/tests/`.
 
 ## Where this fits
 
-This system is one of several inside JStack tracked in `plugins/jstack/systems.json`. The host registry on the Jarvis machine (`~/Operations/Infrastructure/config/systems.json`) federates that file at read time via its `imports:` field — each JStack entry surfaces in the J&J dashboard `/systems` tab with an `origin: jstack` badge and a "Test" button that invokes this hook's `tests/path-rule-injection.sh` script.
+This system is one of several inside JStack tracked in `plugins/jstack/systems.json`. A host machine may federate that file into its own systems registry at read time via an `imports:` field — each JStack entry then surfaces in the host's dashboard with an `origin: jstack` badge and a "Test" button that invokes this hook's `tests/path-rule-injection.sh` script.
 
 Edit the hook where the code lives — in JStack. The federation propagates automatically on next dashboard read; `claude plugin update jstack` makes work-Claude's machine see the same change.

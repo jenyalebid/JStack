@@ -226,11 +226,21 @@ check("session_end_action defaults to selfwrite",
 sw = eng.SELFWRITE_PROMPT.format(
     marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
     submode="chat", session_id="abcd1234-....",
+    stamp_step=eng.SELFWRITE_STAMP_STEP.format(session_id="abcd1234-...."),
 )
 check("selfwrite prompt formats + names seat source", "log_event alpha/chat" in sw)
 check("selfwrite prompt links the session",          "--session abcd1234-...." in sw)
 check("selfwrite prompt does NOT name continuity",   "continuity" not in sw)
 check("selfwrite prompt names the review stamp",     "stamp abcd1234-.... assistant" in sw)
+
+# Hosts without the dashboard's review_sessions.py get NO stamp step — the
+# prompt must not instruct a command that does not exist on that machine.
+sw_bare = eng.SELFWRITE_PROMPT.format(
+    marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
+    submode="chat", session_id="abcd1234-....", stamp_step="",
+)
+check("stampless prompt omits the host-only command", "review_sessions" not in sw_bare)
+check("stampless prompt keeps the timeline step",     "log_event alpha/chat" in sw_bare)
 
 # The SELFWRITE log line the engine emits must match the (updated) dashboard
 # regex, which accepts SELFWRITE alongside legacy SPAWN.

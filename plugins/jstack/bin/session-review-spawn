@@ -68,6 +68,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -89,7 +90,7 @@ FILER_BRIEFING_MARKER = "You are being briefed on a topic"
 # extraction, no doc reconciliation, no code — those are the manual deep review.
 SELFWRITE_PROMPT = """{marker}
 
-Your session has ended. Do ONLY the two steps below from what is already in your
+Your session has ended. Do ONLY the steps below from what is already in your
 context above — do not re-read files, do not analyze, do not touch code, reminders,
 or any docs. Then stop.
 
@@ -104,11 +105,16 @@ or any docs. Then stop.
    time of the last REAL message — not now. A session can end days after its last real
    work (terminal left open), and without --date the entry files under the wrong day.
    If nothing this session is timeline-worthy, SKIP this step — never invent an entry.
+{stamp_step}
+That is every step — then stop. Nothing else."""
 
+# The dashboard stamp is a HOST-side tool, not part of jstack. Only hosts that
+# actually have review_sessions.py on the spawn PATH get this step; everywhere
+# else the prompt must not instruct a command that cannot exist there.
+SELFWRITE_STAMP_STEP = """
 2. STAMP — mark this session written so the dashboard reflects it:
        review_sessions.py stamp {session_id} assistant
-
-Two steps, then stop. Nothing else."""
+"""
 
 
 # The claude CLI prints this and exits nonzero when the account's usage window is
@@ -659,9 +665,14 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     otherwise the injected self-write prompt reads as fresh user prose and a
     later reopen would re-trigger the self-write.
     """
+    env = _selfwrite_env()
+    stamp_step = (
+        SELFWRITE_STAMP_STEP.format(session_id=session_id)
+        if shutil.which("review_sessions.py", path=env["PATH"]) else ""
+    )
     prompt = SELFWRITE_PROMPT.format(
         marker=SELFWRITE_MARKER, agent=agent, agent_title=agent_title,
-        submode=submode, session_id=session_id,
+        submode=submode, session_id=session_id, stamp_step=stamp_step,
     )
     cmd = [
         "claude", "--print",
@@ -685,7 +696,7 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     try:
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True,
-            env=_selfwrite_env(), timeout=int(CFG["selfwrite_timeout_secs"]),
+            env=env, timeout=int(CFG["selfwrite_timeout_secs"]),
         )
     except subprocess.TimeoutExpired:
         _log(f"SELFWRITE_TIMEOUT {session_id[:8]} → {agent}")

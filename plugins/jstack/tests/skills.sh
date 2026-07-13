@@ -125,6 +125,7 @@ run_skill push
 run_skill post-session-review file-followup log_event
 run_skill showme open-artifact
 run_skill day-audit log_event
+run_skill recall log_event
 run_skill splitoff dub-session open-terminal-here
 run_skill print
 

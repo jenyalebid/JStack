@@ -8,6 +8,7 @@ The timeline is the single running memory: a sqlite store of seat-tagged entries
 |-------|------|------|
 | Writer/query CLI | `bin/log_event` | The only sanctioned writer; also serves seat queries, verdicts, renders, migration |
 | Read-half hook | `hooks/session-start-inject.py` | Injects a seat's last N entries on SessionStart (`timeline_inject` config) |
+| User command | `skills/recall/SKILL.md` | `/jstack:recall` — date words + scope → `log_event recall` → readable outline |
 | Format rule | `rules-stage/timeline.md` | Auto-loads (via `/jstack:install-rules` + path-rule-injection) when the timeline is touched — carries the format spec and editorial bar |
 | Tests | `tests/log-event.sh`, `tests/timeline-injection.sh` | Hermetic CLI-contract + injection-contract verification |
 

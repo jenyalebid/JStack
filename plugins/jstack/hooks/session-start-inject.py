@@ -12,7 +12,8 @@ injection reads back through `log_event tail`.
 Which seats get injected, and how many entries, is host config — the
 `timeline_inject` map in $JSTACK_REVIEW_CONFIG (~/.claude/jstack/review.json):
 
-    "timeline_inject": {"alpha/chat": 10, "*/pm": 10, "*/social": 10}
+    "timeline_inject": {"alpha/chat": 10, "*/pm": 10,
+                        "*/social": {"n": 10, "interactive_only": true}}
 
 Match forms: exact "agent/submode" wins over wildcard "*/submode". Seats not
 matched get nothing. No config key → no injection anywhere (opt-in).
@@ -71,16 +72,36 @@ def resolve(cwd: Path, root: Path) -> tuple[str | None, str | None]:
     return agent_dir.name.lower(), submode.lower()
 
 
+def _is_interactive() -> bool:
+    """A human-driven session has a controlling terminal; headless spawns
+    (schedulers, watchers, daemons running `claude --print`) don't."""
+    try:
+        with open("/dev/tty"):
+            return True
+    except OSError:
+        return False
+
+
 def inject_count(cfg: dict, agent: str, submode: str) -> int:
+    """Entries to inject for a seat. Map values are either a plain int (always
+    inject) or {"n": N, "interactive_only": true} — inject only into sessions
+    a human is driving, so high-frequency automated wakes (e.g. social reply
+    wakes) run lean instead of booting N entries of baggage."""
     inject = cfg.get("timeline_inject")
     if not isinstance(inject, dict):
         return 0
     for key in (f"{agent}/{submode}", f"*/{submode}"):
-        if key in inject:
-            try:
-                return int(inject[key])
-            except (TypeError, ValueError):
-                return 0
+        if key not in inject:
+            continue
+        val = inject[key]
+        try:
+            if isinstance(val, dict):
+                if val.get("interactive_only") and not _is_interactive():
+                    return 0
+                return int(val.get("n", 0))
+            return int(val)
+        except (TypeError, ValueError):
+            return 0
     return 0
 
 

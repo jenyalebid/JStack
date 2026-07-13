@@ -102,6 +102,24 @@ out_killed=$(printf '{"cwd":"%s"}' "$ROOT/Gamma" \
   | JSTACK_REVIEW_CONFIG="$CFG" JSTACK_TIMELINE_INJECT_DISABLED=1 python3 "$HOOK")
 [[ -z "$out_killed" ]] && pass "kill switch honored" || fail "kill switch honored"
 
+# (j) interactive_only: headless spawn (no controlling tty) gets nothing;
+#     a pty session (script(1)) gets the injection
+mkdir -p "$ROOT/Gamma/social/chat"
+CFG2="$TMP/review2.json"
+printf '{ "agent_root": "%s", "timeline_inject": {"*/social": {"n": 5, "interactive_only": true}} }' "$ROOT" > "$CFG2"
+"$LOG_EVENT" gamma/social --at 15:00 --date "$DAY" "Social seat entry" >/dev/null
+PAYLOAD=$(printf '{"cwd":"%s"}' "$ROOT/Gamma/social/chat")
+headless=$(echo "$PAYLOAD" | JSTACK_REVIEW_CONFIG="$CFG2" python3 -c "
+import os, subprocess, sys
+r = subprocess.run(['python3', '$HOOK'], input=sys.stdin.read(), env=dict(os.environ),
+                   capture_output=True, text=True, preexec_fn=os.setsid)
+print(r.stdout, end='')")
+[[ -z "$headless" ]] && pass "interactive_only: headless gets nothing" \
+  || fail "interactive_only: headless gets nothing"
+tty_out=$(JSTACK_REVIEW_CONFIG="$CFG2" script -q /dev/null sh -c "echo '$PAYLOAD' | python3 '$HOOK'")
+echo "$tty_out" | grep -q "Social seat entry" && pass "interactive_only: pty session injected" \
+  || fail "interactive_only: pty session injected"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "timeline-injection: $fails FAILED" >&2

@@ -64,7 +64,7 @@ All keys optional; defaults are fully portable. Host-relevant keys:
 | `required_sections` | core 5 | Extend to the host skill's output contract (`review` action) |
 | `reviewed_submodes` | none (all) | Allowlist of user-session sub-modes to review, as `"agent/submode"` / `"*/submode"`. None = review every resolvable session |
 | `auto_review_submodes` | none | Sub-modes (same match form) that get reviewed **even when auto** (no human drove them) — recurring crons that warrant the purpose-prompted self-write over the Stop-hook line. None/`[]` = nothing auto-reviewed |
-| `timeline_inject` | none | `{"agent/submode": N, "*/submode": N}` — which seats get their last N timeline entries injected on SessionStart. Unlisted seats get nothing |
+| `timeline_inject` | none | `{"agent/submode": N, "*/submode": N}` — which seats get their last N timeline entries injected on SessionStart. Value `{"n": N, "interactive_only": true}` injects only sessions with a controlling terminal (human-driven), so headless wakes run lean. Unlisted seats get nothing |
 | `model` / `max_turns` / `timeout_secs` / `max_attempts` | opus / 50 / 1200 / 2 | Spawn budget |
 | `max_concurrent` / `slot_wait_secs` | 2 / 1800 | Concurrency |
 | `telegram_cooldown_seconds` / `telegram_cooldown_file` | 300 / none | TG debounce; file form lets a host UI own the value |

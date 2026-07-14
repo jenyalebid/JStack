@@ -69,6 +69,10 @@ d = run_hook("sid-auto-1", t)
 check("auto session blocked once", d is not None and d.get("decision") == "block")
 check("reminder names log_event", d is not None and "log_event" in d.get("reason", ""))
 check("reminder carries agent source", d is not None and "log_event gamma" in d.get("reason", ""))
+# the entry must bind to THIS session so the dashboard can reopen it — the
+# session id the hook holds has to reach the log_event command it hands the model
+check("reminder threads --session <this session id>",
+      d is not None and "--session sid-auto-1" in d.get("reason", ""))
 check("reminder allows the no-op out", d is not None and "do nothing and stop" in d.get("reason", ""))
 
 # second stop of the SAME session → marker present → pass through (no loop)

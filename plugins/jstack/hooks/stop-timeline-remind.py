@@ -124,7 +124,7 @@ def main():
         "under this source. If this session performed real work (shipped, published, "
         "fixed, replied, decided, learned something durable), append ONE entry now, "
         "written by you from what you actually did:\n\n"
-        f'  {PLUGIN_BIN}/log_event {source} --session {session_id} "<one-line headline, specific and past-tense>" '
+        f'  {PLUGIN_BIN}/log_event {source} --session {session_id} --origin indirect "<one-line headline, specific and past-tense>" '
         '[--detail "<short detail — an open thread, a decision, a do-not-repeat>" ...max 3] '
         '[--context "<longer state worth on-demand recall — never injected>"]\n\n'
         "Pass --session exactly as written (it binds the entry to this session so the "

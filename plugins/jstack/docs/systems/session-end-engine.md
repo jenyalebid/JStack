@@ -91,7 +91,7 @@ What a session *did* goes to the timeline as a seat-tagged entry (`log_event {ag
     log_event tail <agent[/submode]> [-n N] [--json]
     log_event verdict <agent[/submode]> shipped|drift|blocked|empty --note "..."
 
-Storage is sqlite (`{timeline_dir}/timeline.db`, WAL — concurrent session-ends are safe) rendered one-way to the day's `{YYYY-MM-DD}.md` (never hand-edit it: writes not made through the tool are absorbed as strays on the next write, not honored as edits). `verdict` stamps an independent review's call on a seat's latest entry; it rides `tail`/injection, not the day md. Stdlib only, no host dependency — portable to any machine running the plugin.
+Storage is sqlite (`{timeline_dir}/timeline.db`, WAL — concurrent session-ends are safe) — the only artifact; reads and writes both go through `log_event`. Entries carry an `origin` (`direct` = a human drove the session, `indirect` = cron/gateway/spawned) resolved flag > `JSTACK_TIMELINE_ORIGIN` env > direct; the engine sets the env on its spawns (`indirect` for `auto_review_submodes` crons, `direct` otherwise) and the Stop hook's instructed command passes `--origin indirect`. `verdict` stamps an independent review's call on a seat's latest entry; it rides `tail`/injection. Stdlib only, no host dependency — portable to any machine running the plugin.
 
 ### The read half — SessionStart injection
 

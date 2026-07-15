@@ -17,7 +17,9 @@ The **only** supported frontmatter field is `paths` — glob patterns that scope
 ## Path syntax
 
 - Relative to whatever Claude Code treats as project root (typically the cwd where `claude` was launched, or the nearest git root). No leading `~/` or absolute `/Users/...` paths.
-- `**` for recursive, `*` for single-level, `{ts,tsx}` brace expansion.
+- `**` for recursive, `*` for single-level. No brace expansion — the edit-time
+  injector treats `{}` as literal characters; a brace glob silently never
+  fires there. Write one glob line per variant instead.
 
 ## Before creating a rule
 

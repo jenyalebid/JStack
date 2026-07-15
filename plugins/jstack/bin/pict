@@ -1,0 +1,519 @@
+#!/usr/bin/env python3
+"""
+pict — Prompt Injection Checking Tool
+=====================================
+
+Renders EVERYTHING that would be injected into a Claude Code session spawned
+from a given directory, as ONE markdown document, in the order the model
+receives it. The composed view — not the per-file view — is where redundancy,
+drift, and bloat across a walk-up chain become visible.
+
+Contract:  pict [dir]            (default: cwd; output: markdown on stdout)
+
+Sections, in injection order:
+
+  1. Global instructions   — <claude_dir>/CLAUDE.md, plus every rule in the
+                             rules dir WITHOUT `paths:` frontmatter (those
+                             load unconditionally at startup).
+  2. CLAUDE.md walk-up     — every CLAUDE.md / CLAUDE.local.md on the path
+                             from filesystem root down to the spawn dir,
+                             parent-most first (native load order).
+  3. Auto-memory           — MEMORY.md for the project key (git toplevel of
+                             the spawn dir, flattened; falls back to the dir).
+  4. SessionStart          — the JStack timeline injection is emulated
+                             faithfully (same seat resolution + config as
+                             hooks/session-start-inject.py, entries fetched
+                             via bin/log_event tail, interactive spawn
+                             assumed). Other SessionStart/UserPromptSubmit
+                             hooks are LISTED, never executed — arbitrary
+                             hook commands may have side effects.
+  5. Path-scoped rules     — rules whose `paths:` globs match a file that
+                             EXISTS under the spawn dir right now (JStack
+                             tail-matching semantics), bodies included.
+                             These inject on-demand (native read/edit
+                             matching + the JStack PreToolUse mutation
+                             hook), NEVER at spawn. Rules with no matching
+                             files are listed by name only — they'd fire
+                             only cross-tree or on newly created files.
+  6. Other injectors       — every remaining hook from user + project
+                             settings and the plugin manifest, one line each
+                             (event · matcher · command). Conditional,
+                             keyword- or event-triggered context.
+
+Out of scope (native harness, not md composition): plugin skills lists, MCP
+server instructions, enterprise managed policy, session-specific guidance.
+
+A summary table with per-source ~token weights (bytes/4) heads the document.
+
+Env overrides (tests; same convention as inject-path-rules.py):
+  JSTACK_RULES_DIR      — rules source dir        (default <claude_dir>/rules)
+  JSTACK_REVIEW_CONFIG  — review/timeline config  (default <claude_dir>/jstack/review.json)
+  PICT_CLAUDE_DIR       — the ~/.claude dir       (default ~/.claude)
+  PICT_WALK_ROOT        — upper bound of the walk-up (default /)
+  PICT_LOG_EVENT        — log_event binary        (default sibling of pict)
+  PICT_INTERACTIVE      — "0" to preview a headless spawn (default interactive)
+
+Exit 0 with the document on stdout; exit 64 on usage error. Stdlib only.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+PLUGIN_BIN = Path(__file__).resolve().parent
+
+
+def claude_dir() -> Path:
+    return Path(os.environ.get("PICT_CLAUDE_DIR", str(Path.home() / ".claude"))).expanduser()
+
+
+def rules_dir() -> Path:
+    override = os.environ.get("JSTACK_RULES_DIR")
+    return Path(override).expanduser() if override else claude_dir() / "rules"
+
+
+def walk_root() -> Path:
+    return Path(os.environ.get("PICT_WALK_ROOT", "/")).expanduser()
+
+
+# ---------------------------------------------------------------- frontmatter
+
+def parse_paths_frontmatter(text: str) -> list[str]:
+    """`paths:` globs from YAML frontmatter — same accepted shapes as
+    hooks/inject-path-rules.py (block list and inline list)."""
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    block = text[3:end].lstrip("\n")
+    paths: list[str] = []
+    in_paths = False
+    for raw in block.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not raw.startswith(" ") and not raw.startswith("\t"):
+            if stripped.startswith("paths:"):
+                rest = stripped[len("paths:"):].strip()
+                if rest.startswith("[") and rest.endswith("]"):
+                    paths.extend(
+                        v.strip().strip('"').strip("'")
+                        for v in rest[1:-1].split(",") if v.strip()
+                    )
+                    in_paths = False
+                else:
+                    in_paths = True
+                continue
+            in_paths = False
+            continue
+        if in_paths and stripped.startswith("- "):
+            val = stripped[2:].strip().strip('"').strip("'")
+            if val:
+                paths.append(val)
+    return paths
+
+
+def strip_frontmatter(text: str) -> str:
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return text
+    return text[end + 4:].lstrip("\n")
+
+
+# ------------------------------------------------------------- glob anchoring
+
+def _glob_to_regex(glob: str) -> str:
+    """Same translation as inject-path-rules.py — ** crosses segments,
+    * and ? stay within one."""
+    out = ["^"]
+    i, n = 0, len(glob)
+    while i < n:
+        c = glob[i]
+        if c == "*":
+            if i + 1 < n and glob[i + 1] == "*":
+                if i + 2 < n and glob[i + 2] == "/":
+                    out.append("(?:.*/)?")
+                    i += 3
+                    continue
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+            i += 1
+            continue
+        if c == "?":
+            out.append("[^/]")
+            i += 1
+            continue
+        if c in r".+()[]{}|\^$":
+            out.append("\\" + c)
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    out.append("$")
+    return "".join(out)
+
+
+def _tail_match(rx: re.Pattern, path: str) -> bool:
+    """Full path, then every path tail — inject-path-rules semantics."""
+    if rx.match(path):
+        return True
+    parts = path.split("/")
+    return any(rx.match("/".join(parts[i:])) for i in range(1, len(parts)))
+
+
+SCAN_PRUNE = {".git", "node_modules", ".venv", "__pycache__", ".build", "DerivedData"}
+SCAN_CAP = 50_000
+
+
+def anchored_rules(rule_globs: dict[str, list[str]], directory: Path) -> set[str]:
+    """Rule stems whose globs match a file that EXISTS under `directory` right
+    now. Existence-based on purpose: a `**/*.swift` rule is not 'anchored' to
+    a directory that contains no Swift — it would never fire in a session
+    working there. One pruned walk, all rules tested per file, each rule
+    retired on first hit."""
+    pending: dict[str, list[re.Pattern]] = {}
+    for stem, globs in rule_globs.items():
+        rxs = []
+        for g in globs:
+            try:
+                rxs.append(re.compile(_glob_to_regex(g)))
+            except re.error:
+                continue
+        if rxs:
+            pending[stem] = rxs
+    hit: set[str] = set()
+    seen = 0
+    for base, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d not in SCAN_PRUNE]
+        for f in files:
+            seen += 1
+            if seen > SCAN_CAP or not pending:
+                return hit
+            path = os.path.join(base, f)
+            for stem in list(pending):
+                if any(_tail_match(rx, path) for rx in pending[stem]):
+                    hit.add(stem)
+                    del pending[stem]
+    return hit
+
+
+# ------------------------------------------------------------------ gathering
+
+def tokens(text: str) -> int:
+    return max(1, len(text.encode()) // 4)
+
+
+class Source:
+    def __init__(self, order: int, label: str, mechanism: str, body: str | None,
+                 note: str = ""):
+        self.order = order
+        self.label = label
+        self.mechanism = mechanism
+        self.body = body
+        self.note = note
+
+
+def display(path: Path) -> str:
+    home = str(Path.home())
+    s = str(path)
+    return "~" + s[len(home):] if s.startswith(home) else s
+
+
+def read_or_none(path: Path) -> str | None:
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def gather_globals(sources: list[Source]) -> None:
+    gmd = claude_dir() / "CLAUDE.md"
+    body = read_or_none(gmd)
+    if body is not None:
+        sources.append(Source(len(sources) + 1, display(gmd),
+                              "global memory — loads in every session", body))
+    rdir = rules_dir()
+    if not rdir.is_dir():
+        return
+    for rule in sorted(rdir.glob("*.md")):
+        text = read_or_none(rule)
+        if text is None or parse_paths_frontmatter(text):
+            continue
+        note = ""
+        if rule.is_symlink():
+            note = f"symlink → {display(rule.resolve())}"
+        sources.append(Source(len(sources) + 1, display(rule),
+                              "unconditional rule (no `paths:`) — loads at startup",
+                              strip_frontmatter(text), note))
+
+
+def gather_walkup(directory: Path, sources: list[Source]) -> None:
+    stop = walk_root().resolve()
+    chain = [directory] + list(directory.parents)
+    chain = [p for p in chain if str(p).startswith(str(stop))]
+    for level in reversed(chain):
+        for name in ("CLAUDE.md", "CLAUDE.local.md"):
+            f = level / name
+            body = read_or_none(f)
+            if body is not None:
+                sources.append(Source(len(sources) + 1, display(f),
+                                      "CLAUDE.md walk-up — loads at spawn", body))
+
+
+def project_key(directory: Path) -> str:
+    try:
+        r = subprocess.run(["git", "-C", str(directory), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=5)
+        root = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else str(directory)
+    except (OSError, subprocess.SubprocessError):
+        root = str(directory)
+    return re.sub(r"[^A-Za-z0-9]", "-", root)
+
+
+def gather_memory(directory: Path, sources: list[Source]) -> None:
+    key = project_key(directory)
+    mem = claude_dir() / "projects" / key / "memory" / "MEMORY.md"
+    body = read_or_none(mem)
+    if body is not None:
+        sources.append(Source(len(sources) + 1, display(mem),
+                              f"auto-memory index — project key `{key}`", body))
+    else:
+        sources.append(Source(len(sources) + 1, f"(no auto-memory) key `{key}`",
+                              "auto-memory index — none recorded for this project key", None))
+
+
+# --------------------------------------------------- SessionStart (timeline)
+
+def review_config() -> dict:
+    cfg_path = Path(os.environ.get("JSTACK_REVIEW_CONFIG",
+                                   str(claude_dir() / "jstack" / "review.json"))).expanduser()
+    try:
+        data = json.loads(cfg_path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def resolve_seat(directory: Path, root: Path) -> tuple[str | None, str | None]:
+    """Same contract as session-start-inject.py resolve()."""
+    try:
+        rel = directory.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return None, None
+    if not rel.parts:
+        return None, None
+    agent_dir = root / rel.parts[0]
+    if not (agent_dir / "CLAUDE.md").is_file():
+        return None, None
+    submode = rel.parts[1] if len(rel.parts) >= 2 else "chat"
+    return agent_dir.name.lower(), submode.lower()
+
+
+def timeline_count(cfg: dict, agent: str, submode: str) -> tuple[int, str]:
+    inject = cfg.get("timeline_inject")
+    if not isinstance(inject, dict):
+        return 0, ""
+    interactive = os.environ.get("PICT_INTERACTIVE", "1") != "0"
+    for key in (f"{agent}/{submode}", f"*/{submode}"):
+        if key not in inject:
+            continue
+        val = inject[key]
+        try:
+            if isinstance(val, dict):
+                n = int(val.get("n", 0))
+                if val.get("interactive_only"):
+                    if not interactive:
+                        return 0, f"config `{key}`: interactive_only — headless spawn gets nothing"
+                    return n, f"config `{key}`: n={n}, interactive_only"
+                return n, f"config `{key}`: n={n}"
+            return int(val), f"config `{key}`: n={int(val)}"
+        except (TypeError, ValueError):
+            return 0, ""
+    return 0, "no timeline_inject key matches this seat"
+
+
+def gather_timeline(directory: Path, sources: list[Source]) -> None:
+    cfg = review_config()
+    root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
+    agent, submode = resolve_seat(directory, root)
+    mech = "SessionStart hook — jstack session-start-inject.py (emulated read-only)"
+    if agent is None or submode == "review":
+        sources.append(Source(len(sources) + 1, "(no timeline injection)",
+                              mech + " — dir is not an agent seat", None))
+        return
+    n, why = timeline_count(cfg, agent, submode)
+    seat = f"{agent}/{submode}"
+    if n <= 0:
+        sources.append(Source(len(sources) + 1, f"(no timeline injection) seat `{seat}`",
+                              mech + (f" — {why}" if why else ""), None))
+        return
+    log_event = os.environ.get("PICT_LOG_EVENT", str(PLUGIN_BIN / "log_event"))
+    try:
+        r = subprocess.run([log_event, "tail", seat, "-n", str(n)],
+                           capture_output=True, text=True, timeout=8)
+        entries = r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        entries = ""
+    if not entries:
+        sources.append(Source(len(sources) + 1, f"(timeline empty) seat `{seat}`",
+                              mech + f" — {why}", None))
+        return
+    sources.append(Source(len(sources) + 1, f"timeline tail — seat `{seat}`",
+                          mech + f" — {why}, wrapped in <jstack-timeline>", entries))
+
+
+# ------------------------------------------------------------- hooks listing
+
+def settings_hooks() -> list[tuple[str, str, str, str]]:
+    """(origin, event, matcher, command) for every hook in user settings,
+    project-level settings along the walk-up dir, and the plugin manifest."""
+    out: list[tuple[str, str, str, str]] = []
+    candidates = [
+        (display(claude_dir() / "settings.json"), claude_dir() / "settings.json"),
+        (display(claude_dir() / "settings.local.json"), claude_dir() / "settings.local.json"),
+        ("plugin hooks.json", PLUGIN_BIN.parent / "hooks" / "hooks.json"),
+    ]
+    for origin, path in candidates:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        hooks = data.get("hooks", {})
+        if not isinstance(hooks, dict):
+            continue
+        for event, groups in hooks.items():
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                matcher = group.get("matcher", "*") if isinstance(group, dict) else "*"
+                for h in (group.get("hooks") or []) if isinstance(group, dict) else []:
+                    cmd = h.get("command", "") if isinstance(h, dict) else ""
+                    cmd = re.sub(r"\s+", " ", cmd).strip()
+                    if len(cmd) > 100:
+                        cmd = cmd[:97] + "..."
+                    out.append((origin, event, matcher, cmd))
+    return out
+
+
+# ------------------------------------------------------------------ document
+
+def render(directory: Path) -> str:
+    sources: list[Source] = []
+    gather_globals(sources)
+    gather_walkup(directory, sources)
+    gather_memory(directory, sources)
+    gather_timeline(directory, sources)
+
+    candidates: dict[str, tuple[Path, list[str], str]] = {}
+    rdir = rules_dir()
+    if rdir.is_dir():
+        for rule in sorted(rdir.glob("*.md")):
+            text = read_or_none(rule)
+            if text is None:
+                continue
+            globs = parse_paths_frontmatter(text)
+            if globs:
+                candidates[rule.stem] = (rule, globs, strip_frontmatter(text))
+    hits = anchored_rules({s: g for s, (_, g, _) in candidates.items()}, directory)
+    anchored = [candidates[s] for s in sorted(hits)]
+    elsewhere = [(s, g) for s, (_, g, _) in sorted(candidates.items()) if s not in hits]
+
+    lines: list[str] = []
+    spawn_total = 0
+    ondemand_total = 0
+    lines.append(f"# pict — composed context for `{display(directory)}`\n")
+    lines.append("Spawn-time sources in the order the model receives them, then the")
+    lines.append("on-demand layer. Weights are ~tokens (bytes/4).\n")
+
+    lines.append("| # | source | mechanism | ~tokens |")
+    lines.append("|---|--------|-----------|---------|")
+    for s in sources:
+        w = tokens(s.body) if s.body else 0
+        spawn_total += w
+        lines.append(f"| {s.order} | `{s.label}` | {s.mechanism} | {w or '—'} |")
+    lines.append(f"| | **loads at spawn** | | **{spawn_total}** |")
+    for rule, globs, body in anchored:
+        ondemand_total += tokens(body)
+        lines.append(f"| · | `{display(rule)}` | on-demand — files matching "
+                     f"`{', '.join(globs)}` exist here | {tokens(body)} |")
+    if anchored:
+        lines.append(f"| | **on-demand pool (each loads only when its files are touched)** "
+                     f"| | **{ondemand_total}** |")
+    lines.append("")
+
+    lines.append("## Spawn-time context, in order\n")
+    for s in sources:
+        note = f" · {s.note}" if s.note else ""
+        lines.append("---\n")
+        lines.append(f"> **[{s.order}] {s.label}** — {s.mechanism}{note}")
+        if s.body:
+            lines.append(f"> {len(s.body.splitlines())} lines · ~{tokens(s.body)} tokens\n")
+            lines.append(s.body.rstrip())
+        lines.append("")
+
+    lines.append("---\n")
+    lines.append("## On-demand rules — matching files exist under this directory\n")
+    lines.append("NOT loaded at spawn. Each loads only when one of its matching files")
+    lines.append("is read/edited (native) or about to be mutated (JStack PreToolUse")
+    lines.append("hook, re-injected after ~400KB of transcript growth).\n")
+    if not anchored:
+        lines.append("*(none)*\n")
+    for rule, globs, body in anchored:
+        lines.append("---\n")
+        lines.append(f"> **[rule] {display(rule)}** — fires on `{', '.join(globs)}`")
+        lines.append(f"> {len(body.splitlines())} lines · ~{tokens(body)} tokens\n")
+        lines.append(body.rstrip())
+        lines.append("")
+
+    if elsewhere:
+        lines.append("---\n")
+        lines.append("## Path rules with no matching files here\n")
+        lines.append("Would fire only if the session touches matching paths elsewhere")
+        lines.append("(cross-tree) or creates matching files:\n")
+        for stem, globs in elsewhere:
+            lines.append(f"- `{stem}` — `{', '.join(globs)}`")
+        lines.append("")
+
+    hooks = settings_hooks()
+    if hooks:
+        lines.append("---\n")
+        lines.append("## Other injectors (hooks — conditional, listed not executed)\n")
+        lines.append("| origin | event | matcher | command |")
+        lines.append("|--------|-------|---------|---------|")
+        for origin, event, matcher, cmd in hooks:
+            lines.append(f"| {origin} | {event} | `{matcher}` | `{cmd}` |")
+        lines.append("")
+
+    lines.append("---\n")
+    lines.append("*Native harness also injects plugin skills lists, MCP server")
+    lines.append("instructions, and session guidance — outside pict's md scope.*")
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str]) -> int:
+    args = [a for a in argv[1:] if a not in ("-h", "--help")]
+    if len(args) != len(argv[1:]):
+        sys.stdout.write(__doc__.strip() + "\n")
+        return 0
+    if len(args) > 1:
+        sys.stderr.write("usage: pict [dir]\n")
+        return 64
+    directory = Path(args[0]).expanduser().resolve() if args else Path.cwd()
+    if not directory.is_dir():
+        sys.stderr.write(f"pict: not a directory: {directory}\n")
+        return 64
+    sys.stdout.write(render(directory))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

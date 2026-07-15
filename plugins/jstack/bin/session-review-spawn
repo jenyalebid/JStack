@@ -637,8 +637,12 @@ def acquire_review_slot(session_id: str, agent: str):
 
 # -------------------------------------------------------------- spawn + gate
 
-def _selfwrite_env() -> dict:
-    """PATH + tool env shared by the self-write resume (mirrors spawn_review)."""
+def _selfwrite_env(origin: str = "direct") -> dict:
+    """PATH + tool env shared by the self-write resume (mirrors spawn_review).
+
+    origin rides as JSTACK_TIMELINE_ORIGIN so the spawned turn's log_event
+    stamps who drove the session being written about: a human (direct) or
+    an auto_review_submodes cron (indirect)."""
     env = os.environ.copy()
     extra = [str(PLUGIN_BIN)] + [str(Path(p).expanduser()) for p in CFG["extra_path"]]
     env["PATH"] = ":".join(
@@ -648,11 +652,13 @@ def _selfwrite_env() -> dict:
     )
     env["SKIP_SESSION_HOOK"] = "1"           # the resume's own SessionEnd must not recurse
     env["JSTACK_TIMELINE_DIR"] = str(CFG["timeline_dir"])
+    env["JSTACK_TIMELINE_ORIGIN"] = origin
     return env
 
 
 def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
-                    submode: str, jsonl_path: Path) -> None:
+                    submode: str, jsonl_path: Path,
+                    origin: str = "direct") -> None:
     """Resume the just-ended session for ONE turn so it writes its OWN running
     memory — one seat-tagged timeline entry — instead of paying a fresh
     stranger to re-derive what this session already knows.
@@ -665,7 +671,7 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     otherwise the injected self-write prompt reads as fresh user prose and a
     later reopen would re-trigger the self-write.
     """
-    env = _selfwrite_env()
+    env = _selfwrite_env(origin)
     stamp_step = (
         SELFWRITE_STAMP_STEP.format(session_id=session_id)
         if shutil.which("review_sessions.py", path=env["PATH"]) else ""
@@ -723,7 +729,8 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     _log(f"SELFWRITE_DONE {session_id[:8]} → {agent} ({len(result.stdout)} chars)")
 
 
-def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
+def spawn_review(session_id: str, agent: str, agent_title: str,
+                 origin: str = "direct") -> None:
     workspace = CFG["agent_root"] / agent_title
     if not workspace.exists():
         _log(f"SKIP {session_id[:8]}: workspace {workspace} not found")
@@ -762,11 +769,12 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
         )
         env["SKIP_SESSION_HOOK"] = "1"
         env["JSTACK_TIMELINE_DIR"] = str(CFG["timeline_dir"])
+        env["JSTACK_TIMELINE_ORIGIN"] = origin
 
-        # Watch the whole timeline dir, not just today's file: log_event may
-        # legitimately file under a prior day (--date of the last real message
-        # when a session ends days after its last real work).
-        pre_size, pre_mtime = _timeline_dir_stat(CFG["timeline_dir"])
+        # Snapshot the store before the spawn: a claimed log_event must show
+        # up as a new row, whatever day it filed under (--date of the last
+        # real message when a session ends days after its last real work).
+        pre_max_id = _timeline_max_id(CFG["timeline_dir"])
 
         _log(f"SPAWN {session_id[:8]} → {agent} (attempt {attempt}, workspace: {workspace.name})")
 
@@ -805,11 +813,11 @@ def spawn_review(session_id: str, agent: str, agent_title: str) -> None:
                 time.sleep(backoff)
             continue
 
-        post_size, post_mtime = _timeline_dir_stat(CFG["timeline_dir"])
+        post_max_id = _timeline_max_id(CFG["timeline_dir"])
         ok, reason = validate_review_output(
             result.stdout,
             CFG["required_sections"],
-            timeline_grew=(post_size > pre_size and post_mtime > pre_mtime),
+            timeline_grew=(post_max_id > pre_max_id),
         )
         if ok:
             _log(f"DONE {session_id[:8]} → {agent} (attempt {attempt}, {len(result.stdout)} chars)")
@@ -844,26 +852,32 @@ def _extract_section(output: str, header: str) -> str:
     return m.group(1) if m else ""
 
 
-def _timeline_dir_stat(timeline_dir: Path) -> tuple[int, float]:
-    """(total bytes, latest mtime) across every day file in the timeline dir.
+def _timeline_max_id(timeline_dir: Path) -> int:
+    """Highest entry id in the timeline db (0 if no db/rows yet).
 
-    Dir-wide because log_event may file under a prior day (--date of the last
-    real message), so watching only today's file would miss a real write."""
-    total, latest = 0, 0.0
-    if timeline_dir.exists():
-        for f in timeline_dir.glob("*.md"):
-            st = f.stat()
-            total += st.st_size
-            latest = max(latest, st.st_mtime)
-    return total, latest
+    Store-wide because log_event may file under a prior day (--date of the
+    last real message), so any new row — whatever its date — counts."""
+    db = timeline_dir / "timeline.db"
+    if not db.exists():
+        return 0
+    try:
+        import sqlite3
+        con = sqlite3.connect(db, timeout=10)
+        try:
+            row = con.execute("SELECT COALESCE(MAX(id), 0) FROM entries").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            con.close()
+    except Exception:
+        return 0
 
 
 def validate_review_output(output: str, required_sections: list[str],
                            timeline_grew: bool = True) -> tuple[bool, str]:
     """(ok, reason). Required-section presence + per-section evidence floors.
 
-    timeline_grew: did the timeline dir actually gain bytes during the
-    spawn — if the model claimed `log_event` but no day file grew, the
+    timeline_grew: did the timeline db actually gain a row during the
+    spawn — if the model claimed `log_event` but no row appeared, the
     call never executed (the silent-pass bug this gate exists for)."""
     missing = [s for s in required_sections if f"## {s}" not in output]
     if missing:
@@ -957,13 +971,15 @@ def main():
     # recurring crons in auto_review_submodes (e.g. a nightly PM cron, a meta
     # review) — they get the purpose-prompted engine self-write (seat-tagged
     # timeline entry + dashboard stamp) instead of the reminder-quality line.
-    if (not is_user_engaged(jsonl_path)
-            and not is_telegram_session(session_id, jsonl_path)):
+    is_auto = (not is_user_engaged(jsonl_path)
+               and not is_telegram_session(session_id, jsonl_path))
+    if is_auto:
         if not auto_reviewed(agent, submode, CFG.get("auto_review_submodes")):
             _log(f"AUTO {session_id[:8]} → {agent}: no review (timeline owned by Stop hook)")
             sys.exit(0)
         _log(f"AUTO_REVIEW {session_id[:8]} → {agent}/{submode}: "
              "timeline-critical cron — engine self-write instead of Stop-hook line")
+    origin = "indirect" if is_auto else "direct"
 
     if not submode_reviewed(agent, submode, CFG.get("reviewed_submodes")):
         _log(f"SKIP {session_id[:8]}: sub-mode '{agent}/{submode}' not in reviewed set")
@@ -1011,9 +1027,9 @@ def main():
         except OSError:
             pass
         if action == "review":
-            spawn_review(session_id, agent, agent_title)
+            spawn_review(session_id, agent, agent_title, origin)
         else:  # "selfwrite" (default) — resume the ended session to write its own memory
-            spawn_selfwrite(session_id, agent, agent_title, submode, jsonl_path)
+            spawn_selfwrite(session_id, agent, agent_title, submode, jsonl_path, origin)
     finally:
         slot.close()
 

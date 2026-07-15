@@ -44,11 +44,10 @@ If it can't parse, ask the user for the date and stop.
 ## Step 1 — Load the day's claims (the timeline)
 
 ```bash
-TLDIR="${JSTACK_TIMELINE_DIR:-$HOME/Logs/Timeline}"
-cat "$TLDIR/$DAY.md" 2>/dev/null || echo "(no timeline for $DAY)"
+log_event recall "$DAY" 2>/dev/null || echo "(no timeline for $DAY)"
 ```
 
-Read every block. The claims that matter most are the **fixes and ships** ("fixed X, shipped to develop", "issue #NNN"). Keep the full file — each repo auditor gets it as grounding, and you use it in synthesis to catch claim↔commit gaps. An empty timeline is fine: the audit then runs purely off commits.
+Read every block. The claims that matter most are the **fixes and ships** ("fixed X, shipped to develop", "issue #NNN"). Keep the full output — each repo auditor gets it as grounding, and you use it in synthesis to catch claim↔commit gaps. An empty timeline is fine: the audit then runs purely off commits.
 
 ## Step 2 — Resolve repos and their owning agents
 

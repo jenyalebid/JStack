@@ -12,16 +12,15 @@ injected into that seat's next session on start. Feeds daily briefs, nightly
 reviews, and every seat's cold start. **Not a session log. Not a commit log.
 Not a build report.**
 
-Store: sqlite at `{timeline_dir}/timeline.db` (default `~/Logs/Timeline/`).
-The day file `{YYYY-MM-DD}.md` is a **one-way rendered view** — regenerated
-from the db on every write. Never edit a day md by hand: the db doesn't know
-your edit, and hand-writes are absorbed as `unknown`-quality strays at best.
-Everything goes through the jstack `log_event` tool (in the plugin's `bin/`,
-on PATH for review spawns). Timeline dir override: `JSTACK_TIMELINE_DIR`.
+Store: sqlite at `{timeline_dir}/timeline.db` (default `~/Logs/Timeline/`) —
+the ONLY artifact; there are no rendered files. Everything goes through the
+jstack `log_event` tool (in the plugin's `bin/`, on PATH for review spawns):
+writes AND reads. Never write the db from other code — a second writer forks
+the source of truth. Timeline dir override: `JSTACK_TIMELINE_DIR`.
 
-## Format — strict (the rendered day view)
+## Format — strict
 
-Every entry is a block, separated by one blank line:
+Every entry is one block (this is also how `recall`/`tail` print it):
 
 ```
 HH:MM [agent/submode]
@@ -37,7 +36,6 @@ Headline — present-tense, one line, ≤120 chars.
   on; a bare `[agent]` entry is invisible to seat injection once the seat's
   own entries fill the window.
 - Headline is one line. 0-3 detail bullets follow, each starting with `- `.
-- Exactly one blank line between blocks.
 
 ## What belongs
 
@@ -63,10 +61,25 @@ A reader asks "what happened today?" — not "which simulator on which iOS?".
 The block stays lean — it is what every next session boots on. When an event
 carries state worth more than three bullets (a design's why, an incident's
 trace, the exact state of a half-done thread), put it in `--context`: stored
-on the entry, never rendered into the day md, never injected. It surfaces
-only via `log_event show <id>` or `tail --json`. The `--session` link is
-advisory — transcripts get cleaned over time; the entry plus its context
-must stand alone.
+on the entry, never injected. It surfaces only via `log_event show <id>` or
+`tail --json`. The `--session` link is advisory — transcripts get cleaned
+over time; the entry plus its context must stand alone.
+
+## Origin — who drove the session
+
+Every entry carries an origin: `direct` (a human was at the wheel of the
+session that produced it) or `indirect` (cron / gateway / spawned work, no
+human driving). Resolution, first match wins:
+
+1. `--origin direct|indirect` on the write
+2. `JSTACK_TIMELINE_ORIGIN` env (spawn plumbing sets it on unattended
+   sessions; the session-end engine sets it on self-write resumes)
+3. `direct`
+
+Interactive sessions never need the flag. Pass it only when writing on
+behalf of the other kind (e.g. a human logging an event a cron performed).
+Dashboards and queries filter on it — a mislabeled origin miscounts the
+day's autonomous vs driven work.
 
 ## Headline grade
 
@@ -91,9 +104,9 @@ ahead (`log_event` clamps impossible future stamps to now as a backstop).
 
 ## One event, one entry
 
-Before logging, check what's already recorded — `log_event tail <agent> -n 15`
-(or read today's rendered md). If the event is already covered by another
-block, skip; don't restate it from your angle.
+Before logging, check what's already recorded — `log_event tail <agent> -n 15`.
+If the event is already covered by another block, skip; don't restate it from
+your angle.
 
 Pipeline tasks (multi-session work tracked by an issue) **must** use
 `--pipeline-task {repo}#{issue}` so the new block replaces prior ones. One
@@ -109,6 +122,7 @@ log_event {agent}/{submode} --pipeline-task appx#89 "headline" --detail "bullet"
 log_event {agent}/{submode} --at 14:05 "event from earlier today"
 log_event {agent}/{submode} --at 23:10 --date 2026-04-28 "late-logged event"
 log_event {agent}/{submode} --session {session_id} "headline"   # link the transcript
+log_event {agent}/{submode} --origin indirect "headline"  # writing for unattended work
 ```
 
 Agents write their own seat as source. Reserved sources (e.g. `assistant`)
@@ -124,7 +138,7 @@ and recall are the same mechanism — one store, different read shapes.
 ```bash
 log_event tail alpha/chat -n 10     # a seat's recent history (what injection shows)
 log_event tail alpha -n 20          # all of an agent's seats
-log_event tail alpha/chat --json    # structured: ids, session ids, verdicts, context
+log_event tail alpha/chat --json    # structured: ids, session ids, origins, verdicts, context
 log_event recall 2026-04-28                    # a day replayed, all seats
 log_event recall 2026-04-28 alpha              # one agent's day (alpha/chat = one seat)
 log_event recall 2026-04-21..2026-04-27 --full # a week, context blobs included
@@ -141,6 +155,5 @@ latest entry:
 log_event verdict beta/pm blocked --note "do not repeat: bare re-ping; escalate format past 5 cycles"
 ```
 
-Verdicts ride `tail` and seat injection (`↳ verdict: ...`) so the next run
-sees the call — they are NOT rendered into the day md, which stays strictly
-the day's spine.
+Verdicts ride `tail`, `recall`, and seat injection (`↳ verdict: ...`) so the
+next run sees the call.

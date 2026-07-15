@@ -146,7 +146,7 @@
       "kind": "system",
       "name": "Timeline Log",
       "status": "live",
-      "description": "Daily timeline files ({timeline_dir}/{YYYY-MM-DD}.md) written by bin/log_event — block format, chronological insertion, pipeline-task consolidation. The day's spine: feeds daily briefs and nightly reviews.",
+      "description": "Timeline sqlite store ({timeline_dir}/timeline.db) written and read by bin/log_event — block format, chronological order, pipeline-task consolidation, direct/indirect origin. The day's spine: feeds daily briefs, nightly reviews, and seat injection.",
       "code": [
         "bin/log_event",
         "rules-stage/timeline.md"

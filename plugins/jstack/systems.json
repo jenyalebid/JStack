@@ -56,8 +56,8 @@
       ],
       "test": {
         "type": "script",
-        "path": "tests/continuity-injection.sh",
-        "description": "Live test of the real hook via its SessionStart JSON stdin contract against a hermetic temp agents tree (JSTACK_REVIEW_CONFIG override): agent-root cwd → 'chat' injects chat continuity and NOT active.md; explicit submode cwd → that submode's continuity; 'review' submode → no output; non-workspace cwd → no-op; agent without review/ → not recognized; reviewable agent with state but no continuity → no output; emitted payload is valid SessionStart hook JSON."
+        "path": "tests/timeline-injection.sh",
+        "description": "Live test of the real hook via its SessionStart JSON stdin contract against a hermetic temp agents tree (JSTACK_REVIEW_CONFIG override): agent-root cwd → 'chat' seat injected; explicit submode cwd → that seat's entries; 'review' submode → no output; non-workspace cwd → no-op; unlisted seat → nothing; interactive_only honored (headless spawn gets nothing, pty session injected); kill switch honored; emitted payload is valid SessionStart hook JSON."
       },
       "subsystems": [],
       "notes": "Registered in hooks/hooks.json — auto-loads when the plugin is installed. Kill switch: JSTACK_TIMELINE_INJECT_DISABLED=1 (legacy JSTACK_CONTINUITY_INJECT_DISABLED honored). Reads agent_root + timeline_inject from JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json), same as the engine. Defensive: any error → exit 0, never blocks a session. Sub-mode resolution is kept identical to bin/session-review-spawn resolve_submode and the Stop hook's agent_source — if they drift, a seat reads back entries it never wrote."

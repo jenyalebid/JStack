@@ -8,10 +8,15 @@ already has it in context, so it is the cheapest, best-informed writer — no
 fresh stranger re-ingesting a transcript digest, no ~50-turn review.
 
 The action a session end triggers is `session_end_action`:
-  - "selfwrite" (default) — resume the ended session, 1 turn: one timeline entry
-    (spawn_selfwrite). The write appends to the SAME session JSONL, so nothing new
-    lands in the dashboard token view. Thread extraction / doc reconciliation are
-    NOT done here — those live only in the manual deep review.
+  - "selfwrite" (default) — resume a DISPOSABLE DUPLICATE of the ended session
+    for 1 turn: one timeline entry (spawn_selfwrite). The transcript is dubbed
+    (bin/dub-session), the dub is resumed for the write, then deleted — the
+    primary session JSONL is never touched, so resuming the session later picks
+    up exactly where the user left off, with no trailing self-write turn. On
+    re-end after a resume, the engine computes the last-reviewed boundary from
+    the recorded offset and the prompt scopes the entry to the delta after it.
+    Thread extraction / doc reconciliation are NOT done here — those live only
+    in the manual deep review.
   - "review" — the legacy fresh-session multi-phase review: `claude
     --print` from {agent_root}/{Name}/ running the review skill →
     output parser-validated (required sections + timeline-grew) → retry → escalate
@@ -84,16 +89,18 @@ SELFWRITE_MARKER = "[SESSION-SELF-WRITE]"
 # its persona-specific tail, so hosts can word the rest however they like.
 FILER_BRIEFING_MARKER = "You are being briefed on a topic"
 
-# The one turn a resumed session runs to write its own running memory. It ALREADY
-# HAS the whole conversation in context — no file re-reading, no re-derivation.
-# Two writes and a stamp, then stop. Deliberately NOT a review: no thread
-# extraction, no doc reconciliation, no code — those are the manual deep review.
+# The one turn the dubbed session runs to write the original's running memory.
+# It ALREADY HAS the whole conversation in context — no file re-reading, no
+# re-derivation. Two writes and a stamp, then stop. Deliberately NOT a review:
+# no thread extraction, no doc reconciliation, no code — those are the manual
+# deep review. {delta_note} is filled only when the session was reviewed before
+# (a resume that ended again) — it scopes the entry to the unreviewed delta.
 SELFWRITE_PROMPT = """{marker}
 
 Your session has ended. Do ONLY the steps below from what is already in your
 context above — do not re-read files, do not analyze, do not touch code, reminders,
 or any docs. Then stop.
-
+{delta_note}
 1. TIMELINE — this is your seat's running memory: the next {agent}/{submode} session
    boots on the last entries under this exact source, so write the line that lets it
    build on this session instead of starting cold. If this session did something
@@ -114,6 +121,17 @@ That is every step — then stop. Nothing else."""
 SELFWRITE_STAMP_STEP = """
 2. STAMP — mark this session written so the dashboard reflects it:
        review_sessions.py stamp {session_id} assistant
+"""
+
+# Injected into SELFWRITE_PROMPT (and the review invocation) when the session
+# was reviewed at a previous end — i.e. it was resumed and has now ended again.
+# The boundary is COMPUTED by the engine from the recorded reviewed offset, so
+# the delta scope is a mechanical fact handed to the writer, not its judgment.
+SELFWRITE_DELTA_NOTE = """
+RESUME DELTA — this session ended and was timeline-written before. Everything
+through {boundary} (local time) is already covered by earlier entries. Scope
+the entry below to ONLY what happened after that point; if nothing after it is
+timeline-worthy, that IS the skip case.
 """
 
 
@@ -139,13 +157,14 @@ DEFAULTS = {
     # What a session's end triggers. The historical default spun up a fresh
     # `review/` session (a stranger) that re-ingested a transcript digest and ran
     # a ~50-turn multi-phase review — correct, but the transcript re-ingestion +
-    # long agent run is the token cost. "selfwrite" (default) instead resumes the
-    # session that JUST ENDED for ONE turn to write its own running memory
-    # (one seat-tagged timeline entry) — its context is already loaded, so it
-    # is the cheapest, best-informed writer, and the write folds into the SAME
-    # session JSONL (no new review conversation to bloat the dashboard). Thread
-    # extraction / doc reconciliation live only in the manual deep review now.
-    #   "selfwrite" — resume the ended session, 1 turn, one timeline entry
+    # long agent run is the token cost. "selfwrite" (default) instead resumes a
+    # DISPOSABLE DUB of the session that JUST ENDED for ONE turn to write its own
+    # running memory (one seat-tagged timeline entry) — the conversation is
+    # already its context, so it is the cheapest, best-informed writer. The dub
+    # is deleted after the write, so the PRIMARY transcript never grows a
+    # self-write turn (clean future resume, clean picker). Thread extraction /
+    # doc reconciliation live only in the manual deep review now.
+    #   "selfwrite" — dub the ended session, resume the dub 1 turn, delete it
     #   "review"    — the legacy fresh-stranger multi-phase review (spawn_review)
     #   "off"       — do nothing on session end
     "session_end_action": "selfwrite",
@@ -505,6 +524,78 @@ def record_reviewed_offset(session_id: str, size: int) -> None:
         pass
 
 
+def last_reviewed_boundary(jsonl_path: Path, offset: int) -> str | None:
+    """Local 'YYYY-MM-DD HH:MM' of the last user/assistant message within the
+    first `offset` bytes — the portion the previous review already covered.
+    None when the session was never reviewed (offset 0) or no timestamp lands
+    in that span. The JSONL is append-only, so the recorded size is a stable
+    boundary into the same content it covered."""
+    if offset <= 0:
+        return None
+    try:
+        with jsonl_path.open("rb") as f:
+            blob = f.read(offset)
+    except OSError:
+        return None
+    newest = None
+    for raw in blob.splitlines():
+        try:
+            e = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if e.get("type") not in ("user", "assistant"):
+            continue
+        ts = e.get("timestamp")
+        if ts and (newest is None or ts > newest):
+            newest = ts
+    if not newest:
+        return None
+    try:
+        t = datetime.fromisoformat(newest.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t.astimezone().strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return None
+
+
+# ------------------------------------------------------------ selfwrite dubs
+
+def _dubs_dir() -> Path:
+    d = CFG["state_dir"] / "dubs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def sweep_stale_dubs() -> None:
+    """Remove leftover selfwrite dubs whose owning engine died before its
+    cleanup ran (SIGKILL/reboot mid-spawn). A leaked dub is a phantom duplicate
+    in the resume picker — the exact pollution the dub flow exists to prevent —
+    so every engine run sweeps the registry of dead-pid records."""
+    d = CFG["state_dir"] / "dubs"
+    if not d.is_dir():
+        return
+    for rec in d.iterdir():
+        try:
+            pid_s, _, dub_path = rec.read_text().strip().partition(" ")
+        except OSError:
+            continue
+        try:
+            os.kill(int(pid_s), 0)
+            continue  # owner alive — its finally-cleanup owns this dub
+        except (ProcessLookupError, ValueError):
+            pass      # dead owner or garbage record — sweep
+        except (PermissionError, OSError):
+            continue  # can't tell — leave it
+        try:
+            if dub_path:
+                Path(dub_path).unlink(missing_ok=True)
+            rec.unlink(missing_ok=True)
+            _log(f"DUB_SWEPT {rec.name[:8]} (owner {pid_s} dead)")
+        except OSError:
+            pass
+
+
 def has_new_user_prose(jsonl_path: Path, offset: int) -> bool:
     """Real user input past `offset` (the transcript size at the last review).
     Resuming a session and closing it without typing appends no user prose —
@@ -658,18 +749,22 @@ def _selfwrite_env(origin: str = "direct") -> dict:
 
 def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
                     submode: str, jsonl_path: Path,
-                    origin: str = "direct") -> None:
-    """Resume the just-ended session for ONE turn so it writes its OWN running
-    memory — one seat-tagged timeline entry — instead of paying a fresh
-    stranger to re-derive what this session already knows.
+                    origin: str = "direct", boundary: str | None = None) -> None:
+    """Resume a disposable DUPLICATE of the just-ended session for ONE turn so
+    it writes the original's running memory — one seat-tagged timeline entry —
+    instead of paying a fresh stranger to re-derive what the session already
+    knows.
 
-    Cheap by construction: the resumed session's context is already loaded
-    (cache-warm if resumed promptly), so this is ~1 turn, not the ~50-turn
-    multi-phase review. The write APPENDS to the same session JSONL, so no new
-    review conversation is created (nothing new to bloat the dashboard token
-    view). After the append, re-record the reviewed offset to the new size —
-    otherwise the injected self-write prompt reads as fresh user prose and a
-    later reopen would re-trigger the self-write.
+    Cheap by construction: the dub carries the full conversation, so this is
+    ~1 turn, not the ~50-turn multi-phase review. The write lands in the dub,
+    which is DELETED afterwards — the primary session JSONL is never touched,
+    so resuming it later starts exactly where the user left off, with no
+    trailing self-write turn in context or the picker. The timeline entry and
+    the dashboard stamp reference the ORIGINAL session id throughout.
+
+    `boundary` (last-reviewed local time, computed by the caller from the
+    recorded offset) is non-None only when this session was reviewed at a
+    previous end — the prompt then scopes the entry to the delta after it.
     """
     env = _selfwrite_env(origin)
     stamp_step = (
@@ -679,17 +774,44 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     prompt = SELFWRITE_PROMPT.format(
         marker=SELFWRITE_MARKER, agent=agent, agent_title=agent_title,
         submode=submode, session_id=session_id, stamp_step=stamp_step,
+        delta_note=SELFWRITE_DELTA_NOTE.format(boundary=boundary) if boundary else "",
     )
+
+    # Dub the transcript — the write happens in this disposable duplicate so the
+    # primary JSONL stays exactly as the user left it. The dub lives in the same
+    # project dir (that's where --resume finds it) under a scratch title.
+    dub_err = ""
+    try:
+        r = subprocess.run(
+            [str(PLUGIN_BIN / "dub-session"), session_id, jsonl_path.parent.name,
+             " · selfwrite scratch"],
+            capture_output=True, text=True, timeout=60,
+        )
+        dub_id = (r.stdout or "").strip() if r.returncode == 0 else ""
+        dub_err = (r.stderr or "")[:200]
+    except Exception as e:
+        dub_id, dub_err = "", str(e)
+    if not re.fullmatch(r"[0-9a-f-]{36}", dub_id or ""):
+        _log(f"SELFWRITE_FAIL {session_id[:8]} → {agent}: dub failed: {dub_err}")
+        return
+    dub_path = jsonl_path.parent / f"{dub_id}.jsonl"
+    # Pid-stamped registry record: if this engine dies before the finally below
+    # runs (SIGKILL/reboot), the next engine run's sweep_stale_dubs removes the
+    # orphan instead of leaving a phantom duplicate in the resume picker.
+    dub_rec = _dubs_dir() / dub_id
+    try:
+        dub_rec.write_text(f"{os.getpid()} {dub_path}\n")
+    except OSError:
+        pass
+
     cmd = [
         "claude", "--print",
         "--output-format", "text",
         "--model", str(CFG["selfwrite_model"]),
         "--permission-mode", "bypassPermissions",
         "--max-turns", str(CFG["selfwrite_max_turns"]),
-        # NO --name: this resumes the SAME session JSONL, so any --name would
-        # overwrite the session's own title with "Self-write: …". The append is
-        # invisible by design; it needs no distinguishing label.
-        "--resume", session_id,
+        # NO --name: the dub is deleted after the write, a title would be wasted.
+        "--resume", dub_id,
         "-p", prompt,
     ]
     # Resume from the session's own cwd so tools + Claude project resolution behave
@@ -698,7 +820,8 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     if not Path(cwd).is_dir():
         cwd = str(CFG["agent_root"] / agent_title)
 
-    _log(f"SELFWRITE {session_id[:8]} → {agent}/{submode}")
+    _log(f"SELFWRITE {session_id[:8]} → {agent}/{submode} "
+         f"(dub {dub_id[:8]}{', delta since ' + boundary if boundary else ''})")
     try:
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True,
@@ -710,6 +833,14 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     except Exception as e:
         _log(f"SELFWRITE_ERR {session_id[:8]} → {agent}: {e}")
         return
+    finally:
+        # The timeline row is the artifact; the dub is scratch. Remove it on
+        # every exit path so nothing ever accumulates in the resume picker.
+        try:
+            dub_path.unlink(missing_ok=True)
+            dub_rec.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     if result.returncode != 0:
         blob = (result.stdout or "") + (result.stderr or "")
@@ -720,23 +851,23 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
              f"exit {result.returncode}: {(result.stderr or '')[:200]}")
         return
 
-    # Success — re-record the offset PAST the appended self-write turn so a future
-    # reopen doesn't see the injected prompt as new user prose and re-fire.
-    try:
-        record_reviewed_offset(session_id, jsonl_path.stat().st_size)
-    except OSError:
-        pass
     _log(f"SELFWRITE_DONE {session_id[:8]} → {agent} ({len(result.stdout)} chars)")
 
 
 def spawn_review(session_id: str, agent: str, agent_title: str,
-                 origin: str = "direct") -> None:
+                 origin: str = "direct", boundary: str | None = None) -> None:
     workspace = CFG["agent_root"] / agent_title
     if not workspace.exists():
         _log(f"SKIP {session_id[:8]}: workspace {workspace} not found")
         return
 
     base_invocation = f"{CFG['skill_invocation']} {session_id}"
+    if boundary:
+        base_invocation = (
+            f"[RESUME DELTA: this session was already reviewed through {boundary} "
+            f"local time — review ONLY the portion after that point; earlier "
+            f"timeline entries cover the rest.]\n{base_invocation}"
+        )
     max_attempts = int(CFG["max_attempts"])
     last_failure = ""
 
@@ -943,6 +1074,10 @@ def main():
     if not claim_session(session_id):
         sys.exit(0)
 
+    # Orphan hygiene — reap selfwrite dubs leaked by an engine that died
+    # mid-spawn, before this run possibly creates its own.
+    sweep_stale_dubs()
+
     # Brief pause — session JSONL may still be finalizing
     time.sleep(2)
 
@@ -1021,15 +1156,22 @@ def main():
         _log(f"SLOT_TIMEOUT {session_id[:8]} → {agent}: gave up after {CFG['slot_wait_secs']}s")
         sys.exit(0)
 
+    # The delta boundary is computed from the PRIOR offset before it is
+    # re-recorded below — non-None only when this session was reviewed at an
+    # earlier end (a resume that ended again). Purely mechanical: recorded
+    # byte offset → last covered timestamp → injected scope.
+    boundary = last_reviewed_boundary(jsonl_path, prior)
+
     try:
         try:
             record_reviewed_offset(session_id, jsonl_path.stat().st_size)
         except OSError:
             pass
         if action == "review":
-            spawn_review(session_id, agent, agent_title, origin)
-        else:  # "selfwrite" (default) — resume the ended session to write its own memory
-            spawn_selfwrite(session_id, agent, agent_title, submode, jsonl_path, origin)
+            spawn_review(session_id, agent, agent_title, origin, boundary)
+        else:  # "selfwrite" (default) — a disposable dub writes the session's memory
+            spawn_selfwrite(session_id, agent, agent_title, submode, jsonl_path,
+                            origin, boundary)
     finally:
         slot.close()
 

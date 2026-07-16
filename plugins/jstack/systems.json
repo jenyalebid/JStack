@@ -168,7 +168,7 @@
       "kind": "system",
       "name": "Session-End Engine",
       "status": "live",
-      "description": "SessionEnd hook → bin/session-review-spawn engine → session_end_action. Default 'selfwrite': resume the just-ended session for ONE turn to write its own seat-tagged timeline entry (cheap, folds into the same JSONL, no fresh review conversation). Legacy 'review': claude --print from {agent_root}/{Name}/review/ running the review skill → output parser-validated → retry → escalate (thread extraction + doc reconciliation). Keeps the timeline truthful after every session.",
+      "description": "SessionEnd hook → bin/session-review-spawn engine → session_end_action. Default 'selfwrite': resume a disposable DUB of the just-ended session (bin/dub-session) for ONE turn to write its own seat-tagged timeline entry, then delete the dub — the primary transcript never grows a self-write turn (clean future resume, clean picker; stale dubs pid-swept every engine run). A resumed session that ends again gets the engine-computed last-reviewed boundary injected, scoping the entry to the delta since the resume point. Legacy 'review': claude --print from {agent_root}/{Name}/review/ running the review skill → output parser-validated → retry → escalate (thread extraction + doc reconciliation). Keeps the timeline truthful after every session.",
       "code": [
         "bin/session-review-spawn",
         "hooks/session-end-review.sh",

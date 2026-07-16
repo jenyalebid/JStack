@@ -2,7 +2,7 @@
 
 When an agent session ends, the engine writes that session's running memory. The `session_end_action` config picks how:
 
-- **`selfwrite`** (default) — **resume the session that just ended for ONE turn** so it writes its own seat-tagged timeline entry, then stop. It already lived the conversation, so it is the cheapest, best-informed writer; the write **appends to the same session JSONL** (no separate review conversation). It does NOT extract threads, reconcile docs, or file follow-ups.
+- **`selfwrite`** (default) — **resume a disposable duplicate of the session that just ended for ONE turn** so it writes its own seat-tagged timeline entry, then stop. It already lived the conversation, so it is the cheapest, best-informed writer. The transcript is dubbed (`bin/dub-session`), the dub is resumed for the write, then **deleted** — the primary session JSONL is never touched, so resuming the session later starts exactly where the user left it, with no trailing self-write turn in context or the resume picker. When the session was reviewed at a previous end (resumed, then ended again), the engine computes the last-reviewed boundary from the recorded offset and the prompt scopes the entry to **only the delta after it**. It does NOT extract threads, reconcile docs, or file follow-ups.
 - **`review`** — the legacy fresh pass: a purpose-spawned fresh session re-ingests a transcript digest and runs the multi-phase review skill (walk the transcript, extract dropped threads into follow-ups, reconcile touched docs, log the timeline entry), machine-validated against required sections + evidence floors — rejected and re-spawned if it doesn't show its evidence. Still the right choice when you want the full stranger audit; also the manual `/…post-session-review` deep pass.
 - **`off`** — do nothing on session end.
 
@@ -14,9 +14,12 @@ SessionEnd hook (hooks/session-end-review.sh, or a host-wired equivalent)
     → gating: claim → agent resolution → loop/size/activity/TG guards → slot
     → session_end_action:
        selfwrite (default):
-         claude --print --model {selfwrite_model} --resume {session_id}
-             -p "[SESSION-SELF-WRITE] … log one seat-tagged timeline entry"
-         → re-record reviewed offset past the appended turn (no reopen re-fire)
+         dub-session {session_id} → {dub_id}      (disposable duplicate)
+         claude --print --model {selfwrite_model} --resume {dub_id}
+             -p "[SESSION-SELF-WRITE] … log one seat-tagged timeline entry
+                 [+ resume-delta boundary when previously reviewed]"
+         → delete the dub — the primary transcript is never touched
+           (pid-stamped dub registry; stale dubs swept on every engine run)
        review (legacy):
          claude --print --model {model} from {agent_root}/{Name}/review/
              -p "[POST-SESSION-REVIEW]\n\n{skill_invocation} {session_id}"
@@ -37,10 +40,10 @@ The self-write turn uses `bin/log_event` (on the spawned PATH). The `review` ski
 | Guard | What it prevents |
 |-------|------------------|
 | Atomic per-session claim (pid-stamped, stale-takeover) | Double review when host hook + plugin hook both fire |
-| `SKIP_SESSION_HOOK=1` honored (set on the resume/spawn) + `[POST-SESSION-REVIEW]` marker check | Self-write-of-self-write and review-of-review loops. The self-write also re-records the reviewed offset past its own appended turn, so a later reopen sees no new user prose and skips. |
+| `SKIP_SESSION_HOOK=1` honored (set on the resume/spawn) + `[POST-SESSION-REVIEW]` marker check | Self-write-of-self-write and review-of-review loops. The self-write lands in a disposable dub, not the primary JSONL — nothing it appends can ever read as new user prose on a later reopen. |
 | Filer-briefing skip | Burning a spawn on briefing-only resumed sessions closed without typing |
 | `min_session_bytes` (1KB) | Reviewing empty sessions |
-| reviewed-offset (state, per session) | Re-reviewing on resume-and-close: the transcript size is stamped at each spawn; a later SessionEnd with no new user prose past the stamp skips. Injected content (`<`-prefixed, `Caveat:`, isMeta) is not user prose. |
+| reviewed-offset (state, per session) | Re-reviewing on resume-and-close: the transcript size is stamped at each spawn; a later SessionEnd with no new user prose past the stamp skips. Injected content (`<`-prefixed, `Caveat:`, isMeta) is not user prose. When new prose DID land, the offset also yields the last-reviewed boundary timestamp, injected so the write covers only the delta since the resume point. |
 | Recent-activity check (today, or ≤4h) | Reviewing reopen-and-close of old sessions |
 | Per-agent telegram debounce | One review per TG conversation, not per message |
 | flock slots (`max_concurrent`, default 2) | Memory blowups from overlapping spawns |
@@ -56,7 +59,7 @@ All keys optional; defaults are fully portable. Host-relevant keys:
 | `agent_root` | `~/Agents` | Workspace root — agent resolution + seat resolution |
 | `default_agent` | none | Owner of `$HOME`-cwd sessions |
 | `project_dir_map` | `{}` | Encoded project dir → agent, for non-workspace sessions |
-| `session_end_action` | `selfwrite` | `selfwrite` (resume the ended session, 1 turn, one seat-tagged timeline entry) \| `review` (legacy fresh review spawn) \| `off` |
+| `session_end_action` | `selfwrite` | `selfwrite` (dub the ended session, resume the dub 1 turn for one seat-tagged timeline entry, delete the dub) \| `review` (legacy fresh review spawn) \| `off` |
 | `selfwrite_model` | `sonnet` | Model for the one-turn resume write |
 | `selfwrite_max_turns` | `12` | Turn budget for the self-write |
 | `selfwrite_timeout_secs` | `300` | Timeout for the self-write |

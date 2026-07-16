@@ -12,6 +12,10 @@
 #   - claim dedup: second claim on a live pid loses; stale (dead-pid) claim
 #     is taken over
 #   - log line format matches the `SPAWN <sid8> → <agent>` dashboard contract
+#   - resume-delta boundary: computed from the reviewed offset (never-reviewed
+#     → None; content past the offset doesn't move it); delta note lands in
+#     the selfwrite prompt only when a boundary exists
+#   - stale-dub sweep: dead-owner selfwrite dubs reaped, live-owner dubs kept
 #
 # Exit 0 = all pass, exit 1 = any fail.
 
@@ -233,20 +237,66 @@ sw = eng.SELFWRITE_PROMPT.format(
     marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
     submode="chat", session_id="abcd1234-....",
     stamp_step=eng.SELFWRITE_STAMP_STEP.format(session_id="abcd1234-...."),
+    delta_note="",
 )
 check("selfwrite prompt formats + names seat source", "log_event alpha/chat" in sw)
 check("selfwrite prompt links the session",          "--session abcd1234-...." in sw)
 check("selfwrite prompt does NOT name continuity",   "continuity" not in sw)
 check("selfwrite prompt names the review stamp",     "stamp abcd1234-.... assistant" in sw)
+check("first-review prompt has no delta scope",      "RESUME DELTA" not in sw)
 
 # Hosts without the dashboard's review_sessions.py get NO stamp step — the
 # prompt must not instruct a command that does not exist on that machine.
 sw_bare = eng.SELFWRITE_PROMPT.format(
     marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
-    submode="chat", session_id="abcd1234-....", stamp_step="",
+    submode="chat", session_id="abcd1234-....", stamp_step="", delta_note="",
 )
 check("stampless prompt omits the host-only command", "review_sessions" not in sw_bare)
 check("stampless prompt keeps the timeline step",     "log_event alpha/chat" in sw_bare)
+
+# A session reviewed at a previous end (resumed, ended again) gets the
+# engine-computed boundary injected — the entry scopes to the delta after it.
+sw_delta = eng.SELFWRITE_PROMPT.format(
+    marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
+    submode="chat", session_id="abcd1234-....", stamp_step="",
+    delta_note=eng.SELFWRITE_DELTA_NOTE.format(boundary="2026-07-15 10:30"),
+)
+check("resume-delta prompt names the boundary",
+      "RESUME DELTA" in sw_delta and "2026-07-15 10:30" in sw_delta)
+
+# ---- resume-delta boundary (mechanical, from the reviewed offset) --------
+# The boundary is the last user/assistant timestamp WITHIN the recorded
+# offset — the span the previous review covered. Offset 0 (never reviewed)
+# → None; content past the offset must not move the boundary.
+first = _json.dumps({"type": "user", "timestamp": "2026-07-15T17:00:00Z",
+                     "message": {"content": "do the thing"}}) + "\n"
+second = _json.dumps({"type": "assistant", "timestamp": "2026-07-15T19:30:00Z",
+                      "message": {"content": [{"type": "text", "text": "done"}]}}) + "\n"
+bf = Path(eng.CFG["state_dir"]) / "boundary.jsonl"
+bf.write_text(first + second)
+check("boundary: never reviewed → None",
+      eng.last_reviewed_boundary(bf, 0) is None)
+b1 = eng.last_reviewed_boundary(bf, len(first.encode()))
+from datetime import datetime as _dt, timezone as _tz
+want = _dt.fromisoformat("2026-07-15T17:00:00+00:00").astimezone().strftime("%Y-%m-%d %H:%M")
+check(f"boundary: offset-scoped to the reviewed span ({b1})", b1 == want)
+b2 = eng.last_reviewed_boundary(bf, len((first + second).encode()))
+want2 = _dt.fromisoformat("2026-07-15T19:30:00+00:00").astimezone().strftime("%Y-%m-%d %H:%M")
+check(f"boundary: full span reads the last message ({b2})", b2 == want2)
+
+# ---- stale-dub sweep -----------------------------------------------------
+# A selfwrite dub whose owning engine died mid-spawn must be reaped by the
+# next engine run; a dub whose owner is alive must be left alone.
+dubs = eng._dubs_dir()
+dead_dub = tmp / "dead-dub.jsonl";  dead_dub.write_text("{}\n")
+live_dub = tmp / "live-dub.jsonl";  live_dub.write_text("{}\n")
+(dubs / "dead-dub-id").write_text(f"999999999 {dead_dub}\n")
+(dubs / "live-dub-id").write_text(f"{os.getpid()} {live_dub}\n")
+eng.sweep_stale_dubs()
+check("stale dub swept (file + record)",
+      not dead_dub.exists() and not (dubs / "dead-dub-id").exists())
+check("live-owner dub untouched",
+      live_dub.exists() and (dubs / "live-dub-id").exists())
 
 # The SELFWRITE log line the engine emits must match the (updated) dashboard
 # regex, which accepts SELFWRITE alongside legacy SPAWN.

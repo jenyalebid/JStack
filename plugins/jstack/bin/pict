@@ -690,10 +690,10 @@ def _symlink_alias(target: Path) -> str | None:
     return None
 
 
-def _walkup_subrows(text: str) -> list[tuple[str, int, str]]:
-    """Split a claudeMd system-reminder into per-source sections, in wire
-    order: each `Contents of <path> (<why>)` file plus the harness stubs.
-    Returns (path-or-stub, bytes, how-it-loads) rows."""
+def _walkup_marks(text: str) -> list[tuple[int, str, str]]:
+    """Boundary positions of every per-source section inside a claudeMd
+    system-reminder: each `Contents of <path> (<why>)` file plus the harness
+    stubs, in wire order. Returns (offset, path-or-stub, how-it-loads)."""
     marks: list[tuple[int, str, str]] = []
     for m in _WALKUP_FILE.finditer(text):
         note = m.group(2)
@@ -704,6 +704,11 @@ def _walkup_subrows(text: str) -> list[tuple[str, int, str]]:
     for m in _WALKUP_STUB.finditer(text):
         marks.append((m.start(), f"# {m.group(1)} stub", "no file — harness text"))
     marks.sort()
+    return marks
+
+
+def _walkup_subrows(text: str) -> list[tuple[str, int, str]]:
+    marks = _walkup_marks(text)
     rows: list[tuple[str, int, str]] = []
     for i, (pos, label, note) in enumerate(marks):
         end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
@@ -815,8 +820,26 @@ def render_request(path: Path, directory: Path | None = None) -> str:
         lines.append(BAR)
         lines.append("```")
         lines.append("")
-        lines.append(body.rstrip() if body.strip() else "(empty)")
-        lines.append("")
+        if _sub:
+            # composite block: break the body at every source boundary so
+            # each injected file's start and end is visible
+            marks = _walkup_marks(body)
+            pre = body[: marks[0][0]] if marks else body
+            if pre.strip():
+                lines.append(pre.rstrip())
+                lines.append("")
+            for j, (pos, slabel, _n) in enumerate(marks):
+                end = marks[j + 1][0] if j + 1 < len(marks) else len(body)
+                lines.append("```")
+                lines.append(f"──── [{i}.{j + 1}] {slabel} · "
+                             f"{len(body[pos:end].encode()):,} bytes " + "─" * 8)
+                lines.append("```")
+                lines.append("")
+                lines.append(body[pos:end].rstrip())
+                lines.append("")
+        else:
+            lines.append(body.rstrip() if body.strip() else "(empty)")
+            lines.append("")
         lines.append("```")
         lines.append(f"━━━━ END [{i}/{total}]  {label} " + "━" * max(4, 56 - len(label)))
         lines.append("```")

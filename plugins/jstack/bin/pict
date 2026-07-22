@@ -8,42 +8,59 @@ from a given directory, as ONE markdown document, in the order the model
 receives it. The composed view — not the per-file view — is where redundancy,
 drift, and bloat across a walk-up chain become visible.
 
-Contract:  pict [dir]            (default: cwd; output: markdown on stdout)
+Contract:  pict [dir] [options]          (default dir: cwd; markdown on stdout)
 
-Sections, in injection order:
+Options — describe the spawn being previewed:
 
-  1. Global instructions   — <claude_dir>/CLAUDE.md, plus every rule in the
-                             rules dir WITHOUT `paths:` frontmatter (those
-                             load unconditionally at startup).
-  2. CLAUDE.md walk-up     — every CLAUDE.md / CLAUDE.local.md on the path
-                             from filesystem root down to the spawn dir,
-                             parent-most first (native load order).
-  3. Auto-memory           — MEMORY.md for the project key (git toplevel of
-                             the spawn dir, flattened; falls back to the dir).
-  4. SessionStart          — the JStack timeline injection is emulated
-                             faithfully (same seat resolution + config as
-                             hooks/session-start-inject.py, entries fetched
-                             via bin/log_event tail, interactive spawn
-                             assumed). Other SessionStart/UserPromptSubmit
-                             hooks are LISTED, never executed — arbitrary
-                             hook commands may have side effects.
-  5. Path-scoped rules     — rules whose `paths:` globs match a file that
-                             EXISTS under the spawn dir right now (JStack
-                             tail-matching semantics), bodies included.
-                             These inject on-demand (native read/edit
-                             matching + the JStack PreToolUse mutation
-                             hook), NEVER at spawn. Rules with no matching
-                             files are listed by name only — they'd fire
-                             only cross-tree or on newly created files.
-  6. Other injectors       — every remaining hook from user + project
-                             settings and the plugin manifest, one line each
-                             (event · matcher · command). Conditional,
-                             keyword- or event-triggered context.
+  --headless        preview a headless spawn (`claude --print`): interactive-
+                    only injectors go quiet (same as PICT_INTERACTIVE=0)
+  --no-memory       the spawn env sets CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 —
+                    the auto-memory index never loads
+  --append FILE     content the spawner passes via --append-system-prompt,
+                    in the order given (repeatable)
+  --prompt TEXT     the -p payload. A `/command` prompt is resolved the way
+                    the harness resolves it (nearest `.claude/commands/` on
+                    the walk-up from the spawn dir, then <claude_dir>/commands)
+                    and its full body inlined at its true position — the
+                    expansion IS the first user message.
+  --serve FILE      a captured tool-served payload (a context blob some tool
+                    returned mid-session); rendered at the tail of the
+                    injection order (repeatable)
+  --exec-hooks      actually RUN SessionStart hooks — user settings + every
+                    installed plugin — and render what each one injects.
+                    OFF by default: hook commands are arbitrary programs.
+                    The JStack timeline injector is never re-run (its output
+                    is already emulated read-only below).
 
-Out of scope (native harness, not md composition): plugin skills lists, MCP
-server instructions, enterprise managed policy, session-specific guidance.
+Stages, in injection order:
+
+  1. System prompt         — <claude_dir>/CLAUDE.md, unconditional rules
+                             (no `paths:` frontmatter), the CLAUDE.md /
+                             CLAUDE.local.md walk-up (parent-most first),
+                             the auto-memory index (unless --no-memory),
+                             then any --append content (appended to the
+                             end of the system prompt).
+  2. Session start         — SessionStart hook injections. The JStack
+                             timeline injection is emulated faithfully
+                             (same seat resolution + config as
+                             hooks/session-start-inject.py). Other hooks
+                             are LISTED unless --exec-hooks runs them.
+  3. First user message    — the --prompt payload; /commands expanded to
+                             their full body, exactly as the harness does.
+  4. Mid-session data      — --serve captures, in order given.
+
+Then the on-demand layer: path-scoped rules whose `paths:` globs match a
+file that EXISTS under the spawn dir right now (JStack tail-matching
+semantics), bodies included — these inject on demand, NEVER at spawn.
+Rules with no matching files are listed by name only. Finally every
+remaining hook from user settings and all installed plugins, one line each.
+
+Out of scope (native harness, not file composition): the base system prompt,
+tool/MCP schemas, the skills/commands description list, session guidance.
 
 A summary table with per-source ~token weights (bytes/4) heads the document.
+Every body is fenced by unmistakable BEGIN/END banners — where one file ends
+and the next begins is the point.
 
 Env overrides (tests; same convention as inject-path-rules.py):
   JSTACK_RULES_DIR      — rules source dir        (default <claude_dir>/rules)
@@ -212,10 +229,19 @@ def tokens(text: str) -> int:
     return max(1, len(text.encode()) // 4)
 
 
+STAGES = {
+    "system": "Stage 1 — system prompt (loads at spawn)",
+    "start": "Stage 2 — session start (hook injections)",
+    "prompt": "Stage 3 — first user message (the prompt)",
+    "served": "Stage 4 — mid-session tool results (captured)",
+}
+
+
 class Source:
-    def __init__(self, order: int, label: str, mechanism: str, body: str | None,
-                 note: str = ""):
+    def __init__(self, order: int, stage: str, label: str, mechanism: str,
+                 body: str | None, note: str = ""):
         self.order = order
+        self.stage = stage
         self.label = label
         self.mechanism = mechanism
         self.body = body
@@ -235,12 +261,17 @@ def read_or_none(path: Path) -> str | None:
         return None
 
 
+def add(sources: list[Source], stage: str, label: str, mechanism: str,
+        body: str | None, note: str = "") -> None:
+    sources.append(Source(len(sources) + 1, stage, label, mechanism, body, note))
+
+
 def gather_globals(sources: list[Source]) -> None:
     gmd = claude_dir() / "CLAUDE.md"
     body = read_or_none(gmd)
     if body is not None:
-        sources.append(Source(len(sources) + 1, display(gmd),
-                              "global memory — loads in every session", body))
+        add(sources, "system", display(gmd),
+            "global memory — loads in every session", body)
     rdir = rules_dir()
     if not rdir.is_dir():
         return
@@ -251,9 +282,9 @@ def gather_globals(sources: list[Source]) -> None:
         note = ""
         if rule.is_symlink():
             note = f"symlink → {display(rule.resolve())}"
-        sources.append(Source(len(sources) + 1, display(rule),
-                              "unconditional rule (no `paths:`) — loads at startup",
-                              strip_frontmatter(text), note))
+        add(sources, "system", display(rule),
+            "unconditional rule (no `paths:`) — loads at startup",
+            strip_frontmatter(text), note)
 
 
 def gather_walkup(directory: Path, sources: list[Source]) -> None:
@@ -265,8 +296,8 @@ def gather_walkup(directory: Path, sources: list[Source]) -> None:
             f = level / name
             body = read_or_none(f)
             if body is not None:
-                sources.append(Source(len(sources) + 1, display(f),
-                                      "CLAUDE.md walk-up — loads at spawn", body))
+                add(sources, "system", display(f),
+                    "CLAUDE.md walk-up — loads at spawn", body)
 
 
 def project_key(directory: Path) -> str:
@@ -279,16 +310,180 @@ def project_key(directory: Path) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", root)
 
 
-def gather_memory(directory: Path, sources: list[Source]) -> None:
+def gather_memory(directory: Path, sources: list[Source], no_memory: bool) -> None:
     key = project_key(directory)
+    if no_memory:
+        add(sources, "system", f"(auto-memory DISABLED) key `{key}`",
+            "spawn env sets CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 — the index never loads",
+            None)
+        return
     mem = claude_dir() / "projects" / key / "memory" / "MEMORY.md"
     body = read_or_none(mem)
     if body is not None:
-        sources.append(Source(len(sources) + 1, display(mem),
-                              f"auto-memory index — project key `{key}`", body))
+        add(sources, "system", display(mem),
+            f"auto-memory index — project key `{key}`", body)
     else:
-        sources.append(Source(len(sources) + 1, f"(no auto-memory) key `{key}`",
-                              "auto-memory index — none recorded for this project key", None))
+        add(sources, "system", f"(no auto-memory) key `{key}`",
+            "auto-memory index — none recorded for this project key", None)
+
+
+def gather_appends(appends: list[Path], sources: list[Source]) -> None:
+    for f in appends:
+        body = read_or_none(f)
+        note = f"symlink → {display(f.resolve())}" if f.is_symlink() else ""
+        if body is None:
+            add(sources, "system", display(f),
+                "--append-system-prompt — FILE UNREADABLE", None, note)
+        else:
+            add(sources, "system", display(f),
+                "--append-system-prompt — the spawner appends this to the end "
+                "of the system prompt", body, note)
+
+
+# ----------------------------------------------------------------- hook infra
+
+class Hook:
+    def __init__(self, origin: str, event: str, matcher: str, command: str,
+                 plugin_root: Path | None):
+        self.origin = origin
+        self.event = event
+        self.matcher = matcher
+        self.command = command
+        self.plugin_root = plugin_root
+        self.executed = False
+
+
+def _hooks_from_json(origin: str, path: Path, plugin_root: Path | None,
+                     out: list[Hook]) -> None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return
+    for event, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            matcher = group.get("matcher", "*") if isinstance(group, dict) else "*"
+            for h in (group.get("hooks") or []) if isinstance(group, dict) else []:
+                cmd = h.get("command", "") if isinstance(h, dict) else ""
+                cmd = re.sub(r"\s+", " ", cmd).strip()
+                if cmd:
+                    out.append(Hook(origin, event, matcher, cmd, plugin_root))
+
+
+def installed_plugins(directory: Path) -> list[tuple[str, str, Path]]:
+    """(name, version, install_path) for every installed plugin whose scope
+    applies to the spawn dir. Respects settings enabledPlugins:false."""
+    reg = claude_dir() / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(reg.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    disabled: set[str] = set()
+    for sf in ("settings.json", "settings.local.json"):
+        try:
+            s = json.loads((claude_dir() / sf).read_text())
+            for name, on in (s.get("enabledPlugins") or {}).items():
+                if on is False:
+                    disabled.add(name)
+        except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+            pass
+    out: list[tuple[str, str, Path]] = []
+    for name, entries in (data.get("plugins") or {}).items():
+        if name in disabled or not isinstance(entries, list):
+            continue
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            if e.get("scope") == "project":
+                proj = e.get("projectPath", "")
+                if not proj or not str(directory.resolve()).startswith(
+                        str(Path(proj).expanduser().resolve())):
+                    continue
+            ip = Path(e.get("installPath", ""))
+            if ip.is_dir():
+                out.append((name, str(e.get("version", "?")), ip))
+                break
+    return out
+
+
+def all_hooks(directory: Path) -> list[Hook]:
+    """Every hook the harness would register: user settings, then every
+    installed plugin's hooks.json, then (dev fallback) the source-repo
+    plugin manifest pict itself ships in. Dedupe on (event, matcher, cmd)."""
+    out: list[Hook] = []
+    for sf in ("settings.json", "settings.local.json"):
+        _hooks_from_json(display(claude_dir() / sf), claude_dir() / sf, None, out)
+    for name, version, ip in installed_plugins(directory):
+        _hooks_from_json(f"plugin {name} @{version}", ip / "hooks" / "hooks.json",
+                         ip, out)
+    _hooks_from_json("plugin hooks.json (source repo)",
+                     PLUGIN_BIN.parent / "hooks" / "hooks.json",
+                     PLUGIN_BIN.parent, out)
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[Hook] = []
+    for h in out:
+        key = (h.event, h.matcher, h.command)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(h)
+    return deduped
+
+
+def _matcher_hits_startup(matcher: str) -> bool:
+    if matcher in ("*", ""):
+        return True
+    try:
+        return re.fullmatch(matcher, "startup") is not None
+    except re.error:
+        return False
+
+
+def exec_session_hooks(directory: Path, hooks: list[Hook],
+                       sources: list[Source]) -> None:
+    """Run SessionStart hooks and render what each injects. The JStack
+    timeline injector is skipped — gather_timeline() emulates it read-only."""
+    stdin_payload = json.dumps({
+        "hook_event_name": "SessionStart", "source": "startup",
+        "session_id": "pict-preview", "cwd": str(directory),
+    })
+    for h in hooks:
+        if h.event != "SessionStart" or not _matcher_hits_startup(h.matcher):
+            continue
+        if "session-start-inject" in h.command:
+            h.executed = True  # emulated by gather_timeline, never re-run
+            continue
+        cmd = h.command
+        env = dict(os.environ)
+        if h.plugin_root is not None:
+            cmd = cmd.replace("${CLAUDE_PLUGIN_ROOT}", str(h.plugin_root))
+            env["CLAUDE_PLUGIN_ROOT"] = str(h.plugin_root)
+        try:
+            r = subprocess.run(["/bin/sh", "-c", cmd], input=stdin_payload,
+                               capture_output=True, text=True, timeout=15,
+                               env=env, cwd=str(directory))
+            raw = r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            raw = ""
+        h.executed = True
+        injected = raw
+        if raw.startswith("{"):
+            try:
+                parsed = json.loads(raw)
+                injected = (parsed.get("hookSpecificOutput", {}) or {}) \
+                    .get("additionalContext", "") or parsed.get("additionalContext", "")
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                pass
+        label = f"SessionStart · {h.origin}"
+        mech = f"SessionStart hook (executed) — `{h.command[:80]}`"
+        if injected:
+            add(sources, "start", label, mech, injected)
+        else:
+            add(sources, "start", label, mech + " — no context injected", None)
 
 
 # --------------------------------------------------- SessionStart (timeline)
@@ -347,14 +542,14 @@ def gather_timeline(directory: Path, sources: list[Source]) -> None:
     agent, submode = resolve_seat(directory, root)
     mech = "SessionStart hook — jstack session-start-inject.py (emulated read-only)"
     if agent is None or submode == "review":
-        sources.append(Source(len(sources) + 1, "(no timeline injection)",
-                              mech + " — dir is not an agent seat", None))
+        add(sources, "start", "(no timeline injection)",
+            mech + " — dir is not an agent seat", None)
         return
     n, why = timeline_count(cfg, agent, submode)
     seat = f"{agent}/{submode}"
     if n <= 0:
-        sources.append(Source(len(sources) + 1, f"(no timeline injection) seat `{seat}`",
-                              mech + (f" — {why}" if why else ""), None))
+        add(sources, "start", f"(no timeline injection) seat `{seat}`",
+            mech + (f" — {why}" if why else ""), None)
         return
     log_event = os.environ.get("PICT_LOG_EVENT", str(PLUGIN_BIN / "log_event"))
     try:
@@ -364,54 +559,109 @@ def gather_timeline(directory: Path, sources: list[Source]) -> None:
     except (OSError, subprocess.SubprocessError):
         entries = ""
     if not entries:
-        sources.append(Source(len(sources) + 1, f"(timeline empty) seat `{seat}`",
-                              mech + f" — {why}", None))
+        add(sources, "start", f"(timeline empty) seat `{seat}`",
+            mech + f" — {why}", None)
         return
-    sources.append(Source(len(sources) + 1, f"timeline tail — seat `{seat}`",
-                          mech + f" — {why}, wrapped in <jstack-timeline>", entries))
+    add(sources, "start", f"timeline tail — seat `{seat}`",
+        mech + f" — {why}, wrapped in <jstack-timeline>", entries)
 
 
-# ------------------------------------------------------------- hooks listing
+# ------------------------------------------------------------------- prompt
 
-def settings_hooks() -> list[tuple[str, str, str, str]]:
-    """(origin, event, matcher, command) for every hook in user settings,
-    project-level settings along the walk-up dir, and the plugin manifest."""
-    out: list[tuple[str, str, str, str]] = []
-    candidates = [
-        (display(claude_dir() / "settings.json"), claude_dir() / "settings.json"),
-        (display(claude_dir() / "settings.local.json"), claude_dir() / "settings.local.json"),
-        ("plugin hooks.json", PLUGIN_BIN.parent / "hooks" / "hooks.json"),
-    ]
-    for origin, path in candidates:
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError, ValueError):
-            continue
-        hooks = data.get("hooks", {})
-        if not isinstance(hooks, dict):
-            continue
-        for event, groups in hooks.items():
-            if not isinstance(groups, list):
-                continue
-            for group in groups:
-                matcher = group.get("matcher", "*") if isinstance(group, dict) else "*"
-                for h in (group.get("hooks") or []) if isinstance(group, dict) else []:
-                    cmd = h.get("command", "") if isinstance(h, dict) else ""
-                    cmd = re.sub(r"\s+", " ", cmd).strip()
-                    if len(cmd) > 100:
-                        cmd = cmd[:97] + "..."
-                    out.append((origin, event, matcher, cmd))
-    return out
+def resolve_command(name: str, directory: Path) -> Path | None:
+    """The harness's own search order: nearest `.claude/commands/<name>.md`
+    walking UP from the spawn dir, then the user-level commands dir."""
+    stop = walk_root().resolve()
+    for level in [directory] + list(directory.parents):
+        if not str(level).startswith(str(stop)):
+            break
+        cand = level / ".claude" / "commands" / f"{name}.md"
+        if cand.is_file():
+            return cand
+    cand = claude_dir() / "commands" / f"{name}.md"
+    return cand if cand.is_file() else None
+
+
+def gather_prompt(prompt: str, directory: Path, sources: list[Source]) -> None:
+    text = prompt.strip()
+    if not text.startswith("/"):
+        add(sources, "prompt", "(-p prompt, literal)",
+            "the -p payload IS the first user message", text)
+        return
+    parts = text[1:].split(None, 1)
+    name = parts[0]
+    args = parts[1] if len(parts) > 1 else ""
+    cand = resolve_command(name, directory)
+    wrapper = (f"<command-name>/{name}</command-name>"
+               + (f" <command-args>{args}</command-args>" if args else ""))
+    if cand is None:
+        add(sources, "prompt", f"/{name} (COMMAND NOT FOUND)",
+            "command expansion — no matching .claude/commands file on the "
+            "walk-up or in the user commands dir", None, wrapper)
+        return
+    note = wrapper
+    if cand.is_symlink():
+        note += f" · symlink → {display(cand.resolve())}"
+    body = read_or_none(cand) or ""
+    add(sources, "prompt", f"/{name} → {display(cand)}",
+        "command expansion — the -p prompt names this command; its body "
+        "(frontmatter stripped) IS the first user message",
+        strip_frontmatter(body), note)
+
+
+def gather_serves(serves: list[Path], sources: list[Source]) -> None:
+    for f in serves:
+        body = read_or_none(f)
+        if body is None:
+            add(sources, "served", display(f),
+                "tool-served payload — FILE UNREADABLE", None)
+        else:
+            add(sources, "served", display(f),
+                "tool-served payload — arrives mid-session as a tool result "
+                "(captured copy)", body)
 
 
 # ------------------------------------------------------------------ document
 
-def render(directory: Path) -> str:
+BAR = "━" * 72
+
+
+def banner_open(lines: list[str], s: Source, total: int) -> None:
+    lines.append("```")
+    lines.append(BAR)
+    lines.append(f"[{s.order}/{total}] BEGIN  {s.label}")
+    meta = s.mechanism
+    if s.body is not None:
+        meta += f" · {len(s.body.splitlines())} lines · ~{tokens(s.body)} tokens"
+    for chunk in [meta[i:i + 100] for i in range(0, len(meta), 100)]:
+        lines.append(f"        {chunk}")
+    if s.note:
+        lines.append(f"        {s.note}")
+    lines.append(BAR)
+    lines.append("```")
+
+
+def banner_close(lines: list[str], s: Source, total: int) -> None:
+    lines.append("```")
+    lines.append(f"━━━━ END [{s.order}/{total}]  {s.label} " +
+                 "━" * max(4, 60 - len(s.label)))
+    lines.append("```")
+
+
+def render(directory: Path, opts: dict) -> str:
     sources: list[Source] = []
+    hooks = all_hooks(directory)
     gather_globals(sources)
     gather_walkup(directory, sources)
-    gather_memory(directory, sources)
+    gather_memory(directory, sources, opts["no_memory"])
+    gather_appends(opts["appends"], sources)
+    if opts["exec_hooks"]:
+        exec_session_hooks(directory, hooks, sources)
     gather_timeline(directory, sources)
+    if opts["prompt"]:
+        gather_prompt(opts["prompt"], directory, sources)
+    gather_serves(opts["serves"], sources)
+    total = len(sources)
 
     candidates: dict[str, tuple[Path, list[str], str]] = {}
     rdir = rules_dir()
@@ -428,36 +678,47 @@ def render(directory: Path) -> str:
     elsewhere = [(s, g) for s, (_, g, _) in sorted(candidates.items()) if s not in hits]
 
     lines: list[str] = []
-    spawn_total = 0
-    ondemand_total = 0
     lines.append(f"# pict — composed context for `{display(directory)}`\n")
-    lines.append("Spawn-time sources in the order the model receives them, then the")
+    lines.append("Every injected source in the order the model receives it, then the")
     lines.append("on-demand layer. Weights are ~tokens (bytes/4).\n")
 
-    lines.append("| # | source | mechanism | ~tokens |")
-    lines.append("|---|--------|-----------|---------|")
+    stage_totals = {k: 0 for k in STAGES}
+    lines.append("| # | stage | source | mechanism | ~tokens |")
+    lines.append("|---|-------|--------|-----------|---------|")
     for s in sources:
         w = tokens(s.body) if s.body else 0
-        spawn_total += w
-        lines.append(f"| {s.order} | `{s.label}` | {s.mechanism} | {w or '—'} |")
-    lines.append(f"| | **loads at spawn** | | **{spawn_total}** |")
+        stage_totals[s.stage] += w
+        lines.append(f"| {s.order} | {s.stage} | `{s.label}` | {s.mechanism} | {w or '—'} |")
+    spawn_total = stage_totals["system"] + stage_totals["start"]
+    lines.append(f"| | | **loads at spawn** (system prompt + session start) | | **{spawn_total}** |")
+    if stage_totals["prompt"]:
+        lines.append(f"| | | **first user message** | | **{stage_totals['prompt']}** |")
+    if stage_totals["served"]:
+        lines.append(f"| | | **mid-session tool results (captured)** | | **{stage_totals['served']}** |")
+    grand = sum(stage_totals.values())
+    lines.append(f"| | | **TOTAL the model receives** | | **{grand}** |")
+    ondemand_total = 0
     for rule, globs, body in anchored:
         ondemand_total += tokens(body)
-        lines.append(f"| · | `{display(rule)}` | on-demand — files matching "
+        lines.append(f"| · | on-demand | `{display(rule)}` | files matching "
                      f"`{', '.join(globs)}` exist here | {tokens(body)} |")
     if anchored:
-        lines.append(f"| | **on-demand pool (each loads only when its files are touched)** "
+        lines.append(f"| | | **on-demand pool (each loads only when its files are touched)** "
                      f"| | **{ondemand_total}** |")
     lines.append("")
 
-    lines.append("## Spawn-time context, in order\n")
+    lines.append("## Injected context, in order\n")
+    prev_stage = None
     for s in sources:
-        note = f" · {s.note}" if s.note else ""
-        lines.append("---\n")
-        lines.append(f"> **[{s.order}] {s.label}** — {s.mechanism}{note}")
+        if s.stage != prev_stage:
+            lines.append(f"\n### {STAGES[s.stage]}\n")
+            prev_stage = s.stage
+        banner_open(lines, s, total)
         if s.body:
-            lines.append(f"> {len(s.body.splitlines())} lines · ~{tokens(s.body)} tokens\n")
+            lines.append("")
             lines.append(s.body.rstrip())
+            lines.append("")
+            banner_close(lines, s, total)
         lines.append("")
 
     lines.append("---\n")
@@ -468,10 +729,20 @@ def render(directory: Path) -> str:
     if not anchored:
         lines.append("*(none)*\n")
     for rule, globs, body in anchored:
-        lines.append("---\n")
-        lines.append(f"> **[rule] {display(rule)}** — fires on `{', '.join(globs)}`")
-        lines.append(f"> {len(body.splitlines())} lines · ~{tokens(body)} tokens\n")
+        lines.append("```")
+        lines.append(BAR)
+        lines.append(f"[rule] BEGIN  {display(rule)}")
+        lines.append(f"        fires on `{', '.join(globs)}` · "
+                     f"{len(body.splitlines())} lines · ~{tokens(body)} tokens")
+        lines.append(BAR)
+        lines.append("```")
+        lines.append("")
         lines.append(body.rstrip())
+        lines.append("")
+        lines.append("```")
+        lines.append(f"━━━━ END [rule]  {display(rule)} " +
+                     "━" * max(4, 56 - len(display(rule))))
+        lines.append("```")
         lines.append("")
 
     if elsewhere:
@@ -483,35 +754,74 @@ def render(directory: Path) -> str:
             lines.append(f"- `{stem}` — `{', '.join(globs)}`")
         lines.append("")
 
-    hooks = settings_hooks()
     if hooks:
         lines.append("---\n")
-        lines.append("## Other injectors (hooks — conditional, listed not executed)\n")
+        lines.append("## All registered hooks (user settings + installed plugins)\n")
+        lines.append("Conditional injectors and gates. Listed, not executed" +
+                     (" — except SessionStart hooks rendered above (--exec-hooks)."
+                      if opts["exec_hooks"] else
+                      " (pass --exec-hooks to run SessionStart hooks and see "
+                      "what they inject)."))
+        lines.append("")
         lines.append("| origin | event | matcher | command |")
         lines.append("|--------|-------|---------|---------|")
-        for origin, event, matcher, cmd in hooks:
-            lines.append(f"| {origin} | {event} | `{matcher}` | `{cmd}` |")
+        for h in hooks:
+            cmd = h.command if len(h.command) <= 100 else h.command[:97] + "..."
+            mark = " ✱ rendered above" if h.executed else ""
+            lines.append(f"| {h.origin} | {h.event} | `{h.matcher}` | `{cmd}`{mark} |")
         lines.append("")
 
     lines.append("---\n")
-    lines.append("*Native harness also injects plugin skills lists, MCP server")
-    lines.append("instructions, and session guidance — outside pict's md scope.*")
+    lines.append("*Native harness also injects: the base system prompt, tool schemas,")
+    lines.append("the skills/commands description list, MCP server instructions, and")
+    lines.append("session guidance — outside pict's file-composition scope.*")
     return "\n".join(lines) + "\n"
 
 
 def main(argv: list[str]) -> int:
-    args = [a for a in argv[1:] if a not in ("-h", "--help")]
-    if len(args) != len(argv[1:]):
+    if any(a in ("-h", "--help") for a in argv[1:]):
         sys.stdout.write(__doc__.strip() + "\n")
         return 0
-    if len(args) > 1:
-        sys.stderr.write("usage: pict [dir]\n")
+    opts = {"no_memory": False, "exec_hooks": False, "appends": [],
+            "serves": [], "prompt": ""}
+    positional: list[str] = []
+    args = argv[1:]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--headless":
+            os.environ["PICT_INTERACTIVE"] = "0"
+        elif a == "--no-memory":
+            opts["no_memory"] = True
+        elif a == "--exec-hooks":
+            opts["exec_hooks"] = True
+        elif a in ("--append", "--serve", "--prompt"):
+            if i + 1 >= len(args):
+                sys.stderr.write(f"pict: {a} needs a value\n")
+                return 64
+            val = args[i + 1]
+            i += 1
+            if a == "--append":
+                opts["appends"].append(Path(val).expanduser())
+            elif a == "--serve":
+                opts["serves"].append(Path(val).expanduser())
+            else:
+                opts["prompt"] = val
+        elif a.startswith("-"):
+            sys.stderr.write(f"pict: unknown option {a}\n")
+            return 64
+        else:
+            positional.append(a)
+        i += 1
+    if len(positional) > 1:
+        sys.stderr.write("usage: pict [dir] [--headless] [--no-memory] [--exec-hooks] "
+                         "[--append FILE]... [--prompt TEXT] [--serve FILE]...\n")
         return 64
-    directory = Path(args[0]).expanduser().resolve() if args else Path.cwd()
+    directory = Path(positional[0]).expanduser().resolve() if positional else Path.cwd()
     if not directory.is_dir():
         sys.stderr.write(f"pict: not a directory: {directory}\n")
         return 64
-    sys.stdout.write(render(directory))
+    sys.stdout.write(render(directory, opts))
     return 0
 
 

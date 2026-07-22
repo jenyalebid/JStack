@@ -119,4 +119,75 @@ echo "$OUT" | grep -q "nudge.sh" || fail "settings hook not listed"
 echo "$OUT" | grep -q "loads at spawn" || fail "spawn total missing"
 echo "$OUT" | grep -q "on-demand pool" || fail "on-demand pool total missing"
 
+# --- spawn-descriptor flags fixtures ----------------------------------------
+# a project command reachable by walk-up from the seat (agent-root .claude)
+mkdir -p "$FIX/Agents/Alpha/.claude/commands"
+printf '# Reply procedure\nCommand body law.\n' \
+  > "$FIX/Agents/Alpha/.claude/commands/do-thing.md"
+# an --append payload (what a spawner passes via --append-system-prompt)
+printf 'Append body law.\n' > "$TMP/append-law.md"
+# a captured tool-served blob
+printf 'Served blob data.\n' > "$TMP/blob.txt"
+# a fixture plugin with a SessionStart hook that injects a marker
+PLUG="$TMP/plugins/fake/1.0.0"
+mkdir -p "$PLUG/hooks" "$CLAUDE/plugins"
+cat > "$PLUG/hooks/hooks.json" <<'EOF'
+{"hooks": {"SessionStart": [{"matcher": "startup|clear",
+  "hooks": [{"type": "command",
+             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/inject.sh\""}]}]}}
+EOF
+cat > "$PLUG/hooks/inject.sh" <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+echo "PLUGIN-CTX-MARKER content."
+EOF
+chmod +x "$PLUG/hooks/inject.sh"
+cat > "$CLAUDE/plugins/installed_plugins.json" <<EOF
+{"version": 2, "plugins": {"fake@test": [
+  {"scope": "user", "installPath": "$PLUG", "version": "1.0.0"}]}}
+EOF
+
+OUT4="$(PICT_CLAUDE_DIR="$CLAUDE" PICT_WALK_ROOT="$FIX" PICT_LOG_EVENT="$TMP/log_event" \
+       JSTACK_REVIEW_CONFIG="$CLAUDE/jstack/review.json" JSTACK_RULES_DIR="$CLAUDE/rules" \
+       "$PICT" "$FIX/Agents/Alpha/chat" --headless --no-memory --exec-hooks \
+       --append "$TMP/append-law.md" --prompt "/do-thing post=123" \
+       --serve "$TMP/blob.txt")"
+fail4() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT4"; exit 1; }
+
+# 9. --no-memory: index body absent, DISABLED note present
+echo "$OUT4" | grep -q "memory index line" && fail4 "--no-memory still loaded index"
+echo "$OUT4" | grep -q "auto-memory DISABLED" || fail4 "DISABLED note missing"
+
+# 10. --append body present, positioned in the system-prompt stage
+echo "$OUT4" | grep -q "Append body law." || fail4 "append body missing"
+
+# 11. --prompt /command resolved by walk-up, body inlined, args in wrapper
+echo "$OUT4" | grep -q "Command body law." || fail4 "command body missing"
+echo "$OUT4" | grep -q "command-args>post=123" || fail4 "command args missing"
+
+# 12. --serve blob present and LAST in injection order
+echo "$OUT4" | grep -q "Served blob data." || fail4 "served blob missing"
+APPEND_LINE=$(echo "$OUT4" | grep -n "Append body law." | head -1 | cut -d: -f1)
+CMD_LINE=$(echo "$OUT4" | grep -n "Command body law." | head -1 | cut -d: -f1)
+BLOB_LINE=$(echo "$OUT4" | grep -n "Served blob data." | head -1 | cut -d: -f1)
+[ "$APPEND_LINE" -lt "$CMD_LINE" ] || fail4 "append must precede command body"
+[ "$CMD_LINE" -lt "$BLOB_LINE" ] || fail4 "command body must precede served blob"
+
+# 13. --exec-hooks ran the plugin SessionStart hook, before the prompt
+echo "$OUT4" | grep -q "PLUGIN-CTX-MARKER" || fail4 "plugin hook output missing"
+HOOK_LINE=$(echo "$OUT4" | grep -n "PLUGIN-CTX-MARKER" | head -1 | cut -d: -f1)
+[ "$HOOK_LINE" -lt "$CMD_LINE" ] || fail4 "hook output must precede command body"
+
+# 14. plugin hook enumerated in the hooks table with plugin origin
+echo "$OUT4" | grep -q "plugin fake@test" || fail4 "plugin hook not enumerated"
+
+# 15. banner integrity: every BEGIN with a body has an END
+B=$(echo "$OUT4" | grep -c "] BEGIN  " || true)
+E=$(echo "$OUT4" | grep -c "END \[" || true)
+[ "$E" -gt 0 ] || fail4 "no END banners"
+[ "$E" -le "$B" ] || fail4 "more ENDs than BEGINs"
+
+# 16. grand total row present
+echo "$OUT4" | grep -q "TOTAL the model receives" || fail4 "grand total missing"
+
 echo "PASS: pict"

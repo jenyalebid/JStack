@@ -33,9 +33,12 @@ Options — describe the spawn being previewed:
                     is already emulated read-only below).
   --request FILE    render a CAPTURED API request body (the JSON POSTed to
                     /v1/messages) instead of emulating: every system block,
-                    tool schema, and message part, verbatim, in wire order.
-                    This is the byte-truth mode — emulation cannot see the
-                    base system prompt or tool schemas; a capture can.
+                    tool schema, and message part, verbatim, in wire order,
+                    each attributed to the file (or binary/flag/hook) it
+                    loads from — the walk-up block breaks down per file,
+                    with symlink wiring resolved. This is the byte-truth
+                    mode — emulation cannot see the base system prompt or
+                    tool schemas; a capture can.
 
 Stages, in wire order (verified against captured request bodies):
 
@@ -666,55 +669,149 @@ def gather_serves(serves: list[Path], sources: list[Source]) -> None:
 
 # ------------------------------------------------------------- request mode
 
-def render_request(path: Path) -> str:
+_WALKUP_FILE = re.compile(r"^Contents of (\S+) \(([^)]*)\)", re.M)
+_WALKUP_STUB = re.compile(r"^# (claudeMd|userEmail|currentDate)\b", re.M)
+
+
+def _symlink_alias(target: Path) -> str | None:
+    """The wire prints RESOLVED paths — a rule wired in as a
+    `~/.claude/rules/*` symlink shows up under its target path, hiding how
+    it actually loads. Name the symlink so the wiring is visible."""
+    rd = rules_dir()
+    if not rd.is_dir():
+        return None
+    for p in rd.iterdir():
+        if p.is_symlink():
+            try:
+                if p.resolve() == target.resolve():
+                    return display(p)
+            except OSError:
+                continue
+    return None
+
+
+def _walkup_subrows(text: str) -> list[tuple[str, int, str]]:
+    """Split a claudeMd system-reminder into per-source sections, in wire
+    order: each `Contents of <path> (<why>)` file plus the harness stubs.
+    Returns (path-or-stub, bytes, how-it-loads) rows."""
+    marks: list[tuple[int, str, str]] = []
+    for m in _WALKUP_FILE.finditer(text):
+        note = m.group(2)
+        alias = _symlink_alias(Path(m.group(1)))
+        if alias:
+            note += f" · wired as symlink `{alias}`"
+        marks.append((m.start(), m.group(1), note))
+    for m in _WALKUP_STUB.finditer(text):
+        marks.append((m.start(), f"# {m.group(1)} stub", "no file — harness text"))
+    marks.sort()
+    rows: list[tuple[str, int, str]] = []
+    for i, (pos, label, note) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
+        rows.append((label, len(text[pos:end].encode()), note))
+    return rows
+
+
+def _attr_system_block(text: str) -> str:
+    if text.startswith("x-anthropic-billing-header"):
+        return "claude binary — billing header"
+    if "Claude Agent SDK" in text and len(text) < 200:
+        return "claude binary — SDK line"
+    if text.startswith("You are Claude Code") and len(text) > 4000:
+        return "claude binary — default harness prompt (gitStatus tail included)"
+    return "spawn flag — `--system-prompt` / `--append-system-prompt`"
+
+
+def render_request(path: Path, directory: Path | None = None) -> str:
     """Byte-truth mode: render a captured /v1/messages request body — every
-    system block, tool schema, and message part, verbatim, in wire order."""
+    system block, tool schema, and message part, verbatim, in wire order,
+    each attributed to what loads it (file, binary, flag, or hook)."""
+    directory = (directory or Path.cwd()).resolve()
     req = json.loads(path.read_text())
     total_bytes = len(path.read_bytes())
 
-    comps: list[tuple[str, str, str]] = []  # (label, detail, body)
+    Sub = list[tuple[str, int, str]]
+    comps: list[tuple[str, str, str, str, Sub]] = []
     sysblocks = req.get("system") or []
     if isinstance(sysblocks, str):
         sysblocks = [{"text": sysblocks}]
     for i, b in enumerate(sysblocks):
         t = b.get("text", "") if isinstance(b, dict) else str(b)
-        comps.append((f"system[{i}]", "system prompt block", t))
+        comps.append((f"system[{i}]", "system prompt block", t,
+                      _attr_system_block(t), []))
     tools = req.get("tools") or []
     for t in tools:
         name = t.get("name", "?") if isinstance(t, dict) else "?"
         comps.append((f"tool schema — {name}", "tools[] entry (bytes as sent, "
-                      "shown pretty-printed)", json.dumps(t, indent=1)))
+                      "shown pretty-printed)", json.dumps(t, indent=1),
+                      "claude binary — built-in schema", []))
+    cmd_name: str | None = None
     for mi, m in enumerate(req.get("messages") or []):
         role = m.get("role", "?")
         content = m.get("content")
         if isinstance(content, str):
-            comps.append((f"messages[{mi}] ({role})", "string content", content))
+            src = ("SessionStart hook output — registered hooks run at spawn"
+                   if "SessionStart hook additional context" in content
+                   else "harness reminder" if content.startswith("<system-reminder>")
+                   else "conversation")
+            comps.append((f"messages[{mi}] ({role})", "string content", content,
+                          src, []))
             continue
         for pi, part in enumerate(content or []):
             ptype = part.get("type", "?") if isinstance(part, dict) else "?"
             body = part.get("text", "") if isinstance(part, dict) else str(part)
             if ptype != "text" and not body:
                 body = json.dumps(part, indent=1)
+            subrows: Sub = []
+            if "# claudeMd" in body and "Contents of" in body:
+                src = "CLAUDE.md walk-up + always-on rules — per-file rows below"
+                subrows = _walkup_subrows(body)
+            elif "<command-name>" in body and len(body) < 1000:
+                w = re.search(r"<command-name>/?([^<]+)</command-name>", body)
+                cmd_name = w.group(1) if w else None
+                src = "CLI — command wrapper for the -p prompt"
+            elif cmd_name:
+                cand = resolve_command(cmd_name, directory)
+                if cand is not None:
+                    src = f"`{display(cand)}`"
+                    if cand.is_symlink():
+                        src += f" → `{display(cand.resolve())}`"
+                else:
+                    src = (f"expanded body of `/{cmd_name}` — source file not "
+                           f"found from `{display(directory)}`")
+                cmd_name = None
+            elif "SessionStart hook additional context" in body:
+                src = "SessionStart hook output — registered hooks run at spawn"
+            elif body.startswith("<system-reminder>"):
+                src = "harness reminder"
+            else:
+                src = "-p payload / conversation"
             comps.append((f"messages[{mi}].content[{pi}] ({role} · {ptype})",
-                          "message part", body))
+                          "message part", body, src, subrows))
 
     lines: list[str] = []
     lines.append(f"# pict --request — captured request `{display(path)}`\n")
     lines.append(f"Model `{req.get('model', '?')}` · request body {total_bytes:,} "
-                 f"bytes · every component verbatim, in wire order.\n")
-    lines.append("| # | component | bytes | % of request |")
-    lines.append("|---|-----------|-------|--------------|")
-    for i, (label, _, body) in enumerate(comps, 1):
+                 f"bytes · every component verbatim, in wire order · sources "
+                 f"resolved from `{display(directory)}`.\n")
+    lines.append("| # | component | bytes | % of request | source |")
+    lines.append("|---|-----------|-------|--------------|--------|")
+    for i, (label, _, body, src, subrows) in enumerate(comps, 1):
         b = len(body.encode())
-        lines.append(f"| {i} | `{label}` | {b:,} | {100.0 * b / max(1, total_bytes):.1f}% |")
-    lines.append(f"| | **request total (with JSON framing)** | **{total_bytes:,}** | 100% |")
+        lines.append(f"| {i} | `{label}` | {b:,} | "
+                     f"{100.0 * b / max(1, total_bytes):.1f}% | {src} |")
+        for slabel, sbytes, snote in subrows:
+            lines.append(f"| | ↳ `{slabel}` | {sbytes:,} | "
+                         f"{100.0 * sbytes / max(1, total_bytes):.1f}% | {snote} |")
+    lines.append(f"| | **request total (with JSON framing)** | **{total_bytes:,}** "
+                 f"| 100% | |")
     lines.append("")
     total = len(comps)
-    for i, (label, detail, body) in enumerate(comps, 1):
+    for i, (label, detail, body, src, _sub) in enumerate(comps, 1):
         lines.append("```")
         lines.append(BAR)
         lines.append(f"[{i}/{total}] BEGIN  {label}")
         lines.append(f"        {detail} · {len(body.encode()):,} bytes")
+        lines.append(f"        source: {src.replace('`', '')}")
         lines.append(BAR)
         lines.append("```")
         lines.append("")

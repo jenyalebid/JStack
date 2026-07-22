@@ -154,8 +154,8 @@ EOF
 OUT4="$(PICT_CLAUDE_DIR="$CLAUDE" PICT_WALK_ROOT="$FIX" PICT_LOG_EVENT="$TMP/log_event" \
        JSTACK_REVIEW_CONFIG="$CLAUDE/jstack/review.json" JSTACK_RULES_DIR="$CLAUDE/rules" \
        "$PICT" "$FIX/Agents/Alpha/chat" --headless --no-memory --exec-hooks \
-       --append "$TMP/append-law.md" --prompt "/do-thing post=123" \
-       --serve "$TMP/blob.txt")"
+       --append "$TMP/append-law.md" --append "$CLAUDE/rules/chat-law.md" \
+       --prompt "/do-thing post=123" --serve "$TMP/blob.txt")"
 fail4() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT4"; exit 1; }
 
 # 9. --no-memory: index body absent, DISABLED note present
@@ -187,6 +187,12 @@ echo "$OUT4" | grep -q "Arg=post=123 Tail= All=post=123" \
 echo "$OUT4" | grep -q "template: something" && fail4 "HTML comment not stripped"
 echo "$OUT4" | grep -q "Seat law." || fail4 "seat body lost by comment strip"
 echo "$OUT4" | grep -q "strips HTML comments" || fail4 "comment-strip note missing"
+
+# 12b. a rule both appended AND in the on-demand pool is cross-marked, and
+#      its body renders once (the append), never twice
+echo "$OUT4" | grep -q "SAME FILE as the --append" || fail4 "append/pool duplicate not marked"
+DUP_HITS=$(echo "$OUT4" | grep -c "Chat rule body." || true)
+[ "$DUP_HITS" -eq 1 ] || fail4 "appended pool rule body must render exactly once (got $DUP_HITS)"
 
 # 13. plugin hook enumerated in the hooks table with plugin origin
 echo "$OUT4" | grep -q "plugin fake@test" || fail4 "plugin hook not enumerated"

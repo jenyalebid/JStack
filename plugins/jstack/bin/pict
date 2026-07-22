@@ -783,6 +783,18 @@ def render(directory: Path, opts: dict) -> str:
     hits = anchored_rules({s: g for s, (_, g, _) in candidates.items()}, directory)
     anchored = [candidates[s] for s in sorted(hits)]
     elsewhere = [(s, g) for s, (_, g, _) in sorted(candidates.items()) if s not in hits]
+    appended = {}
+    for a in opts["appends"]:
+        try:
+            appended[a.resolve()] = a
+        except OSError:
+            pass
+
+    def dup_of_append(rule: Path) -> bool:
+        try:
+            return rule.resolve() in appended
+        except OSError:
+            return False
 
     lines: list[str] = []
     lines.append(f"# pict — composed context for `{display(directory)}`\n")
@@ -807,8 +819,11 @@ def render(directory: Path, opts: dict) -> str:
     ondemand_total = 0
     for rule, globs, body in anchored:
         ondemand_total += tokens(body)
+        dup = (" — **SAME FILE as the --append above: already in the system "
+               "prompt; if this ever fires it injects TWICE**"
+               if dup_of_append(rule) else "")
         lines.append(f"| · | on-demand | `{display(rule)}` | files matching "
-                     f"`{', '.join(globs)}` exist here | {tokens(body)} |")
+                     f"`{', '.join(globs)}` exist here{dup} | {tokens(body)} |")
     if anchored:
         lines.append(f"| | | **on-demand pool (each loads only when its files are touched)** "
                      f"| | **{ondemand_total}** |")
@@ -841,6 +856,13 @@ def render(directory: Path, opts: dict) -> str:
         lines.append(f"[rule] BEGIN  {display(rule)}")
         lines.append(f"        fires on `{', '.join(globs)}` · "
                      f"{len(body.splitlines())} lines · ~{tokens(body)} tokens")
+        if dup_of_append(rule):
+            lines.append("        SAME FILE as the --append: already in the "
+                         "system prompt of this spawn. Body not repeated here.")
+            lines.append(BAR)
+            lines.append("```")
+            lines.append("")
+            continue
         lines.append(BAR)
         lines.append("```")
         lines.append("")

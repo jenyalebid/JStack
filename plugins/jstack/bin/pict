@@ -31,23 +31,34 @@ Options — describe the spawn being previewed:
                     OFF by default: hook commands are arbitrary programs.
                     The JStack timeline injector is never re-run (its output
                     is already emulated read-only below).
+  --request FILE    render a CAPTURED API request body (the JSON POSTed to
+                    /v1/messages) instead of emulating: every system block,
+                    tool schema, and message part, verbatim, in wire order.
+                    This is the byte-truth mode — emulation cannot see the
+                    base system prompt or tool schemas; a capture can.
 
-Stages, in injection order:
+Stages, in wire order (verified against captured request bodies):
 
-  1. System prompt         — <claude_dir>/CLAUDE.md, unconditional rules
-                             (no `paths:` frontmatter), the CLAUDE.md /
-                             CLAUDE.local.md walk-up (parent-most first),
-                             the auto-memory index (unless --no-memory),
-                             then any --append content (appended to the
-                             end of the system prompt).
-  2. Session start         — SessionStart hook injections. The JStack
-                             timeline injection is emulated faithfully
-                             (same seat resolution + config as
-                             hooks/session-start-inject.py). Other hooks
-                             are LISTED unless --exec-hooks runs them.
-  3. First user message    — the --prompt payload; /commands expanded to
-                             their full body, exactly as the harness does.
-  4. Mid-session data      — --serve captures, in order given.
+  1. System prompt         — the harness-internal base prompt (named, not
+                             renderable by emulation) with any --append
+                             content inside it.
+  2. First user message,   — <claude_dir>/CLAUDE.md, unconditional rules
+     project context         (no `paths:` frontmatter), the CLAUDE.md /
+                             CLAUDE.local.md walk-up (parent-most first,
+                             HTML comments stripped in flight), the
+                             auto-memory index (unless --no-memory) —
+                             all inside a <system-reminder> in the first
+                             user message, NOT the system prompt.
+  3. First user message,   — the --prompt payload; /commands expanded to
+     command expansion       their full body with $ARGUMENTS / $1..$n
+                             substituted, exactly as the harness does.
+  4. After the first       — SessionStart hook context + harness
+     message                 reminders. The JStack timeline injection is
+                             emulated faithfully (same seat resolution +
+                             config as hooks/session-start-inject.py).
+                             Other hooks are LISTED unless --exec-hooks
+                             runs them.
+  5. Mid-session data      — --serve captures, in order given.
 
 Then the on-demand layer: path-scoped rules whose `paths:` globs match a
 file that EXISTS under the spawn dir right now (JStack tail-matching
@@ -230,11 +241,15 @@ def tokens(text: str) -> int:
 
 
 STAGES = {
-    "system": "Stage 1 — system prompt (loads at spawn)",
-    "start": "Stage 2 — session start (hook injections)",
-    "prompt": "Stage 3 — first user message (the prompt)",
-    "served": "Stage 4 — mid-session tool results (captured)",
+    "system": "Stage 1 — system prompt (base prompt + --append-system-prompt)",
+    "context": "Stage 2 — first user message · project-context <system-reminder> "
+               "(walk-up, rules, memory)",
+    "prompt": "Stage 3 — first user message · command expansion",
+    "start": "Stage 4 — after the first message · SessionStart hook context",
+    "served": "Stage 5 — mid-session tool results (captured)",
 }
+
+HTML_COMMENT = re.compile(r"\n*<!--.*?-->", re.S)
 
 
 class Source:
@@ -266,12 +281,27 @@ def add(sources: list[Source], stage: str, label: str, mechanism: str,
     sources.append(Source(len(sources) + 1, stage, label, mechanism, body, note))
 
 
+def strip_html_comments(body: str) -> tuple[str, int]:
+    """The harness deletes HTML comments from CLAUDE.md content in flight
+    (verified against a captured request body). Returns (stripped, removed)."""
+    stripped = HTML_COMMENT.sub("", body)
+    return stripped, len(body) - len(stripped)
+
+
+def gather_base_note(sources: list[Source]) -> None:
+    add(sources, "system", "(base system prompt + tool schemas)",
+        "harness-internal — not files; emulation cannot render them. "
+        "Capture a request and use --request for the bytes", None)
+
+
 def gather_globals(sources: list[Source]) -> None:
     gmd = claude_dir() / "CLAUDE.md"
     body = read_or_none(gmd)
     if body is not None:
-        add(sources, "system", display(gmd),
-            "global memory — loads in every session", body)
+        body, removed = strip_html_comments(body)
+        add(sources, "context", display(gmd),
+            "global memory — rides the first-message <system-reminder>", body,
+            f"harness strips HTML comments (−{removed} chars)" if removed else "")
     rdir = rules_dir()
     if not rdir.is_dir():
         return
@@ -282,9 +312,9 @@ def gather_globals(sources: list[Source]) -> None:
         note = ""
         if rule.is_symlink():
             note = f"symlink → {display(rule.resolve())}"
-        add(sources, "system", display(rule),
-            "unconditional rule (no `paths:`) — loads at startup",
-            strip_frontmatter(text), note)
+        add(sources, "context", display(rule),
+            "unconditional rule (no `paths:`) — rides the first-message "
+            "<system-reminder>", strip_frontmatter(text), note)
 
 
 def gather_walkup(directory: Path, sources: list[Source]) -> None:
@@ -296,8 +326,12 @@ def gather_walkup(directory: Path, sources: list[Source]) -> None:
             f = level / name
             body = read_or_none(f)
             if body is not None:
-                add(sources, "system", display(f),
-                    "CLAUDE.md walk-up — loads at spawn", body)
+                body, removed = strip_html_comments(body)
+                add(sources, "context", display(f),
+                    "CLAUDE.md walk-up — rides the first-message "
+                    "<system-reminder>", body,
+                    f"harness strips HTML comments (−{removed} chars)"
+                    if removed else "")
 
 
 def project_key(directory: Path) -> str:
@@ -313,17 +347,18 @@ def project_key(directory: Path) -> str:
 def gather_memory(directory: Path, sources: list[Source], no_memory: bool) -> None:
     key = project_key(directory)
     if no_memory:
-        add(sources, "system", f"(auto-memory DISABLED) key `{key}`",
+        add(sources, "context", f"(auto-memory DISABLED) key `{key}`",
             "spawn env sets CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 — the index never loads",
             None)
         return
     mem = claude_dir() / "projects" / key / "memory" / "MEMORY.md"
     body = read_or_none(mem)
     if body is not None:
-        add(sources, "system", display(mem),
-            f"auto-memory index — project key `{key}`", body)
+        add(sources, "context", display(mem),
+            f"auto-memory index — project key `{key}` — rides the "
+            "first-message <system-reminder>", body)
     else:
-        add(sources, "system", f"(no auto-memory) key `{key}`",
+        add(sources, "context", f"(no auto-memory) key `{key}`",
             "auto-memory index — none recorded for this project key", None)
 
 
@@ -336,8 +371,8 @@ def gather_appends(appends: list[Path], sources: list[Source]) -> None:
                 "--append-system-prompt — FILE UNREADABLE", None, note)
         else:
             add(sources, "system", display(f),
-                "--append-system-prompt — the spawner appends this to the end "
-                "of the system prompt", body, note)
+                "--append-system-prompt — the spawner injects this inside the "
+                "system prompt, ahead of the whole first message", body, note)
 
 
 # ----------------------------------------------------------------- hook infra
@@ -602,11 +637,19 @@ def gather_prompt(prompt: str, directory: Path, sources: list[Source]) -> None:
     note = wrapper
     if cand.is_symlink():
         note += f" · symlink → {display(cand.resolve())}"
-    body = read_or_none(cand) or ""
+    body = strip_frontmatter(read_or_none(cand) or "")
+    argv = args.split()
+    subst = body.replace("$ARGUMENTS", args)
+    subst = re.sub(r"\$(\d+)",
+                   lambda m: argv[int(m.group(1)) - 1]
+                   if 0 < int(m.group(1)) <= len(argv) else "", subst)
+    if len(subst) != len(body):
+        note += (f" · harness substituted $ARGUMENTS/$n "
+                 f"({len(body) - len(subst):+d} chars)".replace("+-", "−"))
     add(sources, "prompt", f"/{name} → {display(cand)}",
         "command expansion — the -p prompt names this command; its body "
-        "(frontmatter stripped) IS the first user message",
-        strip_frontmatter(body), note)
+        "(frontmatter stripped, $ARGUMENTS/$n substituted) follows the "
+        "wrapper in the first user message", subst, note)
 
 
 def gather_serves(serves: list[Path], sources: list[Source]) -> None:
@@ -619,6 +662,69 @@ def gather_serves(serves: list[Path], sources: list[Source]) -> None:
             add(sources, "served", display(f),
                 "tool-served payload — arrives mid-session as a tool result "
                 "(captured copy)", body)
+
+
+# ------------------------------------------------------------- request mode
+
+def render_request(path: Path) -> str:
+    """Byte-truth mode: render a captured /v1/messages request body — every
+    system block, tool schema, and message part, verbatim, in wire order."""
+    req = json.loads(path.read_text())
+    total_bytes = len(path.read_bytes())
+
+    comps: list[tuple[str, str, str]] = []  # (label, detail, body)
+    sysblocks = req.get("system") or []
+    if isinstance(sysblocks, str):
+        sysblocks = [{"text": sysblocks}]
+    for i, b in enumerate(sysblocks):
+        t = b.get("text", "") if isinstance(b, dict) else str(b)
+        comps.append((f"system[{i}]", "system prompt block", t))
+    tools = req.get("tools") or []
+    for t in tools:
+        name = t.get("name", "?") if isinstance(t, dict) else "?"
+        comps.append((f"tool schema — {name}", "tools[] entry (bytes as sent, "
+                      "shown pretty-printed)", json.dumps(t, indent=1)))
+    for mi, m in enumerate(req.get("messages") or []):
+        role = m.get("role", "?")
+        content = m.get("content")
+        if isinstance(content, str):
+            comps.append((f"messages[{mi}] ({role})", "string content", content))
+            continue
+        for pi, part in enumerate(content or []):
+            ptype = part.get("type", "?") if isinstance(part, dict) else "?"
+            body = part.get("text", "") if isinstance(part, dict) else str(part)
+            if ptype != "text" and not body:
+                body = json.dumps(part, indent=1)
+            comps.append((f"messages[{mi}].content[{pi}] ({role} · {ptype})",
+                          "message part", body))
+
+    lines: list[str] = []
+    lines.append(f"# pict --request — captured request `{display(path)}`\n")
+    lines.append(f"Model `{req.get('model', '?')}` · request body {total_bytes:,} "
+                 f"bytes · every component verbatim, in wire order.\n")
+    lines.append("| # | component | bytes | % of request |")
+    lines.append("|---|-----------|-------|--------------|")
+    for i, (label, _, body) in enumerate(comps, 1):
+        b = len(body.encode())
+        lines.append(f"| {i} | `{label}` | {b:,} | {100.0 * b / max(1, total_bytes):.1f}% |")
+    lines.append(f"| | **request total (with JSON framing)** | **{total_bytes:,}** | 100% |")
+    lines.append("")
+    total = len(comps)
+    for i, (label, detail, body) in enumerate(comps, 1):
+        lines.append("```")
+        lines.append(BAR)
+        lines.append(f"[{i}/{total}] BEGIN  {label}")
+        lines.append(f"        {detail} · {len(body.encode()):,} bytes")
+        lines.append(BAR)
+        lines.append("```")
+        lines.append("")
+        lines.append(body.rstrip() if body.strip() else "(empty)")
+        lines.append("")
+        lines.append("```")
+        lines.append(f"━━━━ END [{i}/{total}]  {label} " + "━" * max(4, 56 - len(label)))
+        lines.append("```")
+        lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 # ------------------------------------------------------------------ document
@@ -651,15 +757,16 @@ def banner_close(lines: list[str], s: Source, total: int) -> None:
 def render(directory: Path, opts: dict) -> str:
     sources: list[Source] = []
     hooks = all_hooks(directory)
+    gather_base_note(sources)
+    gather_appends(opts["appends"], sources)
     gather_globals(sources)
     gather_walkup(directory, sources)
     gather_memory(directory, sources, opts["no_memory"])
-    gather_appends(opts["appends"], sources)
+    if opts["prompt"]:
+        gather_prompt(opts["prompt"], directory, sources)
     if opts["exec_hooks"]:
         exec_session_hooks(directory, hooks, sources)
     gather_timeline(directory, sources)
-    if opts["prompt"]:
-        gather_prompt(opts["prompt"], directory, sources)
     gather_serves(opts["serves"], sources)
     total = len(sources)
 
@@ -689,14 +796,14 @@ def render(directory: Path, opts: dict) -> str:
         w = tokens(s.body) if s.body else 0
         stage_totals[s.stage] += w
         lines.append(f"| {s.order} | {s.stage} | `{s.label}` | {s.mechanism} | {w or '—'} |")
-    spawn_total = stage_totals["system"] + stage_totals["start"]
-    lines.append(f"| | | **loads at spawn** (system prompt + session start) | | **{spawn_total}** |")
-    if stage_totals["prompt"]:
-        lines.append(f"| | | **first user message** | | **{stage_totals['prompt']}** |")
+    req_total = (stage_totals["system"] + stage_totals["context"]
+                 + stage_totals["prompt"] + stage_totals["start"])
+    lines.append(f"| | | **first request — emulatable share** (base prompt + tool "
+                 f"schemas NOT included; see --request) | | **{req_total}** |")
     if stage_totals["served"]:
         lines.append(f"| | | **mid-session tool results (captured)** | | **{stage_totals['served']}** |")
     grand = sum(stage_totals.values())
-    lines.append(f"| | | **TOTAL the model receives** | | **{grand}** |")
+    lines.append(f"| | | **TOTAL of the above** | | **{grand}** |")
     ondemand_total = 0
     for rule, globs, body in anchored:
         ondemand_total += tokens(body)
@@ -772,9 +879,10 @@ def render(directory: Path, opts: dict) -> str:
         lines.append("")
 
     lines.append("---\n")
-    lines.append("*Native harness also injects: the base system prompt, tool schemas,")
-    lines.append("the skills/commands description list, MCP server instructions, and")
-    lines.append("session guidance — outside pict's file-composition scope.*")
+    lines.append("*Emulation cannot see: the base system prompt, tool schemas, the")
+    lines.append("skills/commands description list, MCP server instructions, session")
+    lines.append("guidance. For those bytes, capture a request and run")
+    lines.append("`pict --request <file>`.*")
     return "\n".join(lines) + "\n"
 
 
@@ -795,7 +903,7 @@ def main(argv: list[str]) -> int:
             opts["no_memory"] = True
         elif a == "--exec-hooks":
             opts["exec_hooks"] = True
-        elif a in ("--append", "--serve", "--prompt"):
+        elif a in ("--append", "--serve", "--prompt", "--request"):
             if i + 1 >= len(args):
                 sys.stderr.write(f"pict: {a} needs a value\n")
                 return 64
@@ -805,6 +913,17 @@ def main(argv: list[str]) -> int:
                 opts["appends"].append(Path(val).expanduser())
             elif a == "--serve":
                 opts["serves"].append(Path(val).expanduser())
+            elif a == "--request":
+                req = Path(val).expanduser()
+                if not req.is_file():
+                    sys.stderr.write(f"pict: not a file: {req}\n")
+                    return 64
+                try:
+                    sys.stdout.write(render_request(req))
+                except (json.JSONDecodeError, ValueError) as e:
+                    sys.stderr.write(f"pict: {req} is not request JSON: {e}\n")
+                    return 64
+                return 0
             else:
                 opts["prompt"] = val
         elif a.startswith("-"):

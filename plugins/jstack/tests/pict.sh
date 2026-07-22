@@ -115,15 +115,19 @@ echo "$OUT2" | grep -q "did another thing" && fail "headless preview injected ti
 # 7. settings hook enumerated
 echo "$OUT" | grep -q "nudge.sh" || fail "settings hook not listed"
 
-# 8. summary separates spawn-time total from on-demand pool
-echo "$OUT" | grep -q "loads at spawn" || fail "spawn total missing"
+# 8. summary separates the request-share total from the on-demand pool
+echo "$OUT" | grep -q "emulatable share" || fail "request-share total missing"
 echo "$OUT" | grep -q "on-demand pool" || fail "on-demand pool total missing"
 
 # --- spawn-descriptor flags fixtures ----------------------------------------
-# a project command reachable by walk-up from the seat (agent-root .claude)
+# a project command reachable by walk-up from the seat (agent-root .claude);
+# carries $ARGUMENTS/$n to prove harness-style substitution
 mkdir -p "$FIX/Agents/Alpha/.claude/commands"
-printf '# Reply procedure\nCommand body law.\n' \
+printf '# Reply procedure\nCommand body law. Arg=$1 Tail=$2 All=$ARGUMENTS\n' \
   > "$FIX/Agents/Alpha/.claude/commands/do-thing.md"
+# an HTML comment in a walk-up md — the harness strips these in flight
+printf '# Alpha chat seat\n\n<!-- template: something -->\nSeat law.\n' \
+  > "$FIX/Agents/Alpha/chat/CLAUDE.md"
 # an --append payload (what a spawner passes via --append-system-prompt)
 printf 'Append body law.\n' > "$TMP/append-law.md"
 # a captured tool-served blob
@@ -158,36 +162,69 @@ fail4() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT4"; exit 1; }
 echo "$OUT4" | grep -q "memory index line" && fail4 "--no-memory still loaded index"
 echo "$OUT4" | grep -q "auto-memory DISABLED" || fail4 "DISABLED note missing"
 
-# 10. --append body present, positioned in the system-prompt stage
+# 10. wire order: append (system prompt) BEFORE walk-up (first-message
+#     reminder) BEFORE command body BEFORE hook context BEFORE served blob
 echo "$OUT4" | grep -q "Append body law." || fail4 "append body missing"
-
-# 11. --prompt /command resolved by walk-up, body inlined, args in wrapper
 echo "$OUT4" | grep -q "Command body law." || fail4 "command body missing"
 echo "$OUT4" | grep -q "command-args>post=123" || fail4 "command args missing"
-
-# 12. --serve blob present and LAST in injection order
 echo "$OUT4" | grep -q "Served blob data." || fail4 "served blob missing"
-APPEND_LINE=$(echo "$OUT4" | grep -n "Append body law." | head -1 | cut -d: -f1)
-CMD_LINE=$(echo "$OUT4" | grep -n "Command body law." | head -1 | cut -d: -f1)
-BLOB_LINE=$(echo "$OUT4" | grep -n "Served blob data." | head -1 | cut -d: -f1)
-[ "$APPEND_LINE" -lt "$CMD_LINE" ] || fail4 "append must precede command body"
-[ "$CMD_LINE" -lt "$BLOB_LINE" ] || fail4 "command body must precede served blob"
-
-# 13. --exec-hooks ran the plugin SessionStart hook, before the prompt
 echo "$OUT4" | grep -q "PLUGIN-CTX-MARKER" || fail4 "plugin hook output missing"
+APPEND_LINE=$(echo "$OUT4" | grep -n "Append body law." | head -1 | cut -d: -f1)
+WALK_LINE=$(echo "$OUT4" | grep -n "Org root law" | head -1 | cut -d: -f1)
+CMD_LINE=$(echo "$OUT4" | grep -n "Command body law." | head -1 | cut -d: -f1)
 HOOK_LINE=$(echo "$OUT4" | grep -n "PLUGIN-CTX-MARKER" | head -1 | cut -d: -f1)
-[ "$HOOK_LINE" -lt "$CMD_LINE" ] || fail4 "hook output must precede command body"
+BLOB_LINE=$(echo "$OUT4" | grep -n "Served blob data." | head -1 | cut -d: -f1)
+[ "$APPEND_LINE" -lt "$WALK_LINE" ] || fail4 "append (system prompt) must precede walk-up"
+[ "$WALK_LINE" -lt "$CMD_LINE" ] || fail4 "walk-up must precede command body"
+[ "$CMD_LINE" -lt "$HOOK_LINE" ] || fail4 "hook context arrives AFTER the first message"
+[ "$HOOK_LINE" -lt "$BLOB_LINE" ] || fail4 "hook context must precede served blob"
 
-# 14. plugin hook enumerated in the hooks table with plugin origin
+# 11. $ARGUMENTS/$n substituted like the harness does
+echo "$OUT4" | grep -q "Arg=post=123 Tail= All=post=123" \
+  || fail4 "\$ARGUMENTS/\$n substitution wrong"
+
+# 12. HTML comment stripped from walk-up content, flagged in the banner
+echo "$OUT4" | grep -q "template: something" && fail4 "HTML comment not stripped"
+echo "$OUT4" | grep -q "Seat law." || fail4 "seat body lost by comment strip"
+echo "$OUT4" | grep -q "strips HTML comments" || fail4 "comment-strip note missing"
+
+# 13. plugin hook enumerated in the hooks table with plugin origin
 echo "$OUT4" | grep -q "plugin fake@test" || fail4 "plugin hook not enumerated"
 
-# 15. banner integrity: every BEGIN with a body has an END
+# 14. banner integrity: every BEGIN with a body has an END
 B=$(echo "$OUT4" | grep -c "] BEGIN  " || true)
 E=$(echo "$OUT4" | grep -c "END \[" || true)
 [ "$E" -gt 0 ] || fail4 "no END banners"
 [ "$E" -le "$B" ] || fail4 "more ENDs than BEGINs"
 
-# 16. grand total row present
-echo "$OUT4" | grep -q "TOTAL the model receives" || fail4 "grand total missing"
+# 15. totals present, honestly labeled
+echo "$OUT4" | grep -q "emulatable share" || fail4 "request-share total missing"
+echo "$OUT4" | grep -q "TOTAL of the above" || fail4 "grand total missing"
+
+# --- 16. --request mode: captured body rendered verbatim in wire order ------
+cat > "$TMP/req.json" <<'EOF'
+{"model": "test-model",
+ "system": [{"type": "text", "text": "BASE-PROMPT-BYTES"},
+            {"type": "text", "text": "APPENDED-RULE-BYTES"}],
+ "tools": [{"name": "Bash", "description": "runs bash", "input_schema": {}}],
+ "messages": [
+   {"role": "user", "content": [
+     {"type": "text", "text": "WALKUP-REMINDER-BYTES"},
+     {"type": "text", "text": "COMMAND-BODY-BYTES"}]},
+   {"role": "system", "content": "HOOK-CONTEXT-BYTES"}]}
+EOF
+OUT5="$("$PICT" --request "$TMP/req.json")"
+fail5() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT5"; exit 1; }
+for marker in BASE-PROMPT-BYTES APPENDED-RULE-BYTES WALKUP-REMINDER-BYTES \
+              COMMAND-BODY-BYTES HOOK-CONTEXT-BYTES; do
+  echo "$OUT5" | grep -q "$marker" || fail5 "--request missing $marker"
+done
+echo "$OUT5" | grep -q '`tool schema — Bash`' || fail5 "--request missing tool schema"
+P_BASE=$(echo "$OUT5" | grep -n "BASE-PROMPT-BYTES" | head -1 | cut -d: -f1)
+P_TOOL=$(echo "$OUT5" | grep -n "BEGIN  tool schema — Bash" | head -1 | cut -d: -f1)
+P_WALK=$(echo "$OUT5" | grep -n "WALKUP-REMINDER-BYTES" | head -1 | cut -d: -f1)
+P_HOOK=$(echo "$OUT5" | grep -n "HOOK-CONTEXT-BYTES" | head -1 | cut -d: -f1)
+[ "$P_BASE" -lt "$P_TOOL" ] && [ "$P_TOOL" -lt "$P_WALK" ] && [ "$P_WALK" -lt "$P_HOOK" ] \
+  || fail5 "--request wire order wrong"
 
 echo "PASS: pict"

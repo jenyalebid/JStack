@@ -72,14 +72,44 @@ def resolve(cwd: Path, root: Path) -> tuple[str | None, str | None]:
     return agent_dir.name.lower(), submode.lower()
 
 
+_NO_TTY = {"??", "?", "-", ""}
+
+
 def _is_interactive() -> bool:
-    """A human-driven session has a controlling terminal; headless spawns
-    (schedulers, watchers, daemons running `claude --print`) don't."""
+    """A human-driven session has a controlling terminal somewhere; headless
+    spawns (schedulers, watchers, daemons running `claude --print`) sit in a
+    launchd/init-rooted chain with none.
+
+    The CLI spawns hooks detached from its controlling terminal, so opening
+    /dev/tty inside a hook fails even when a human is driving — the terminal
+    lives on the CLI process up the ancestry. Try /dev/tty (covers direct
+    invocation), then walk parents via ps and count any ancestor holding a
+    tty as interactive."""
     try:
         with open("/dev/tty"):
             return True
     except OSError:
-        return False
+        pass
+    pid = os.getppid()
+    for _ in range(8):
+        if pid <= 1:
+            return False
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "tty=,ppid=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=3,
+            ).stdout.split()
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if len(out) < 2:
+            return False
+        if out[0] not in _NO_TTY:
+            return True
+        try:
+            pid = int(out[1])
+        except ValueError:
+            return False
+    return False
 
 
 def inject_count(cfg: dict, agent: str, submode: str) -> int:

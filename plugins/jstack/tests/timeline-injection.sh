@@ -102,23 +102,68 @@ out_killed=$(printf '{"cwd":"%s"}' "$ROOT/Gamma" \
   | JSTACK_REVIEW_CONFIG="$CFG" JSTACK_TIMELINE_INJECT_DISABLED=1 python3 "$HOOK")
 [[ -z "$out_killed" ]] && pass "kill switch honored" || fail "kill switch honored"
 
-# (j) interactive_only: headless spawn (no controlling tty) gets nothing;
-#     a pty session (script(1)) gets the injection
+# (j) interactive_only. The CLI spawns hooks detached from the controlling
+#     terminal — /dev/tty NEVER opens inside a hook, even in a human-driven
+#     session. The hook must read interactivity off its ancestry (the CLI
+#     process holds the tty), so the legs model production process shapes:
+#       (j1) truly headless — orphaned to PID 1, no terminal anywhere → nothing
+#       (j2) detached hook under a tty-holding ancestor (the real interactive
+#            shape: script(1) grants a pty to sh, sh spawns the hook setsid'd
+#            so /dev/tty fails inside it) → injects via the ancestor's tty
+#       (j3) hook attached to a pty directly (/dev/tty fast path) → injects
 mkdir -p "$ROOT/Gamma/social/chat"
 CFG2="$TMP/review2.json"
 printf '{ "agent_root": "%s", "timeline_inject": {"*/social": {"n": 5, "interactive_only": true}} }' "$ROOT" > "$CFG2"
 "$LOG_EVENT" gamma/social --at 15:00 --date "$DAY" "Social seat entry" >/dev/null
 PAYLOAD=$(printf '{"cwd":"%s"}' "$ROOT/Gamma/social/chat")
-headless=$(echo "$PAYLOAD" | JSTACK_REVIEW_CONFIG="$CFG2" python3 -c "
+
+# (j1) orphan double-fork: grandchild waits for reparent to PID 1 (ancestor
+# chain = launchd only, no tty) before running the hook; output via temp file.
+HEADLESS_OUT="$TMP/headless.out"
+JSTACK_REVIEW_CONFIG="$CFG2" python3 - "$HOOK" "$PAYLOAD" "$HEADLESS_OUT" <<'PYEOF'
+import os, subprocess, sys, time
+hook, payload, outfile = sys.argv[1], sys.argv[2], sys.argv[3]
+if os.fork() == 0:
+    os.setsid()
+    if os.fork() == 0:
+        deadline = time.time() + 5
+        while os.getppid() != 1 and time.time() < deadline:
+            time.sleep(0.05)
+        r = subprocess.run(["python3", hook], input=payload,
+                           capture_output=True, text=True)
+        with open(outfile, "w") as f:
+            f.write(r.stdout)
+        os._exit(0)
+    os._exit(0)
+else:
+    os.wait()
+PYEOF
+for _ in $(seq 1 60); do [[ -f "$HEADLESS_OUT" ]] && break; sleep 0.1; done
+[[ -f "$HEADLESS_OUT" && ! -s "$HEADLESS_OUT" ]] \
+  && pass "interactive_only: orphaned headless spawn gets nothing" \
+  || fail "interactive_only: orphaned headless spawn gets nothing"
+
+# (j2) the production interactive shape — detached hook, tty on the ancestor
+SPAWNER="$TMP/detached_spawn.py"
+cat > "$SPAWNER" <<'PYEOF'
 import os, subprocess, sys
-r = subprocess.run(['python3', '$HOOK'], input=sys.stdin.read(), env=dict(os.environ),
+hook, payload_file = sys.argv[1], sys.argv[2]
+payload = open(payload_file).read()
+r = subprocess.run(["python3", hook], input=payload,
                    capture_output=True, text=True, preexec_fn=os.setsid)
-print(r.stdout, end='')")
-[[ -z "$headless" ]] && pass "interactive_only: headless gets nothing" \
-  || fail "interactive_only: headless gets nothing"
+sys.stdout.write(r.stdout)
+PYEOF
+printf '%s' "$PAYLOAD" > "$TMP/payload.json"
+detached=$(JSTACK_REVIEW_CONFIG="$CFG2" script -q /dev/null \
+  python3 "$SPAWNER" "$HOOK" "$TMP/payload.json" | tr -d '\r')
+echo "$detached" | grep -q "Social seat entry" \
+  && pass "interactive_only: detached hook under tty ancestor injected" \
+  || fail "interactive_only: detached hook under tty ancestor injected"
+
+# (j3) /dev/tty fast path still holds
 tty_out=$(JSTACK_REVIEW_CONFIG="$CFG2" script -q /dev/null sh -c "echo '$PAYLOAD' | python3 '$HOOK'")
-echo "$tty_out" | grep -q "Social seat entry" && pass "interactive_only: pty session injected" \
-  || fail "interactive_only: pty session injected"
+echo "$tty_out" | grep -q "Social seat entry" && pass "interactive_only: pty-attached hook injected" \
+  || fail "interactive_only: pty-attached hook injected"
 
 echo
 if [[ $fails -gt 0 ]]; then

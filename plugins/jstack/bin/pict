@@ -721,8 +721,12 @@ def _attr_system_block(text: str) -> str:
         return "claude binary — billing header"
     if "Claude Agent SDK" in text and len(text) < 200:
         return "claude binary — SDK line"
-    if text.startswith("You are Claude Code") and len(text) > 4000:
+    stripped = text.lstrip()
+    if stripped.startswith("You are Claude Code") and len(text) > 4000:
         return "claude binary — default harness prompt (gitStatus tail included)"
+    if stripped.startswith("You are an interactive agent that helps users "
+                           "with software engineering tasks") and len(text) > 4000:
+        return "claude binary — default agent prompt (no --system-prompt passed)"
     return "spawn flag — `--system-prompt` / `--append-system-prompt`"
 
 

@@ -61,16 +61,17 @@ def is_user_engaged(jsonl_path: Path) -> bool:
 
 
 def agent_source(cwd: str) -> str:
-    """Timeline [source] from the session's workspace: ~/Agents/<Name>/<sub>/**
-    → name/sub (same seat resolution as the review engine and the SessionStart
-    injector: first path segment under the agent dir; at the agent root → chat)."""
+    """Timeline [source] from the session's workspace: ~/Agents/<Name>/<dirs>
+    → name/dirs (same seat resolution as the review engine and the SessionStart
+    injector: the session dir's full path under the agent dir, "/"-joined —
+    per-dir seats; at the agent root → chat)."""
     try:
         parts = Path(cwd).resolve().parts
         agents_root = Path.home() / "Agents"
         if parts[:len(agents_root.parts)] == agents_root.parts:
             rest = parts[len(agents_root.parts):]
             agent = rest[0].lower()
-            submode = rest[1].lower() if len(rest) >= 2 else "chat"
+            submode = "/".join(p.lower() for p in rest[1:]) or "chat"
             return f"{agent}/{submode}"
     except (ValueError, IndexError, OSError):
         pass

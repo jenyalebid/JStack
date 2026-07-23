@@ -9,20 +9,30 @@ cold. The WRITE half is the session-end engine (selfwrite/review) and the Stop
 hook for auto sessions — both log via `log_event <agent/submode> ...`; the
 injection reads back through `log_event tail`.
 
+Injection fires ONLY into live, human-driven sessions — that is the point of
+it: a person sitting down mid-history. Headless spawns (schedulers, watchers,
+daemons running `claude --print`) never inject, for every seat, regardless of
+config.
+
 Which seats get injected, and how many entries, is host config — the
 `timeline_inject` map in $JSTACK_REVIEW_CONFIG (~/.claude/jstack/review.json):
 
-    "timeline_inject": {"alpha/chat": 10, "*/pm": 10,
-                        "*/social": {"n": 10, "interactive_only": true}}
+    "timeline_inject": {"alpha/chat": 10, "*/pm": 10, "*/social": 10}
 
-Match forms: exact "agent/submode" wins over wildcard "*/submode". Seats not
-matched get nothing. No config key → no injection anywhere (opt-in).
+Values are an int, or a legacy {"n": N, ...} dict (extra keys ignored). Match
+is per-dir, nearest wins: at each depth exact "agent/seat" beats wildcard
+"*/seat", then the seat's parent dir is tried ("alpha/social/chat" falls back
+to "*/social"). Seats with no match anywhere up get nothing. No config key →
+no injection anywhere (opt-in).
 
-Sub-mode resolution (MUST match the engine's resolve_submode and the Stop
-hook): the first path component of cwd under {agent_root}/{Name}; empty (cwd ==
-the agent root) → "chat", the default cockpit mode. Cockpit sessions run at the
-agent root — they are NOT required to cd into chat/, so the project-dir key
-(transcripts + memory) is never disturbed. The "review" sub-mode is skipped.
+Seat resolution (MUST match the engine's resolve_submode and the Stop hook):
+the session dir's full path under {agent_root}/{Name}, "/"-joined — seats are
+directories, and each dir is its own seat (chat ≠ social/chat ≠ social); empty
+(cwd == the agent root) → "chat", the default cockpit mode. Cockpit sessions
+run at the agent root — they are NOT required to cd into chat/, so the
+project-dir key (transcripts + memory) is never disturbed. The tail a seat
+injects is its own dir plus ancestor dirs, never siblings (log_event tail
+semantics). The "review" sub-mode is skipped.
 
 Defensive: any error → silent exit 0, empty output. A SessionStart hook must
 never block or corrupt a session. Stdlib only, no host dependency.
@@ -57,8 +67,10 @@ def _config() -> dict:
 def resolve(cwd: Path, root: Path) -> tuple[str | None, str | None]:
     """(agent, submode) for a workspace session, else (None, None).
 
-    submode is the first path segment under {root}/{Name}, or "chat" at the root.
-    Recognized only when {Name}/CLAUDE.md exists — same gate the engine uses."""
+    submode is the session dir's full path under {root}/{Name} ("/"-joined —
+    per-dir seats: social/chat is its own seat, distinct from chat and from
+    social), or "chat" at the agent root. Recognized only when {Name}/CLAUDE.md
+    exists — same gate the engine uses."""
     try:
         rel = cwd.resolve().relative_to(root.resolve())
     except (ValueError, OSError):
@@ -68,8 +80,8 @@ def resolve(cwd: Path, root: Path) -> tuple[str | None, str | None]:
     agent_dir = root / rel.parts[0]
     if not (agent_dir / "CLAUDE.md").is_file():
         return None, None
-    submode = rel.parts[1] if len(rel.parts) >= 2 else "chat"
-    return agent_dir.name.lower(), submode.lower()
+    submode = "/".join(p.lower() for p in rel.parts[1:]) or "chat"
+    return agent_dir.name.lower(), submode
 
 
 _NO_TTY = {"??", "?", "-", ""}
@@ -84,7 +96,10 @@ def _is_interactive() -> bool:
     /dev/tty inside a hook fails even when a human is driving — the terminal
     lives on the CLI process up the ancestry. Try /dev/tty (covers direct
     invocation), then walk parents via ps and count any ancestor holding a
-    tty as interactive."""
+    tty as interactive. JSTACK_ASSUME_INTERACTIVE=1 short-circuits to True —
+    for hosts (or tests) whose spawn shape defeats the ancestry walk."""
+    if os.environ.get("JSTACK_ASSUME_INTERACTIVE"):
+        return True
     try:
         with open("/dev/tty"):
             return True
@@ -113,26 +128,28 @@ def _is_interactive() -> bool:
 
 
 def inject_count(cfg: dict, agent: str, submode: str) -> int:
-    """Entries to inject for a seat. Map values are either a plain int (always
-    inject) or {"n": N, "interactive_only": true} — inject only into sessions
-    a human is driving, so high-frequency automated wakes (e.g. social reply
-    wakes) run lean instead of booting N entries of baggage."""
+    """Entries to inject for a seat — per-dir, nearest match wins.
+
+    At each depth the exact "agent/seat" key beats "*/seat"; no hit → try the
+    seat's parent dir. Values are an int or a legacy {"n": N, ...} dict (extra
+    keys ignored — whether to inject at all is the caller's live-session gate,
+    not per-seat config)."""
     inject = cfg.get("timeline_inject")
     if not isinstance(inject, dict):
         return 0
-    for key in (f"{agent}/{submode}", f"*/{submode}"):
-        if key not in inject:
-            continue
-        val = inject[key]
-        try:
-            if isinstance(val, dict):
-                if val.get("interactive_only") and not _is_interactive():
-                    return 0
-                return int(val.get("n", 0))
-            return int(val)
-        except (TypeError, ValueError):
+    seat = submode
+    while True:
+        for key in (f"{agent}/{seat}", f"*/{seat}"):
+            if key not in inject:
+                continue
+            val = inject[key]
+            try:
+                return int(val.get("n", 0)) if isinstance(val, dict) else int(val)
+            except (TypeError, ValueError):
+                return 0
+        if "/" not in seat:
             return 0
-    return 0
+        seat = seat.rsplit("/", 1)[0]
 
 
 def tail(seat: str, n: int) -> str:
@@ -177,7 +194,7 @@ def main() -> int:
         return 0
 
     n = inject_count(cfg, agent, submode)
-    if n <= 0:
+    if n <= 0 or not _is_interactive():
         return 0
     entries = tail(f"{agent}/{submode}", n)
     if not entries:

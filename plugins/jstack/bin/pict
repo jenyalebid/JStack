@@ -547,31 +547,33 @@ def resolve_seat(directory: Path, root: Path) -> tuple[str | None, str | None]:
     agent_dir = root / rel.parts[0]
     if not (agent_dir / "CLAUDE.md").is_file():
         return None, None
-    submode = rel.parts[1] if len(rel.parts) >= 2 else "chat"
-    return agent_dir.name.lower(), submode.lower()
+    submode = "/".join(x.lower() for x in rel.parts[1:]) or "chat"
+    return agent_dir.name.lower(), submode
 
 
 def timeline_count(cfg: dict, agent: str, submode: str) -> tuple[int, str]:
+    """Per-dir nearest match, mirroring the hook: exact beats wildcard at each
+    depth, then the parent dir. Injection only fires into live sessions;
+    PICT_INTERACTIVE=0 previews the headless shape (nothing)."""
     inject = cfg.get("timeline_inject")
     if not isinstance(inject, dict):
         return 0, ""
-    interactive = os.environ.get("PICT_INTERACTIVE", "1") != "0"
-    for key in (f"{agent}/{submode}", f"*/{submode}"):
-        if key not in inject:
-            continue
-        val = inject[key]
-        try:
-            if isinstance(val, dict):
-                n = int(val.get("n", 0))
-                if val.get("interactive_only"):
-                    if not interactive:
-                        return 0, f"config `{key}`: interactive_only — headless spawn gets nothing"
-                    return n, f"config `{key}`: n={n}, interactive_only"
-                return n, f"config `{key}`: n={n}"
-            return int(val), f"config `{key}`: n={int(val)}"
-        except (TypeError, ValueError):
-            return 0, ""
-    return 0, "no timeline_inject key matches this seat"
+    if os.environ.get("PICT_INTERACTIVE", "1") == "0":
+        return 0, "headless spawn — injection is live-session-only, gets nothing"
+    seat = submode
+    while True:
+        for key in (f"{agent}/{seat}", f"*/{seat}"):
+            if key not in inject:
+                continue
+            val = inject[key]
+            try:
+                n = int(val.get("n", 0)) if isinstance(val, dict) else int(val)
+            except (TypeError, ValueError):
+                return 0, ""
+            return n, f"config `{key}`: n={n} (live sessions only)"
+        if "/" not in seat:
+            return 0, "no timeline_inject key matches this seat or its ancestors"
+        seat = seat.rsplit("/", 1)[0]
 
 
 def gather_timeline(directory: Path, sources: list[Source]) -> None:

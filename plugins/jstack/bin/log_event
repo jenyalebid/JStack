@@ -234,14 +234,26 @@ def set_verdict(seat: str, verdict: str, note: str) -> str | None:
 def tail_entries(seat: str, n: int) -> list[dict]:
     """Last n entries for a seat, oldest→newest. Bare agent = all submodes.
 
-    A seat query also matches the agent's submode-less rows — entries migrated
-    from the pre-seat era (and any bare-source writes). They age out of the
-    last-n window as seat-tagged entries accrue; without this, every seat would
-    boot blind right after migration."""
+    Seats are directories: a seat query matches its own dir plus every
+    ancestor dir (social/chat also pulls social), never siblings — a chat
+    seat's tail can't pick up a neighboring work dir's lineage. It also
+    matches the agent's submode-less rows — entries migrated from the
+    pre-seat era (and any bare-source writes). Broader rows age out of the
+    last-n window as seat-tagged entries accrue; without this, every seat
+    would boot blind right after migration."""
     agent, submode = parse_source(seat)
     con = connect()
-    where = "agent = ?" + (" AND submode IN (?, '')" if submode else "")
-    params: tuple = (agent, submode) if submode else (agent,)
+    if submode:
+        lineage = [submode]
+        while "/" in lineage[-1]:
+            lineage.append(lineage[-1].rsplit("/", 1)[0])
+        lineage.append("")
+        marks = ",".join("?" * len(lineage))
+        where = f"agent = ? AND submode IN ({marks})"
+        params: tuple = (agent, *lineage)
+    else:
+        where = "agent = ?"
+        params = (agent,)
     rows = con.execute(
         f"SELECT id, date, time, agent, submode, headline, details, verdict,"
         f" verdict_note, session_id, context, origin FROM entries WHERE {where}"

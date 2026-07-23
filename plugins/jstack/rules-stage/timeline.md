@@ -8,7 +8,8 @@ paths:
 
 The timeline is the single running record of what happened, when — and each
 seat's memory: a session's entries under its `agent/submode` source are
-injected into that seat's next session on start. Feeds daily briefs, nightly
+injected into that seat's next LIVE session on start (a human sitting down
+mid-history; headless spawns never inject). Feeds daily briefs, nightly
 reviews, and every seat's cold start. **Not a session log. Not a commit log.
 Not a build report.**
 
@@ -30,11 +31,14 @@ Headline — present-tense, one line, ≤120 chars.
 ```
 
 - 24h `HH:MM`. Never relative, never seconds.
-- `[agent/submode]` is the lowercase seat that did the work (e.g.
-  `alpha/chat`, `delta/social`). Always pass the submode when the seat is
-  known — seat-tagged entries are what the next session of that seat boots
-  on; a bare `[agent]` entry is invisible to seat injection once the seat's
-  own entries fill the window.
+- `[agent/submode]` is the lowercase seat that did the work — seats are
+  directories: the session dir's full path under the agent root (e.g.
+  `alpha/chat`, `delta/social/chat` — each dir its own seat). Always pass the
+  submode when the seat is known — seat-tagged entries are what the next
+  session of that seat boots on; a seat's tail also serves its ancestor dirs'
+  rows (`social/chat` pulls `social`), never a sibling dir's; a bare
+  `[agent]` entry is invisible to seat injection once the seat's own entries
+  fill the window.
 - Headline is one line. 0-3 detail bullets follow, each starting with `- `.
 
 ## What belongs

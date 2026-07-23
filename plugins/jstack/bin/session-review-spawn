@@ -325,11 +325,13 @@ def _session_cwd(jsonl_path: Path) -> str | None:
 
 
 def resolve_submode(jsonl_path: Path, agent_root: Path, agent_title: str) -> str | None:
-    """The sub-mode the session ran in: the first path segment under
-    {agent_root}/{agent_title}/. A session at the agent root is the default
-    cockpit mode "chat" (it doesn't cd into chat/ — that would move its
-    project-dir key; "chat" is just the seat its timeline entries file under).
-    None only if it ran outside the workspace (e.g. a mapped project dir)."""
+    """The seat the session ran in: the session dir's full path under
+    {agent_root}/{agent_title}/, "/"-joined — seats are directories, each dir
+    its own seat (chat ≠ social/chat ≠ social). A session at the agent root is
+    the default cockpit mode "chat" (it doesn't cd into chat/ — that would
+    move its project-dir key; "chat" is just the seat its timeline entries
+    file under). None only if it ran outside the workspace (e.g. a mapped
+    project dir)."""
     cwd = _session_cwd(jsonl_path)
     if not cwd:
         return None
@@ -337,31 +339,44 @@ def resolve_submode(jsonl_path: Path, agent_root: Path, agent_title: str) -> str
         rel = Path(cwd).relative_to(agent_root / agent_title)
     except ValueError:
         return None
-    return rel.parts[0] if rel.parts else "chat"
+    return "/".join(rel.parts) if rel.parts else "chat"
+
+
+def _seat_listed(agent: str, submode: str, patterns) -> bool:
+    """Per-dir allowlist match, nearest dir wins: at each depth exact
+    "agent/seat" or wildcard "*/seat"; no hit → try the seat's parent dir
+    ("alpha/social/chat" falls back to "*/social")."""
+    seat = submode
+    while True:
+        if f"{agent}/{seat}" in patterns or f"*/{seat}" in patterns:
+            return True
+        if "/" not in seat:
+            return False
+        seat = seat.rsplit("/", 1)[0]
 
 
 def submode_reviewed(agent: str, submode: str | None, reviewed) -> bool:
-    """True iff this agent/sub-mode is in the reviewed allowlist. Absent list
-    (None) means no scoping — everything is reviewed."""
+    """True iff this agent/seat is in the reviewed allowlist (per-dir match,
+    ancestor dirs count). Absent list (None) means no scoping — everything is
+    reviewed."""
     if reviewed is None:
         return True
     if submode is None:
         return False
-    return f"{agent}/{submode}" in reviewed or f"*/{submode}" in reviewed
+    return _seat_listed(agent, submode, reviewed)
 
 
 def auto_reviewed(agent: str, submode: str | None, auto_review) -> bool:
-    """True iff this AUTO (non-user-driven) session's sub-mode is a recurring
+    """True iff this AUTO (non-user-driven) session's seat is a recurring
     cron carved in for the engine self-write — a purpose-prompted seat-tagged
     timeline entry + dashboard stamp, instead of the Stop-hook reminder alone.
     Everything else auto is skipped. Empty/None allowlist → False (nothing
-    auto-reviewed). Same match form as submode_reviewed: "agent/submode" or
-    "*/submode"."""
+    auto-reviewed). Same match form as submode_reviewed."""
     if not auto_review:
         return False
     if submode is None:
         return False
-    return f"{agent}/{submode}" in auto_review or f"*/{submode}" in auto_review
+    return _seat_listed(agent, submode, auto_review)
 
 
 # ------------------------------------------------------------------- guards

@@ -15,6 +15,11 @@
 #   (g) non-workspace cwd → no output
 #   (h) seat not in timeline_inject → no output
 #   (i) kill switch env → no output
+#   (j) live-session-only: headless spawns never inject, any seat, any config
+#       form; liveness is read off the process ancestry (hooks run detached
+#       from the controlling terminal, /dev/tty never opens inside one)
+#   (k) per-dir seats: each dir is its own seat — own lineage + ancestor dirs,
+#       never a sibling dir's
 #
 # Exit 0 = all pass, 1 = any fail. Hermetic — never touches the real timeline.
 
@@ -53,8 +58,10 @@ fail() { echo "FAIL: $1" >&2; fails=$((fails+1)); }
 pass() { echo "ok: $1"; }
 
 # Fire the hook with a given cwd; print the DECODED additionalContext ("" if none).
+# Injection is live-session-only, so emulate the live shape explicitly —
+# these legs test resolution/content, the (j) legs test the liveness gate.
 ctx() { printf '{"hook_event_name":"SessionStart","cwd":"%s","source":"startup"}' "$1" \
-          | JSTACK_REVIEW_CONFIG="$CFG" python3 "$HOOK" \
+          | JSTACK_REVIEW_CONFIG="${2:-$CFG}" JSTACK_ASSUME_INTERACTIVE=1 python3 "$HOOK" \
           | python3 -c 'import json,sys
 raw=sys.stdin.read().strip()
 print(json.loads(raw)["hookSpecificOutput"]["additionalContext"] if raw else "")'; }
@@ -102,10 +109,12 @@ out_killed=$(printf '{"cwd":"%s"}' "$ROOT/Gamma" \
   | JSTACK_REVIEW_CONFIG="$CFG" JSTACK_TIMELINE_INJECT_DISABLED=1 python3 "$HOOK")
 [[ -z "$out_killed" ]] && pass "kill switch honored" || fail "kill switch honored"
 
-# (j) interactive_only. The CLI spawns hooks detached from the controlling
-#     terminal — /dev/tty NEVER opens inside a hook, even in a human-driven
-#     session. The hook must read interactivity off its ancestry (the CLI
-#     process holds the tty), so the legs model production process shapes:
+# (j) live-session-only — the injection law: only a human-driven session ever
+#     injects, for every seat, regardless of config value form (plain int
+#     here). The CLI spawns hooks detached from the controlling terminal —
+#     /dev/tty NEVER opens inside a hook, even in a human-driven session —
+#     so the hook must read liveness off its ancestry (the CLI process holds
+#     the tty). The legs model production process shapes:
 #       (j1) truly headless — orphaned to PID 1, no terminal anywhere → nothing
 #       (j2) detached hook under a tty-holding ancestor (the real interactive
 #            shape: script(1) grants a pty to sh, sh spawns the hook setsid'd
@@ -113,7 +122,7 @@ out_killed=$(printf '{"cwd":"%s"}' "$ROOT/Gamma" \
 #       (j3) hook attached to a pty directly (/dev/tty fast path) → injects
 mkdir -p "$ROOT/Gamma/social/chat"
 CFG2="$TMP/review2.json"
-printf '{ "agent_root": "%s", "timeline_inject": {"*/social": {"n": 5, "interactive_only": true}} }' "$ROOT" > "$CFG2"
+printf '{ "agent_root": "%s", "timeline_inject": {"*/social": 5} }' "$ROOT" > "$CFG2"
 "$LOG_EVENT" gamma/social --at 15:00 --date "$DAY" "Social seat entry" >/dev/null
 PAYLOAD=$(printf '{"cwd":"%s"}' "$ROOT/Gamma/social/chat")
 
@@ -140,8 +149,8 @@ else:
 PYEOF
 for _ in $(seq 1 60); do [[ -f "$HEADLESS_OUT" ]] && break; sleep 0.1; done
 [[ -f "$HEADLESS_OUT" && ! -s "$HEADLESS_OUT" ]] \
-  && pass "interactive_only: orphaned headless spawn gets nothing" \
-  || fail "interactive_only: orphaned headless spawn gets nothing"
+  && pass "live-only: orphaned headless spawn gets nothing" \
+  || fail "live-only: orphaned headless spawn gets nothing"
 
 # (j2) the production interactive shape — detached hook, tty on the ancestor
 SPAWNER="$TMP/detached_spawn.py"
@@ -157,13 +166,34 @@ printf '%s' "$PAYLOAD" > "$TMP/payload.json"
 detached=$(JSTACK_REVIEW_CONFIG="$CFG2" script -q /dev/null \
   python3 "$SPAWNER" "$HOOK" "$TMP/payload.json" | tr -d '\r')
 echo "$detached" | grep -q "Social seat entry" \
-  && pass "interactive_only: detached hook under tty ancestor injected" \
-  || fail "interactive_only: detached hook under tty ancestor injected"
+  && pass "live-only: detached hook under tty ancestor injected" \
+  || fail "live-only: detached hook under tty ancestor injected"
 
 # (j3) /dev/tty fast path still holds
 tty_out=$(JSTACK_REVIEW_CONFIG="$CFG2" script -q /dev/null sh -c "echo '$PAYLOAD' | python3 '$HOOK'")
-echo "$tty_out" | grep -q "Social seat entry" && pass "interactive_only: pty-attached hook injected" \
-  || fail "interactive_only: pty-attached hook injected"
+echo "$tty_out" | grep -q "Social seat entry" && pass "live-only: pty-attached hook injected" \
+  || fail "live-only: pty-attached hook injected"
+
+# (k) per-dir seats: each dir is its own seat — a session in social/chat boots
+#     on its own dir's lineage plus ancestor dirs, never a sibling dir's
+mkdir -p "$ROOT/Gamma/social/threads"
+"$LOG_EVENT" gamma/social/chat    --at 16:00 --date "$DAY" "Chat seat lineage entry" >/dev/null
+"$LOG_EVENT" gamma/social/threads --at 16:10 --date "$DAY" "Threads sibling entry" >/dev/null
+k_chat=$(ctx "$ROOT/Gamma/social/chat" "$CFG2")
+echo "$k_chat" | grep -q "gamma/social/chat (your seat)" \
+  && echo "$k_chat" | grep -q "Chat seat lineage entry" \
+  && echo "$k_chat" | grep -q "Social seat entry" \
+  && pass "per-dir: social/chat = own seat + ancestor lineage" \
+  || fail "per-dir: social/chat = own seat + ancestor lineage"
+echo "$k_chat" | grep -q "Threads sibling entry" \
+  && fail "per-dir: sibling dir excluded from chat seat" \
+  || pass "per-dir: sibling dir excluded from chat seat"
+k_threads=$(ctx "$ROOT/Gamma/social/threads" "$CFG2")
+if echo "$k_threads" | grep -q "Threads sibling entry" && ! echo "$k_threads" | grep -q "Chat seat lineage entry"; then
+  pass "per-dir: sibling seat boots its own lineage only"
+else
+  fail "per-dir: sibling seat boots its own lineage only"
+fi
 
 echo
 if [[ $fails -gt 0 ]]; then

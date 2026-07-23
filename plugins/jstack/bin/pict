@@ -32,13 +32,24 @@ Options — describe the spawn being previewed:
                     The JStack timeline injector is never re-run (its output
                     is already emulated read-only below).
   --request FILE    render a CAPTURED API request body (the JSON POSTed to
-                    /v1/messages) instead of emulating: every system block,
-                    tool schema, and message part, verbatim, in wire order,
-                    each attributed to the file (or binary/flag/hook) it
-                    loads from — the walk-up block breaks down per file,
-                    with symlink wiring resolved. This is the byte-truth
-                    mode — emulation cannot see the base system prompt or
-                    tool schemas; a capture can.
+                    /v1/messages) instead of emulating: every top-level key,
+                    system block, tool schema, and message part, verbatim,
+                    in wire order, each attributed to the file (or binary/
+                    flag/hook) it loads from. Composite blocks split per
+                    source file: harness walk-up blocks by their own
+                    markers, everything else by matching block bytes
+                    against the attribution pool (the walk-up chain, rules,
+                    memory for [dir], plus --sources). Unmatched bytes
+                    still render, labeled unattributed; a top-level key the
+                    tool doesn't model gets its own verbatim envelope
+                    section — nothing in the body is ever invisible. This
+                    is the byte-truth mode — emulation cannot see the base
+                    system prompt or tool schemas; a capture can.
+  --sources PATH    add a file (or a dir, *.md recursive) to the attribution
+                    pool for --request file-boundary matching (repeatable).
+                    Pool also reads $PICT_SOURCES (colon-separated paths)
+                    and <claude_dir>/pict-sources.txt (one path or glob per
+                    line, ~ allowed, # comments).
 
 Stages, in wire order (verified against captured request bodies):
 
@@ -73,8 +84,11 @@ Out of scope (native harness, not file composition): the base system prompt,
 tool/MCP schemas, the skills/commands description list, session guidance.
 
 A summary table with per-source ~token weights (bytes/4) heads the document.
-Every body is fenced by unmistakable BEGIN/END banners — where one file ends
-and the next begins is the point.
+Structure is real markdown: every component and every file boundary is a
+heading (the document outline IS the injection anatomy — navigator-ready),
+and every verbatim body rides inside a code fence long enough that embedded
+markdown can never leak into the outline. Where one file ends and the next
+begins is the point.
 
 Env overrides (tests; same convention as inject-path-rules.py):
   JSTACK_RULES_DIR      — rules source dir        (default <claude_dir>/rules)
@@ -732,152 +746,316 @@ def _attr_system_block(text: str) -> str:
     return "spawn flag — `--system-prompt` / `--append-system-prompt`"
 
 
-def render_request(path: Path, directory: Path | None = None) -> str:
+# --- content attribution pool: files whose bytes may ride inside a block ---
+
+_POOL_MIN = 160          # candidate text shorter than this can't attribute
+_POOL_FILE_CAP = 400     # max files one --sources dir contributes
+
+
+def _pool_paths(directory: Path, extra: list[Path]) -> list[Path]:
+    """Candidate files for content attribution: the CLAUDE.md walk-up chain,
+    the global CLAUDE.md, rules, and auto-memory for `directory`, plus
+    --sources files/dirs, $PICT_SOURCES (colon-separated), and
+    <claude_dir>/pict-sources.txt (one path or glob per line, ~ allowed,
+    # comments)."""
+    import glob as _glob
+    paths: list[Path] = []
+    d = directory
+    root = walk_root()
+    while True:
+        for name in ("CLAUDE.md", "CLAUDE.local.md"):
+            paths.append(d / name)
+        if d == root or d == d.parent:
+            break
+        d = d.parent
+    paths.append(claude_dir() / "CLAUDE.md")
+    rdir = rules_dir()
+    if rdir.is_dir():
+        paths += sorted(rdir.glob("*.md"))
+    mem = claude_dir() / "projects" / project_key(directory) / "memory"
+    if mem.is_dir():
+        paths += sorted(mem.glob("*.md"))
+    entries = list(extra)
+    entries += [Path(p).expanduser()
+                for p in os.environ.get("PICT_SOURCES", "").split(":") if p]
+    pf = claude_dir() / "pict-sources.txt"
+    if pf.is_file():
+        for line in pf.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            hits = sorted(_glob.glob(os.path.expanduser(line), recursive=True))
+            entries += [Path(h) for h in hits] if hits else [Path(line).expanduser()]
+    for e in entries:
+        if e.is_dir():
+            paths += sorted(e.rglob("*.md"))[:_POOL_FILE_CAP]
+        else:
+            paths.append(e)
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for p in paths:
+        if not p.is_file():
+            continue
+        try:
+            rp = p.resolve()
+        except OSError:
+            continue
+        if rp in seen:
+            continue
+        seen.add(rp)
+        out.append(p)
+    return out
+
+
+def attribution_pool(directory: Path,
+                     extra: list[Path]) -> list[tuple[str, str]]:
+    """(label, exact-text) candidates, longest first. A file contributes its
+    full text, its frontmatter-stripped text, and — for markdown — every
+    `## ` section (with and without the heading line), so an extracted
+    section (a register, one chapter) still attributes to its file."""
+    pool: list[tuple[str, str]] = []
+    seen_text: set[str] = set()
+
+    def put(label: str, text: str) -> None:
+        text = text.strip()
+        if len(text) >= _POOL_MIN and text not in seen_text:
+            seen_text.add(text)
+            pool.append((label, text))
+
+    for p in _pool_paths(directory, extra):
+        text = read_or_none(p)
+        if text is None:
+            continue
+        put(f"`{display(p)}`", text)
+        if p.suffix == ".md":
+            body = strip_frontmatter(text)
+            put(f"`{display(p)}`", body)
+            for m in re.finditer(r"(?m)^## .*$", body):
+                nxt = re.search(r"(?m)^## ", body[m.end():])
+                end = m.end() + nxt.start() if nxt else len(body)
+                head = m.group(0).strip()
+                put(f"`{display(p)}` § {head}", body[m.start():end])
+                put(f"`{display(p)}` § {head} (heading line not sent)",
+                    body[m.end():end])
+    pool.sort(key=lambda lt: -len(lt[1]))
+    return pool
+
+
+def content_marks(body: str,
+                  pool: list[tuple[str, str]]) -> list[tuple[int, int, str]]:
+    """Non-overlapping (start, end, label) spans where a pool text appears
+    verbatim inside `body`. Pool is longest-first, so a whole file claims
+    its span before its own sections can."""
+    kept: list[tuple[int, int, str]] = []
+    for label, text in pool:
+        start = 0
+        while True:
+            i = body.find(text, start)
+            if i < 0:
+                break
+            j = i + len(text)
+            if all(j <= s or i >= e for s, e, _ in kept):
+                kept.append((i, j, label))
+            start = j
+    return sorted(kept)
+
+
+def _segments(body: str, marks: list[tuple[int, int, str]],
+              gap_label: str) -> list[tuple[str, str]]:
+    """(label, text) segments that tile body EXACTLY — concatenating the
+    segment texts reproduces the block byte-for-byte. A whitespace-only gap
+    is absorbed into the neighboring segment instead of becoming noise."""
+    segs: list[tuple[str, str]] = []
+    carry = ""
+    pos = 0
+    for s, e, label in marks:
+        gap = body[pos:s]
+        if gap.strip():
+            segs.append((gap_label, carry + gap))
+            carry = ""
+        else:
+            carry += gap
+        segs.append((label, carry + body[s:e]))
+        carry = ""
+        pos = e
+    tail = body[pos:]
+    if tail.strip():
+        segs.append((gap_label, carry + tail))
+    elif tail or carry:
+        if segs:
+            segs[-1] = (segs[-1][0], segs[-1][1] + carry + tail)
+        else:
+            segs.append((gap_label, carry + tail))
+    if "".join(t for _, t in segs) != body:      # never lie: unsplit beats wrong
+        return []
+    return segs
+
+
+def fenced(body: str) -> list[str]:
+    """Verbatim body inside a code fence long enough that nothing inside can
+    close it — embedded markdown headings stay out of the document outline.
+    The body is NOT trimmed: byte truth includes its whitespace."""
+    runs = re.findall(r"`{3,}", body)
+    tick = "`" * max([4] + [len(r) + 1 for r in runs])
+    return [tick + "text", body if body.strip() else body + "(empty)", tick]
+
+
+def render_request(path: Path, directory: Path | None = None,
+                   sources_extra: list[Path] | None = None) -> str:
     """Byte-truth mode: render a captured /v1/messages request body — every
-    system block, tool schema, and message part, verbatim, in wire order,
-    each attributed to what loads it (file, binary, flag, or hook)."""
+    top-level key, system block, tool schema, and message part, verbatim, in
+    wire order. Components are real markdown headings (the document outline
+    IS the request anatomy); every body rides inside a code fence so its own
+    headings never pollute the outline. Composite blocks split per source
+    file via the attribution pool; unmatched bytes still render, labeled
+    unattributed. Complete by construction: a top-level key this tool does
+    not model gets its own verbatim section rather than being dropped."""
     directory = (directory or Path.cwd()).resolve()
     req = json.loads(path.read_text())
     total_bytes = len(path.read_bytes())
+    pool = attribution_pool(directory, sources_extra or [])
 
-    Sub = list[tuple[str, int, str]]
-    comps: list[tuple[str, str, str, str, Sub]] = []
-    sysblocks = req.get("system") or []
-    if isinstance(sysblocks, str):
-        sysblocks = [{"text": sysblocks}]
-    for i, b in enumerate(sysblocks):
-        t = b.get("text", "") if isinstance(b, dict) else str(b)
-        comps.append((f"system[{i}]", "system prompt block", t,
-                      _attr_system_block(t), []))
-    tools = req.get("tools") or []
-    for t in tools:
-        name = t.get("name", "?") if isinstance(t, dict) else "?"
-        comps.append((f"tool schema — {name}", "tools[] entry (bytes as sent, "
-                      "shown pretty-printed)", json.dumps(t, indent=1),
-                      "claude binary — built-in schema", []))
-    cmd_name: str | None = None
-    for mi, m in enumerate(req.get("messages") or []):
-        role = m.get("role", "?")
-        content = m.get("content")
-        if isinstance(content, str):
-            src = ("SessionStart hook output — registered hooks run at spawn"
-                   if "SessionStart hook additional context" in content
-                   else "harness reminder" if content.startswith("<system-reminder>")
-                   else "conversation")
-            comps.append((f"messages[{mi}] ({role})", "string content", content,
-                          src, []))
-            continue
-        for pi, part in enumerate(content or []):
-            ptype = part.get("type", "?") if isinstance(part, dict) else "?"
-            body = part.get("text", "") if isinstance(part, dict) else str(part)
-            if ptype != "text" and not body:
-                body = json.dumps(part, indent=1)
-            subrows: Sub = []
-            if "# claudeMd" in body and "Contents of" in body:
-                src = "CLAUDE.md walk-up + always-on rules — per-file rows below"
-                subrows = _walkup_subrows(body)
-            elif "<command-name>" in body and len(body) < 1000:
-                w = re.search(r"<command-name>/?([^<]+)</command-name>", body)
-                cmd_name = w.group(1) if w else None
-                src = "CLI — command wrapper for the -p prompt"
-            elif cmd_name:
-                cand = resolve_command(cmd_name, directory)
-                if cand is not None:
-                    src = f"`{display(cand)}`"
-                    if cand.is_symlink():
-                        src += f" → `{display(cand.resolve())}`"
-                else:
-                    src = (f"expanded body of `/{cmd_name}` — source file not "
-                           f"found from `{display(directory)}`")
-                cmd_name = None
-            elif "SessionStart hook additional context" in body:
-                src = "SessionStart hook output — registered hooks run at spawn"
-            elif body.startswith("<system-reminder>"):
-                src = "harness reminder"
-            else:
-                src = "-p payload / conversation"
-            comps.append((f"messages[{mi}].content[{pi}] ({role} · {ptype})",
-                          "message part", body, src, subrows))
+    # components: (label, kind, body, source, segments[(sublabel, text)], note)
+    comps: list[tuple[str, str, str, str, list[tuple[str, str]], str]] = []
+    handled = {"system", "tools", "messages"}
+    gap = "(unattributed — no pool file matches these bytes)"
 
+    def block_note(block: dict, skip: tuple[str, ...]) -> str:
+        extras = {k: v for k, v in block.items() if k not in skip}
+        if not extras:
+            return ""
+        return ("also carries " + json.dumps(extras, sort_keys=True)
+                + " — shown here, sent as JSON fields of this block")
+
+    def add_comp(label: str, kind: str, body: str, src: str,
+                 split: bool = True, note: str = "") -> None:
+        marks = content_marks(body, pool) if split and len(body) > 400 else []
+        segs = _segments(body, marks, gap) if marks else []
+        comps.append((label, kind, body, src, segs, note))
+
+    for key in req:
+        if key == "system":
+            sysblocks = req["system"]
+            if isinstance(sysblocks, str):
+                sysblocks = [{"text": sysblocks}]
+            for i, b in enumerate(sysblocks):
+                t = b.get("text", "") if isinstance(b, dict) else str(b)
+                note = block_note(b, ("type", "text")) if isinstance(b, dict) else ""
+                add_comp(f"system[{i}]", "system prompt block", t,
+                         _attr_system_block(t), note=note)
+        elif key == "tools":
+            for t in req["tools"] or []:
+                name = t.get("name", "?") if isinstance(t, dict) else "?"
+                add_comp(f"tool schema — {name}",
+                         "tools[] entry (bytes as sent, shown pretty-printed)",
+                         json.dumps(t, indent=1),
+                         "claude binary — built-in schema", split=False)
+        elif key == "messages":
+            cmd_name: str | None = None
+            for mi, m in enumerate(req["messages"] or []):
+                role = m.get("role", "?")
+                content = m.get("content")
+                if isinstance(content, str):
+                    src = ("SessionStart hook output — registered hooks run at spawn"
+                           if "SessionStart hook additional context" in content
+                           else "harness reminder"
+                           if content.startswith("<system-reminder>")
+                           else "conversation")
+                    add_comp(f"messages[{mi}] ({role})", "string content",
+                             content, src)
+                    continue
+                for pi, part in enumerate(content or []):
+                    ptype = part.get("type", "?") if isinstance(part, dict) else "?"
+                    body = part.get("text", "") if isinstance(part, dict) else str(part)
+                    if ptype != "text" and not body:
+                        body = json.dumps(part, indent=1)
+                    note = (block_note(part, ("type", "text"))
+                            if isinstance(part, dict) and ptype == "text" else "")
+                    walkup = "# claudeMd" in body and "Contents of" in body
+                    if walkup:
+                        src = "CLAUDE.md walk-up + always-on rules — split per file below"
+                    elif "<command-name>" in body and len(body) < 1000:
+                        w = re.search(r"<command-name>/?([^<]+)</command-name>", body)
+                        cmd_name = w.group(1) if w else None
+                        src = "CLI — command wrapper for the -p prompt"
+                    elif cmd_name:
+                        cand = resolve_command(cmd_name, directory)
+                        if cand is not None:
+                            src = f"`{display(cand)}`"
+                            if cand.is_symlink():
+                                src += f" → `{display(cand.resolve())}`"
+                        else:
+                            src = (f"expanded body of `/{cmd_name}` — source file "
+                                   f"not found from `{display(directory)}`")
+                        cmd_name = None
+                    elif "SessionStart hook additional context" in body:
+                        src = "SessionStart hook output — registered hooks run at spawn"
+                    elif body.startswith("<system-reminder>"):
+                        src = "harness reminder"
+                    else:
+                        src = "-p payload / conversation"
+                    label = f"messages[{mi}].content[{pi}] ({role} · {ptype})"
+                    if walkup:
+                        marks = _walkup_marks(body)
+                        spans = [(pos, marks[k + 1][0] if k + 1 < len(marks)
+                                  else len(body), lab)
+                                 for k, (pos, lab, _n) in enumerate(marks)]
+                        segs = _segments(body, spans, gap)
+                        comps.append((label, "message part", body, src, segs, note))
+                    else:
+                        add_comp(label, "message part", body, src, note=note)
+        else:
+            # request envelope: every key the renderer does not model still
+            # gets a section — nothing in the body is ever invisible
+            add_comp(f"envelope · {key}", "top-level request key",
+                     json.dumps({key: req[key]}, indent=1),
+                     "claude binary — API envelope (model/sampling/framing)",
+                     split=False)
+
+    rendered = sum(len(b.encode()) for _, _, b, _, _, _ in comps)
     lines: list[str] = []
-    lines.append(f"# pict --request — captured request `{display(path)}`\n")
+    lines.append(f"# pict --request — `{display(path)}`\n")
     lines.append(f"Model `{req.get('model', '?')}` · request body {total_bytes:,} "
-                 f"bytes · every component verbatim, in wire order · sources "
-                 f"resolved from `{display(directory)}`.\n")
+                 f"bytes · every top-level key rendered verbatim, in wire order · "
+                 f"attribution pool resolved from `{display(directory)}` "
+                 f"({len(pool)} candidate texts). Content rendered below: "
+                 f"{rendered:,} bytes; the remainder of the body is JSON framing "
+                 f"(keys, quotes, escapes) — no content is omitted.\n")
     lines.append("| # | component | bytes | % of request | source |")
     lines.append("|---|-----------|-------|--------------|--------|")
-    for i, (label, _, body, src, subrows) in enumerate(comps, 1):
+    for i, (label, _, body, src, segs, _note) in enumerate(comps, 1):
         b = len(body.encode())
         lines.append(f"| {i} | `{label}` | {b:,} | "
                      f"{100.0 * b / max(1, total_bytes):.1f}% | {src} |")
-        for slabel, sbytes, snote in subrows:
-            lines.append(f"| | ↳ `{slabel}` | {sbytes:,} | "
-                         f"{100.0 * sbytes / max(1, total_bytes):.1f}% | {snote} |")
+        for slabel, stext in segs:
+            sb = len(stext.encode())
+            lines.append(f"| | ↳ {slabel} | {sb:,} | "
+                         f"{100.0 * sb / max(1, total_bytes):.1f}% | |")
     lines.append(f"| | **request total (with JSON framing)** | **{total_bytes:,}** "
                  f"| 100% | |")
     lines.append("")
     total = len(comps)
-    for i, (label, detail, body, src, _sub) in enumerate(comps, 1):
-        lines.append("```")
-        lines.append(BAR)
-        lines.append(f"[{i}/{total}] BEGIN  {label}")
-        lines.append(f"        {detail} · {len(body.encode()):,} bytes")
-        lines.append(f"        source: {src.replace('`', '')}")
-        lines.append(BAR)
-        lines.append("```")
+    for i, (label, kind, body, src, segs, note) in enumerate(comps, 1):
+        lines.append(f"## {i}/{total} · {label}")
         lines.append("")
-        if _sub:
-            # composite block: break the body at every source boundary so
-            # each injected file's start and end is visible
-            marks = _walkup_marks(body)
-            pre = body[: marks[0][0]] if marks else body
-            if pre.strip():
-                lines.append(pre.rstrip())
+        meta = f"{kind} · {len(body.encode()):,} bytes · source: {src}"
+        if note:
+            meta += f" · {note}"
+        lines.append(meta)
+        lines.append("")
+        if segs:
+            for j, (slabel, stext) in enumerate(segs, 1):
+                lines.append(f"### {i}.{j} · {slabel} · {len(stext.encode()):,} bytes")
                 lines.append("")
-            for j, (pos, slabel, _n) in enumerate(marks):
-                end = marks[j + 1][0] if j + 1 < len(marks) else len(body)
-                lines.append("```")
-                lines.append(f"──── [{i}.{j + 1}] {slabel} · "
-                             f"{len(body[pos:end].encode()):,} bytes " + "─" * 8)
-                lines.append("```")
-                lines.append("")
-                lines.append(body[pos:end].rstrip())
+                lines += fenced(stext)
                 lines.append("")
         else:
-            lines.append(body.rstrip() if body.strip() else "(empty)")
+            lines += fenced(body)
             lines.append("")
-        lines.append("```")
-        lines.append(f"━━━━ END [{i}/{total}]  {label} " + "━" * max(4, 56 - len(label)))
-        lines.append("```")
-        lines.append("")
     return "\n".join(lines) + "\n"
 
 
 # ------------------------------------------------------------------ document
-
-BAR = "━" * 72
-
-
-def banner_open(lines: list[str], s: Source, total: int) -> None:
-    lines.append("```")
-    lines.append(BAR)
-    lines.append(f"[{s.order}/{total}] BEGIN  {s.label}")
-    meta = s.mechanism
-    if s.body is not None:
-        meta += f" · {len(s.body.splitlines())} lines · ~{tokens(s.body)} tokens"
-    for chunk in [meta[i:i + 100] for i in range(0, len(meta), 100)]:
-        lines.append(f"        {chunk}")
-    if s.note:
-        lines.append(f"        {s.note}")
-    lines.append(BAR)
-    lines.append("```")
-
-
-def banner_close(lines: list[str], s: Source, total: int) -> None:
-    lines.append("```")
-    lines.append(f"━━━━ END [{s.order}/{total}]  {s.label} " +
-                 "━" * max(4, 60 - len(s.label)))
-    lines.append("```")
 
 
 def render(directory: Path, opts: dict) -> str:
@@ -955,18 +1133,22 @@ def render(directory: Path, opts: dict) -> str:
                      f"| | **{ondemand_total}** |")
     lines.append("")
 
-    lines.append("## Injected context, in order\n")
     prev_stage = None
     for s in sources:
         if s.stage != prev_stage:
-            lines.append(f"\n### {STAGES[s.stage]}\n")
+            lines.append(f"\n## {STAGES[s.stage]}\n")
             prev_stage = s.stage
-        banner_open(lines, s, total)
+        lines.append(f"### {s.order}/{total} · {s.label}")
+        lines.append("")
+        meta = s.mechanism
+        if s.body is not None:
+            meta += f" · {len(s.body.splitlines())} lines · ~{tokens(s.body)} tokens"
+        if s.note:
+            meta += f" · {s.note}"
+        lines.append(meta)
+        lines.append("")
         if s.body:
-            lines.append("")
-            lines.append(s.body.rstrip())
-            lines.append("")
-            banner_close(lines, s, total)
+            lines += fenced(s.body)
         lines.append("")
 
     lines.append("---\n")
@@ -977,27 +1159,18 @@ def render(directory: Path, opts: dict) -> str:
     if not anchored:
         lines.append("*(none)*\n")
     for rule, globs, body in anchored:
-        lines.append("```")
-        lines.append(BAR)
-        lines.append(f"[rule] BEGIN  {display(rule)}")
-        lines.append(f"        fires on `{', '.join(globs)}` · "
-                     f"{len(body.splitlines())} lines · ~{tokens(body)} tokens")
+        lines.append(f"### on-demand · {display(rule)}")
+        lines.append("")
+        meta = (f"fires on `{', '.join(globs)}` · {len(body.splitlines())} "
+                f"lines · ~{tokens(body)} tokens")
         if dup_of_append(rule):
-            lines.append("        SAME FILE as the --append: already in the "
-                         "system prompt of this spawn. Body not repeated here.")
-            lines.append(BAR)
-            lines.append("```")
+            lines.append(meta + " · SAME FILE as the --append: already in the "
+                         "system prompt of this spawn; body not repeated here.")
             lines.append("")
             continue
-        lines.append(BAR)
-        lines.append("```")
+        lines.append(meta)
         lines.append("")
-        lines.append(body.rstrip())
-        lines.append("")
-        lines.append("```")
-        lines.append(f"━━━━ END [rule]  {display(rule)} " +
-                     "━" * max(4, 56 - len(display(rule))))
-        lines.append("```")
+        lines += fenced(body)
         lines.append("")
 
     if elsewhere:
@@ -1039,7 +1212,8 @@ def main(argv: list[str]) -> int:
         sys.stdout.write(__doc__.strip() + "\n")
         return 0
     opts = {"no_memory": False, "exec_hooks": False, "appends": [],
-            "serves": [], "prompt": ""}
+            "serves": [], "prompt": "", "sources": []}
+    request: Path | None = None
     positional: list[str] = []
     args = argv[1:]
     i = 0
@@ -1051,7 +1225,7 @@ def main(argv: list[str]) -> int:
             opts["no_memory"] = True
         elif a == "--exec-hooks":
             opts["exec_hooks"] = True
-        elif a in ("--append", "--serve", "--prompt", "--request"):
+        elif a in ("--append", "--serve", "--prompt", "--request", "--sources"):
             if i + 1 >= len(args):
                 sys.stderr.write(f"pict: {a} needs a value\n")
                 return 64
@@ -1061,17 +1235,13 @@ def main(argv: list[str]) -> int:
                 opts["appends"].append(Path(val).expanduser())
             elif a == "--serve":
                 opts["serves"].append(Path(val).expanduser())
+            elif a == "--sources":
+                opts["sources"].append(Path(val).expanduser())
             elif a == "--request":
-                req = Path(val).expanduser()
-                if not req.is_file():
-                    sys.stderr.write(f"pict: not a file: {req}\n")
+                request = Path(val).expanduser()
+                if not request.is_file():
+                    sys.stderr.write(f"pict: not a file: {request}\n")
                     return 64
-                try:
-                    sys.stdout.write(render_request(req))
-                except (json.JSONDecodeError, ValueError) as e:
-                    sys.stderr.write(f"pict: {req} is not request JSON: {e}\n")
-                    return 64
-                return 0
             else:
                 opts["prompt"] = val
         elif a.startswith("-"):
@@ -1082,12 +1252,20 @@ def main(argv: list[str]) -> int:
         i += 1
     if len(positional) > 1:
         sys.stderr.write("usage: pict [dir] [--headless] [--no-memory] [--exec-hooks] "
-                         "[--append FILE]... [--prompt TEXT] [--serve FILE]...\n")
+                         "[--append FILE]... [--prompt TEXT] [--serve FILE]... "
+                         "[--sources PATH]... [--request FILE]\n")
         return 64
     directory = Path(positional[0]).expanduser().resolve() if positional else Path.cwd()
     if not directory.is_dir():
         sys.stderr.write(f"pict: not a directory: {directory}\n")
         return 64
+    if request is not None:
+        try:
+            sys.stdout.write(render_request(request, directory, opts["sources"]))
+        except (json.JSONDecodeError, ValueError) as e:
+            sys.stderr.write(f"pict: {request} is not request JSON: {e}\n")
+            return 64
+        return 0
     sys.stdout.write(render(directory, opts))
     return 0
 

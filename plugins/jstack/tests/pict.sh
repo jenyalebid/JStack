@@ -197,40 +197,81 @@ DUP_HITS=$(echo "$OUT4" | grep -c "Chat rule body." || true)
 # 13. plugin hook enumerated in the hooks table with plugin origin
 echo "$OUT4" | grep -q "plugin fake@test" || fail4 "plugin hook not enumerated"
 
-# 14. banner integrity: every BEGIN with a body has an END
-B=$(echo "$OUT4" | grep -c "] BEGIN  " || true)
-E=$(echo "$OUT4" | grep -c "END \[" || true)
-[ "$E" -gt 0 ] || fail4 "no END banners"
-[ "$E" -le "$B" ] || fail4 "more ENDs than BEGINs"
+# 14. structure is real markdown: stage ## headings, per-source ### headings,
+#     balanced fences, and no content heading escapes into the outline
+S2=$(echo "$OUT4" | grep -c "^## " || true)
+S3=$(echo "$OUT4" | grep -c "^### " || true)
+[ "$S2" -gt 0 ] || fail4 "no stage headings"
+[ "$S3" -gt 0 ] || fail4 "no per-source headings"
+FB=$(echo "$OUT4" | grep -c '^`\{4,\}' || true)
+[ "$FB" -gt 0 ] || fail4 "no fenced bodies"
+[ $((FB % 2)) -eq 0 ] || fail4 "unbalanced code fences"
+echo "$OUT4" | python3 -c '
+import re, sys
+infence = False
+for ln in sys.stdin.read().splitlines():
+    if re.match(r"^`{4,}", ln):
+        infence = not infence
+        continue
+    if infence or not re.match(r"^#{1,6} ", ln):
+        continue
+    assert ln.startswith(("# pict", "## ", "### ")), f"leaked: {ln}"
+    assert "root law" not in ln and "identity" not in ln, f"leaked: {ln}"
+' || fail4 "content heading leaked into the document outline"
 
 # 15. totals present, honestly labeled
 echo "$OUT4" | grep -q "emulatable share" || fail4 "request-share total missing"
 echo "$OUT4" | grep -q "TOTAL of the above" || fail4 "grand total missing"
 
-# --- 16. --request mode: captured body rendered verbatim in wire order ------
-cat > "$TMP/req.json" <<'EOF'
-{"model": "test-model",
- "system": [{"type": "text", "text": "BASE-PROMPT-BYTES"},
-            {"type": "text", "text": "APPENDED-RULE-BYTES"}],
- "tools": [{"name": "Bash", "description": "runs bash", "input_schema": {}}],
- "messages": [
-   {"role": "user", "content": [
-     {"type": "text", "text": "WALKUP-REMINDER-BYTES"},
-     {"type": "text", "text": "COMMAND-BODY-BYTES"}]},
-   {"role": "system", "content": "HOOK-CONTEXT-BYTES"}]}
-EOF
-OUT5="$("$PICT" --request "$TMP/req.json")"
+# --- 16. --request mode: byte truth — wire order, envelope completeness,
+#         per-file splits inside composite blocks, unattributed gaps ---------
+python3 - "$TMP" <<'PY'
+import json, sys
+from pathlib import Path
+tmp = Path(sys.argv[1])
+src = ("# Character law\n\n" + "Character body line that is long enough to "
+       "attribute cleanly to its source file. " * 10).strip()
+(tmp / "character.md").write_text(src + "\n")
+big = "DRIVER-PRE-BYTES\n\n---\n" + src + "\n---\n\nDRIVER-TAIL-BYTES"
+req = {"model": "test-model",
+       "max_tokens": 111,
+       "metadata": {"user_id": "UMARKER-1"},
+       "system": [{"type": "text", "text": "BASE-PROMPT-BYTES"},
+                  {"type": "text", "text": big,
+                   "cache_control": {"type": "ephemeral"}}],
+       "tools": [{"name": "Bash", "description": "runs bash",
+                  "input_schema": {}}],
+       "messages": [
+         {"role": "user", "content": [
+           {"type": "text", "text": "WALKUP-REMINDER-BYTES"},
+           {"type": "text", "text": "COMMAND-BODY-BYTES"}]},
+         {"role": "system", "content": "HOOK-CONTEXT-BYTES"}]}
+(tmp / "req.json").write_text(json.dumps(req))
+PY
+OUT5="$(cd "$FIX/Agents/Alpha/chat" && PICT_CLAUDE_DIR="$CLAUDE" \
+       PICT_WALK_ROOT="$FIX" JSTACK_RULES_DIR="$CLAUDE/rules" \
+       "$PICT" . --request "$TMP/req.json" --sources "$TMP/character.md")"
 fail5() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT5"; exit 1; }
-for marker in BASE-PROMPT-BYTES APPENDED-RULE-BYTES WALKUP-REMINDER-BYTES \
-              COMMAND-BODY-BYTES HOOK-CONTEXT-BYTES; do
+for marker in BASE-PROMPT-BYTES DRIVER-PRE-BYTES DRIVER-TAIL-BYTES \
+              WALKUP-REMINDER-BYTES COMMAND-BODY-BYTES HOOK-CONTEXT-BYTES; do
   echo "$OUT5" | grep -q "$marker" || fail5 "--request missing $marker"
 done
-echo "$OUT5" | grep -q '`tool schema — Bash`' || fail5 "--request missing tool schema"
+echo "$OUT5" | grep -q "tool schema — Bash" || fail5 "--request missing tool schema"
 P_BASE=$(echo "$OUT5" | grep -n "BASE-PROMPT-BYTES" | head -1 | cut -d: -f1)
-P_TOOL=$(echo "$OUT5" | grep -n "BEGIN  tool schema — Bash" | head -1 | cut -d: -f1)
+P_TOOL=$(echo "$OUT5" | grep -n "^## .* tool schema — Bash" | head -1 | cut -d: -f1)
 P_WALK=$(echo "$OUT5" | grep -n "WALKUP-REMINDER-BYTES" | head -1 | cut -d: -f1)
 P_HOOK=$(echo "$OUT5" | grep -n "HOOK-CONTEXT-BYTES" | head -1 | cut -d: -f1)
 [ "$P_BASE" -lt "$P_TOOL" ] && [ "$P_TOOL" -lt "$P_WALK" ] && [ "$P_WALK" -lt "$P_HOOK" ] \
   || fail5 "--request wire order wrong"
+# every top-level key the renderer does not model still gets a section
+echo "$OUT5" | grep -q "envelope · model" || fail5 "model envelope section missing"
+echo "$OUT5" | grep -q "envelope · max_tokens" || fail5 "max_tokens envelope missing"
+echo "$OUT5" | grep -q "envelope · metadata" || fail5 "unknown key dropped (metadata)"
+echo "$OUT5" | grep -q "UMARKER-1" || fail5 "unknown key content invisible"
+# composite block splits at the source file, gaps stay visible + labeled
+echo "$OUT5" | grep -q "character.md" || fail5 "file boundary not attributed"
+echo "$OUT5" | grep -q "unattributed" || fail5 "gap segment not labeled"
+# a non-text field on a block (cache_control) is noted, never dropped
+echo "$OUT5" | grep -q "cache_control" || fail5 "non-text block field invisible"
 
 echo "PASS: pict"

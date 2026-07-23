@@ -85,10 +85,12 @@ tool/MCP schemas, the skills/commands description list, session guidance.
 
 A summary table with per-source ~token weights (bytes/4) heads the document.
 Structure is real markdown: every component and every file boundary is a
-heading (the document outline IS the injection anatomy — navigator-ready),
-and every verbatim body rides inside a code fence long enough that embedded
-markdown can never leak into the outline. Where one file ends and the next
-begins is the point.
+heading (the document outline IS the injection anatomy — navigator-ready).
+Bodies render as plain markdown text — no code fences (source editors paint
+fenced blocks as code) — with ONE visible transform: a leading backslash on
+content lines that would otherwise enter the outline (ATX headings, setext
+underlines, horizontal rules). Where one file ends and the next begins is
+the point.
 
 Env overrides (tests; same convention as inject-path-rules.py):
   JSTACK_RULES_DIR      — rules source dir        (default <claude_dir>/rules)
@@ -891,13 +893,25 @@ def _segments(body: str, marks: list[tuple[int, int, str]],
     return segs
 
 
-def fenced(body: str) -> list[str]:
-    """Verbatim body inside a code fence long enough that nothing inside can
-    close it — embedded markdown headings stay out of the document outline.
-    The body is NOT trimmed: byte truth includes its whitespace."""
-    runs = re.findall(r"`{3,}", body)
-    tick = "`" * max([4] + [len(r) + 1 for r in runs])
-    return [tick + "text", body if body.strip() else body + "(empty)", tick]
+_HEADING_LINE = re.compile(r"^ {0,3}#{1,6}(\s|$)")
+_RULE_LINE = re.compile(r"^ {0,3}(-{3,}|={3,}|_{3,}|\*{3,})[ \t]*$")
+
+
+def neutral(body: str) -> list[str]:
+    """Verbatim body as plain markdown text — readable in any md editor, no
+    code fences (source editors paint fenced blocks as code). The one
+    transform: a leading backslash on lines that would otherwise enter the
+    document outline (ATX headings, setext underlines, horizontal rules), so
+    only pict's own anatomy headings exist as structure. Everything else is
+    byte-identical."""
+    if not body.strip():
+        return ["(empty)"]
+    out = []
+    for ln in body.splitlines():
+        if _HEADING_LINE.match(ln) or _RULE_LINE.match(ln):
+            ln = "\\" + ln
+        out.append(ln)
+    return out
 
 
 def render_request(path: Path, directory: Path | None = None,
@@ -905,8 +919,9 @@ def render_request(path: Path, directory: Path | None = None,
     """Byte-truth mode: render a captured /v1/messages request body — every
     top-level key, system block, tool schema, and message part, verbatim, in
     wire order. Components are real markdown headings (the document outline
-    IS the request anatomy); every body rides inside a code fence so its own
-    headings never pollute the outline. Composite blocks split per source
+    IS the request anatomy); bodies render as plain text with heading/rule
+    lines backslash-escaped so they never pollute the outline (the escape is
+    the one visible transform). Composite blocks split per source
     file via the attribution pool; unmatched bytes still render, labeled
     unattributed. Complete by construction: a top-level key this tool does
     not model gets its own verbatim section rather than being dropped."""
@@ -1047,10 +1062,10 @@ def render_request(path: Path, directory: Path | None = None,
             for j, (slabel, stext) in enumerate(segs, 1):
                 lines.append(f"### {i}.{j} · {slabel} · {len(stext.encode()):,} bytes")
                 lines.append("")
-                lines += fenced(stext)
+                lines += neutral(stext)
                 lines.append("")
         else:
-            lines += fenced(body)
+            lines += neutral(body)
             lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -1150,7 +1165,7 @@ def render(directory: Path, opts: dict) -> str:
         lines.append(meta)
         lines.append("")
         if s.body:
-            lines += fenced(s.body)
+            lines += neutral(s.body)
         lines.append("")
 
     lines.append("---\n")
@@ -1172,7 +1187,7 @@ def render(directory: Path, opts: dict) -> str:
             continue
         lines.append(meta)
         lines.append("")
-        lines += fenced(body)
+        lines += neutral(body)
         lines.append("")
 
     if elsewhere:

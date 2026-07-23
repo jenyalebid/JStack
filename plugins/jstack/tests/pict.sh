@@ -197,26 +197,21 @@ DUP_HITS=$(echo "$OUT4" | grep -c "Chat rule body." || true)
 # 13. plugin hook enumerated in the hooks table with plugin origin
 echo "$OUT4" | grep -q "plugin fake@test" || fail4 "plugin hook not enumerated"
 
-# 14. structure is real markdown: stage ## headings, per-source ### headings,
-#     balanced fences, and no content heading escapes into the outline
+# 14. structure is real markdown: stage ## headings, per-source ### headings;
+#     bodies are plain text (no fences) with content heading lines escaped,
+#     so ONLY pict anatomy reaches the outline
 S2=$(echo "$OUT4" | grep -c "^## " || true)
 S3=$(echo "$OUT4" | grep -c "^### " || true)
 [ "$S2" -gt 0 ] || fail4 "no stage headings"
 [ "$S3" -gt 0 ] || fail4 "no per-source headings"
-FB=$(echo "$OUT4" | grep -c '^`\{4,\}' || true)
-[ "$FB" -gt 0 ] || fail4 "no fenced bodies"
-[ $((FB % 2)) -eq 0 ] || fail4 "unbalanced code fences"
+echo "$OUT4" | grep -q '^\\# Org root law' || fail4 "content heading not escaped"
+echo "$OUT4" | grep -q '^# Org root law' && fail4 "bare content heading leaked"
+echo "$OUT4" | grep -q '^`\{3,\}' && fail4 "code fence in output (paints as code)"
 echo "$OUT4" | python3 -c '
 import re, sys
-infence = False
 for ln in sys.stdin.read().splitlines():
-    if re.match(r"^`{4,}", ln):
-        infence = not infence
-        continue
-    if infence or not re.match(r"^#{1,6} ", ln):
-        continue
-    assert ln.startswith(("# pict", "## ", "### ")), f"leaked: {ln}"
-    assert "root law" not in ln and "identity" not in ln, f"leaked: {ln}"
+    if re.match(r"^#{1,6} ", ln):
+        assert ln.startswith(("# pict", "## ", "### ")), f"leaked: {ln}"
 ' || fail4 "content heading leaked into the document outline"
 
 # 15. totals present, honestly labeled
@@ -271,6 +266,9 @@ echo "$OUT5" | grep -q "UMARKER-1" || fail5 "unknown key content invisible"
 # composite block splits at the source file, gaps stay visible + labeled
 echo "$OUT5" | grep -q "character.md" || fail5 "file boundary not attributed"
 echo "$OUT5" | grep -q "unattributed" || fail5 "gap segment not labeled"
+# content heading lines are escaped, never bare
+echo "$OUT5" | grep -q '^\\# Character law' || fail5 "content heading not escaped"
+echo "$OUT5" | grep -q '^# Character law' && fail5 "bare content heading leaked"
 # a non-text field on a block (cache_control) is noted, never dropped
 echo "$OUT5" | grep -q "cache_control" || fail5 "non-text block field invisible"
 

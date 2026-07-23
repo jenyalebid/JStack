@@ -1134,9 +1134,11 @@ def render(directory: Path, opts: dict) -> str:
     lines.append("")
 
     prev_stage = None
+    stage_no = 0
     for s in sources:
         if s.stage != prev_stage:
-            lines.append(f"\n## {STAGES[s.stage]}\n")
+            stage_no += 1
+            lines.append(f"\n## Stage {stage_no} · {STAGES[s.stage]}\n")
             prev_stage = s.stage
         lines.append(f"### {s.order}/{total} · {s.label}")
         lines.append("")

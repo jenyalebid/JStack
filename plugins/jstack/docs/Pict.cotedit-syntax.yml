@@ -1,0 +1,67 @@
+# CotEditor syntax for pict documents (extension: .pict — a pict-rendered
+# markdown doc saved under this extension so CotEditor styles it as a pict
+# doc, not as Markdown).
+#
+# Why this exists: pict fences every verbatim body so embedded markdown can't
+# pollute a rendered viewer's outline — but CotEditor's Markdown style colors
+# every code-block flavor via its green "characters" class and its outline
+# regexes are line-based (fence-blind), so a pict doc viewed as Markdown is a
+# green wall with a polluted outline. This style inverts that: ONLY pict's own
+# numbered anatomy headings reach the outline and get color; every injected
+# body renders plain.
+#
+# Install: copy to ~/Library/Application Support/CotEditor/Syntaxes/Pict.yml
+# (CotEditor > Settings > Format also imports it). Save pict output with a
+# .pict extension to bind it.
+extensions:
+- keyString: pict
+filenames: []
+kind: general
+keywords:
+- beginString: ^# pict.*$
+  description: pict title
+  regularExpression: true
+- beginString: ^#{2}[\t ]\d+/\d+ · .*$
+  description: component heading
+  regularExpression: true
+- beginString: ^#{2}[\t ](Stage \d+|On-demand rules|Path rules|All registered hooks).*$
+  description: stage / fixed section heading (emulation mode)
+  regularExpression: true
+- beginString: ^#{3}[\t ]\d+(\.\d+)?(/\d+)? · .*$
+  description: segment / source heading
+  regularExpression: true
+- beginString: ^#{3}[\t ]on-demand · .*$
+  description: on-demand rule heading
+  regularExpression: true
+comments:
+- beginString: ^`{4,}(text)?[\t ]*$
+  description: fence line (pict structure, not content)
+  regularExpression: true
+outlineMenu:
+- beginString: ^# (pict.*)$
+  bold: true
+  description: title
+  keyString: $1
+- beginString: ^#{2}[\t ](\d+/\d+ · .*)$
+  bold: true
+  description: component
+  keyString: '    $1'
+- beginString: ^#{2}[\t ](Stage \d+ · .*)$
+  bold: true
+  description: stage (emulation mode)
+  keyString: '    $1'
+- beginString: ^#{2}[\t ]((?:On-demand rules|Path rules|All registered hooks).*)$
+  bold: true
+  description: fixed section (emulation mode)
+  keyString: '    $1'
+- beginString: ^#{3}[\t ](\d+(\.\d+)?(/\d+)? · .*)$
+  description: segment / source
+  keyString: '        $1'
+- beginString: ^#{3}[\t ](on-demand · .*)$
+  description: on-demand rule
+  keyString: '        $1'
+metadata:
+  author: JStack
+  description: pict (prompt injection checking tool) document — anatomy
+    headings in the outline, verbatim injected bodies plain.
+  version: '1.0'

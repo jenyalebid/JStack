@@ -106,6 +106,34 @@ def parse_source(source: str) -> tuple[str, str]:
     return source, ""
 
 
+_WRITE_VERBS = {"add", "append", "write", "log", "record", "entry", "new"}
+_SEAT_RE = re.compile(r"[a-z][a-z0-9_.-]*(/[a-z0-9][a-z0-9_./-]*)?")
+
+
+def _seat_error(source: str, rest: list[str]) -> str | None:
+    """Reject a non-seat first positional before it becomes a timeline agent.
+
+    Every observed corruption shape lands here: a hallucinated write verb
+    ('log_event add alpha/chat ...' — the verb becomes the agent and the real
+    seat is swallowed into the headline), a flag promoted to agent
+    ('log_event --at ...'), or a token outside the seat charset."""
+    if source.startswith("-"):
+        return (f"log_event: '{source}' is not a seat — a write starts with "
+                f"agent[/submode], flags come after.\n{_write_usage()}")
+    if source in _WRITE_VERBS:
+        hint = ""
+        if rest:
+            tok = rest[0].split()[0] if rest[0].split() else ""
+            if _SEAT_RE.fullmatch(tok):
+                hint = f'\n  did you mean: log_event {tok} "<headline>" ...'
+        return (f"log_event: no '{source}' subcommand — a write has no verb, "
+                f"it starts with the seat itself.{hint}\n{_write_usage()}")
+    if not _SEAT_RE.fullmatch(source.strip().strip("/")):
+        return (f"log_event: '{source}' is not a valid seat "
+                f"(agent[/submode], lowercase).\n{_write_usage()}")
+    return None
+
+
 def format_source(agent: str, submode: str) -> str:
     return f"{agent}/{submode}" if submode else agent
 
@@ -573,6 +601,10 @@ def main(argv: list[str]) -> int:
 
     source = argv[0]
     rest = argv[1:]
+    seat_err = _seat_error(source, rest)
+    if seat_err:
+        print(seat_err, file=sys.stderr)
+        return 2
     timestamp = day = pipeline_task = session_id = context = origin = None
     details: list[str] = []
     words: list[str] = []
@@ -594,6 +626,11 @@ def main(argv: list[str]) -> int:
             session_id = rest[i + 1]; i += 2
         elif a == "--origin":
             origin = rest[i + 1]; i += 2
+        elif a.startswith("-") and len(a) > 1:
+            print(f"log_event: unknown flag {a} — supported: --at --date "
+                  "--detail --context --origin --pipeline-task --session",
+                  file=sys.stderr)
+            return 2
         else:
             words.append(a); i += 1
 

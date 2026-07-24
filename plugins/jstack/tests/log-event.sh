@@ -291,6 +291,27 @@ fi
 "$LOG_EVENT" migrate >/dev/null 2>&1
 [[ $? -eq 2 ]] && pass "migrate retired" || fail "migrate retired"
 
+# 29. seat gate — a non-seat first positional must never become a timeline agent
+#     (real corruption shapes: hallucinated 'add' verb, flag-as-agent, swallowed flags)
+err=$("$LOG_EVENT" add "alpha/chat Did a thing" 2>&1 >/dev/null)
+[[ $? -eq 2 && "$err" == *"did you mean: log_event alpha/chat"* ]] \
+  && pass "write verb rejected with seat hint" || fail "write verb rejected"
+[[ $(SQL "SELECT COUNT(*) FROM entries WHERE agent='add'") == "[(0,)]" ]] \
+  && pass "no 'add' agent row written" || fail "'add' agent row leaked"
+"$LOG_EVENT" --at 10:00 alpha "Flag first" >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "flag-as-seat rejected" || fail "flag-as-seat rejected"
+"$LOG_EVENT" "Alpha Team" "Bad charset" >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "bad seat charset rejected" || fail "bad seat charset rejected"
+err=$("$LOG_EVENT" alpha --at 10:05 --date "$DAY" "Headline" --body "swallowed" 2>&1 >/dev/null)
+[[ $? -eq 2 && "$err" == *"unknown flag --body"* ]] \
+  && pass "unknown write flag rejected" || fail "unknown write flag rejected"
+[[ $(SQL "SELECT COUNT(*) FROM entries WHERE headline LIKE '%--body%'") == "[(0,)]" ]] \
+  && pass "no flag text swallowed into headline" || fail "flag text swallowed"
+"$LOG_EVENT" alpha/social/chat --at 10:06 --date "$DAY" "Deep seat write" >/dev/null \
+  || fail "deep seat write exit"
+[[ $(SQL "SELECT agent, submode FROM entries WHERE headline='Deep seat write'") == "[('alpha', 'social/chat')]" ]] \
+  && pass "multi-slash submode still writes" || fail "multi-slash submode write"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "log-event: $fails FAILED" >&2

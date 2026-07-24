@@ -269,6 +269,8 @@ echo "$OUT5" | grep -q "raw wire key order" || fail5 "raw wire key order not sta
 echo "$OUT5" | grep -q "envelope · model" || fail5 "model envelope section missing"
 echo "$OUT5" | grep -q "envelope · max_tokens" || fail5 "max_tokens envelope missing"
 echo "$OUT5" | grep -q "envelope · metadata" || fail5 "unknown key dropped (metadata)"
+# envelope sections self-identify as CLI plumbing, never prompt content
+echo "$OUT5" | grep -q "CLI plumbing, not prompt text" || fail5 "envelope not labeled as plumbing"
 echo "$OUT5" | grep -q "UMARKER-1" || fail5 "unknown key content invisible"
 # composite block splits at the source file, gaps stay visible + labeled
 echo "$OUT5" | grep -q "character.md" || fail5 "file boundary not attributed"

@@ -1039,7 +1039,9 @@ def render_request(path: Path, directory: Path | None = None,
         else:
             # request envelope: every key the renderer does not model still
             # gets a section — nothing in the body is ever invisible
-            add_comp(f"envelope · {key}", "top-level request key",
+            add_comp(f"envelope · {key}",
+                     "API call parameter — CLI plumbing, not prompt text "
+                     "(configures the call; the model never reads it as words)",
                      json.dumps({key: req[key]}, indent=1),
                      "claude binary — API envelope (model/sampling/framing)",
                      split=False)
@@ -1056,7 +1058,9 @@ def render_request(path: Path, directory: Path | None = None,
                  f"{rendered:,} bytes; the remainder of the body is JSON framing "
                  f"(keys, quotes, escapes) — no content is omitted. Content "
                  f"headings render one level deeper than sent (# → ##); `#` "
-                 f"headings are pict's anatomy only.\n")
+                 f"headings are pict's anatomy only. Envelope components at "
+                 f"the end are the CLI's API call parameters — plumbing that "
+                 f"configures the call, never prompt content.\n")
     lines.append("| # | component | bytes | % of request | source |")
     lines.append("|---|-----------|-------|--------------|--------|")
     for i, (label, _, body, src, segs, _note) in enumerate(comps, 1):

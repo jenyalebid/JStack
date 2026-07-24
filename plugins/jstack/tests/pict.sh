@@ -229,6 +229,15 @@ tmp = Path(sys.argv[1])
 src = ("# Character law\n\n" + "Character body line that is long enough to "
        "attribute cleanly to its source file. " * 10).strip()
 (tmp / "character.md").write_text(src + "\n")
+# a prompt-store md: literals + an inline {token} + a token-only line the
+# engine drops whole — the filled body must still attribute to the file
+store = ("PROMPT-STORE-HEAD " +
+         "literal head long enough to clear the pool floor. " * 6 +
+         "\nUp to {k} picks allowed.\n{note}\nPROMPT-STORE-TAIL " +
+         "literal tail long enough to clear the pool floor. " * 6).strip()
+(tmp / "store.md").write_text(store + "\n")
+filled = (store.replace("Up to {k} picks", "Up to 3 picks")
+               .replace("\n{note}\n", "\n"))
 big = "DRIVER-PRE-BYTES\n\n---\n" + src + "\n---\n\nDRIVER-TAIL-BYTES"
 req = {"model": "test-model",
        "max_tokens": 111,
@@ -241,13 +250,15 @@ req = {"model": "test-model",
        "messages": [
          {"role": "user", "content": [
            {"type": "text", "text": "WALKUP-REMINDER-BYTES"},
-           {"type": "text", "text": "COMMAND-BODY-BYTES"}]},
+           {"type": "text", "text": "COMMAND-BODY-BYTES"},
+           {"type": "text", "text": filled}]},
          {"role": "system", "content": "HOOK-CONTEXT-BYTES"}]}
 (tmp / "req.json").write_text(json.dumps(req))
 PY
 OUT5="$(cd "$FIX/Agents/Alpha/chat" && PICT_CLAUDE_DIR="$CLAUDE" \
        PICT_WALK_ROOT="$FIX" JSTACK_RULES_DIR="$CLAUDE/rules" \
-       "$PICT" . --request "$TMP/req.json" --sources "$TMP/character.md")"
+       "$PICT" . --request "$TMP/req.json" --sources "$TMP/character.md" \
+       --sources "$TMP/store.md")"
 fail5() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT5"; exit 1; }
 for marker in BASE-PROMPT-BYTES DRIVER-PRE-BYTES DRIVER-TAIL-BYTES \
               WALKUP-REMINDER-BYTES COMMAND-BODY-BYTES HOOK-CONTEXT-BYTES; do
@@ -275,6 +286,10 @@ echo "$OUT5" | grep -q "UMARKER-1" || fail5 "unknown key content invisible"
 # composite block splits at the source file, gaps stay visible + labeled
 echo "$OUT5" | grep -q "character.md" || fail5 "file boundary not attributed"
 echo "$OUT5" | grep -q "unattributed" || fail5 "gap segment not labeled"
+# a body whose {tokens} an engine filled (inline value + a dropped
+# token-only line) still attributes to its prompt-store file, labeled so
+echo "$OUT5" | grep -q "store.md\` (tokens filled)" \
+  || fail5 "token-filled body not attributed to its store file"
 # content headings demote one level; a bare --- directly under text gets a
 # preceding blank so it can never read as a setext underline
 echo "$OUT5" | grep -q '^## Character law' || fail5 "content heading not demoted"

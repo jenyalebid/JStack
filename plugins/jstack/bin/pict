@@ -844,22 +844,58 @@ def attribution_pool(directory: Path,
     return pool
 
 
+_POOL_TOKEN = re.compile(r"\n?[ \t]*\{[a-z_]+\}[ \t]*\n?")
+
+
+def _token_pattern(text: str):
+    """A pool text carrying `{token}` placeholders can still attribute a
+    body where an engine filled them: literals must match verbatim, each
+    token spans a bounded lazy wildcard (lazy = earliest end, so a partial
+    match under-claims rather than over-claims). Returns (pattern,
+    literal_len) or None when the text has no tokens."""
+    parts = _POOL_TOKEN.split(text)
+    if len(parts) == 1:
+        return None
+    pat = re.compile("(?s)" + "(?:.{0,8000}?)".join(re.escape(p)
+                                                    for p in parts))
+    return pat, sum(len(p) for p in parts)
+
+
 def content_marks(body: str,
                   pool: list[tuple[str, str]]) -> list[tuple[int, int, str]]:
     """Non-overlapping (start, end, label) spans where a pool text appears
-    verbatim inside `body`. Pool is longest-first, so a whole file claims
-    its span before its own sections can."""
+    inside `body` — verbatim, or with `{tokens}` filled by an engine
+    (labeled so). Pool is longest-first, so a whole file claims its span
+    before its own sections — or a snippet spliced into it — can."""
     kept: list[tuple[int, int, str]] = []
     for label, text in pool:
+        spans: list[tuple[int, int, str]] = []
         start = 0
         while True:
             i = body.find(text, start)
             if i < 0:
                 break
-            j = i + len(text)
+            spans.append((i, i + len(text), label))
+            start = i + len(text)
+        if not spans and "{" in text:
+            tp = _token_pattern(text)
+            if tp is not None and tp[1] >= _POOL_MIN:
+                pat, parts = tp[0], _POOL_TOKEN.split(text)
+                # every sizeable literal must be present at all, or the
+                # regex cannot match — cheap prune before backtracking
+                if all(p in body for p in parts if len(p) >= 8):
+                    start = 0
+                    while True:
+                        m = pat.search(body, start)
+                        if not m:
+                            break
+                        if m.end() - m.start() >= _POOL_MIN:
+                            spans.append((m.start(), m.end(),
+                                          f"{label} (tokens filled)"))
+                        start = max(m.end(), m.start() + 1)
+        for i, j, lab in spans:
             if all(j <= s or i >= e for s, e, _ in kept):
-                kept.append((i, j, label))
-            start = j
+                kept.append((i, j, lab))
     return sorted(kept)
 
 

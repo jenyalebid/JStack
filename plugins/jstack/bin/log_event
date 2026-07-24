@@ -259,7 +259,7 @@ def set_verdict(seat: str, verdict: str, note: str) -> str | None:
 
 # -------------------------------------------------------------------- queries
 
-def tail_entries(seat: str, n: int) -> list[dict]:
+def tail_entries(seat: str, n: int, origin: str | None = None) -> list[dict]:
     """Last n entries for a seat, oldest→newest. Bare agent = all submodes.
 
     Seats are directories: a seat query matches its own dir plus every
@@ -268,7 +268,12 @@ def tail_entries(seat: str, n: int) -> list[dict]:
     matches the agent's submode-less rows — entries migrated from the
     pre-seat era (and any bare-source writes). Broader rows age out of the
     last-n window as seat-tagged entries accrue; without this, every seat
-    would boot blind right after migration."""
+    would boot blind right after migration.
+
+    origin='direct' keeps only human-driven entries (auto/cron rows are
+    origin='indirect'; pre-origin legacy '' rows count as direct). This is
+    the injection view — a person sitting down reads the seat's worked
+    narrative, not the auto flood's publish log."""
     agent, submode = parse_source(seat)
     con = connect()
     if submode:
@@ -282,6 +287,8 @@ def tail_entries(seat: str, n: int) -> list[dict]:
     else:
         where = "agent = ?"
         params = (agent,)
+    if origin == "direct":
+        where += " AND origin != 'indirect'"
     rows = con.execute(
         f"SELECT id, date, time, agent, submode, headline, details, verdict,"
         f" verdict_note, session_id, context, origin FROM entries WHERE {where}"
@@ -425,7 +432,7 @@ def _write_usage() -> str:
 
 
 def _cmd_tail(rest: list[str]) -> int:
-    seat, n, as_json = None, 10, False
+    seat, n, as_json, origin = None, 10, False, None
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -433,6 +440,13 @@ def _cmd_tail(rest: list[str]) -> int:
             n = int(rest[i + 1]); i += 2
         elif a == "--json":
             as_json = True; i += 1
+        elif a == "--origin":
+            origin = rest[i + 1]; i += 2
+            if origin != "direct":
+                print("log_event tail: --origin accepts only 'direct' "
+                      "(the human-driven view; omit for all origins)",
+                      file=sys.stderr)
+                return 2
         elif a.startswith("-"):
             print(f"log_event tail: unknown flag {a}", file=sys.stderr)
             return 2
@@ -445,7 +459,7 @@ def _cmd_tail(rest: list[str]) -> int:
     if not seat:
         print("log_event tail: seat required (agent or agent/submode)", file=sys.stderr)
         return 2
-    entries = tail_entries(seat, n)
+    entries = tail_entries(seat, n, origin=origin)
     if as_json:
         print(json.dumps(entries, ensure_ascii=False, indent=2))
     elif entries:

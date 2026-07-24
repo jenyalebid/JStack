@@ -306,6 +306,37 @@ def find_session(session_id: str, transcript_hint: str | None = None) -> tuple[P
     return None, None
 
 
+def report_blackhole(session_id: str) -> bool:
+    """A session DIRECTORY with no transcript anywhere is not a benign
+    non-agent session — it means the session ran but the CLI never persisted
+    its JSONL (e.g. a leaked CLAUDE_CODE_CHILD_SESSION marker in the launching
+    shell suppresses transcript writes). The session is unrecoverable: no
+    resume, no review, no timeline entry. Scream so the gap is seen the day it
+    happens, not discovered later from a missing record. True = black hole
+    detected (logged + escalated)."""
+    if not CLAUDE_PROJECTS.exists():
+        return False
+    orphan = next((d for d in CLAUDE_PROJECTS.glob(f"*/{session_id}")
+                   if d.is_dir()), None)
+    if orphan is None:
+        return False
+    reason = (f"session dir {orphan.parent.name}/{session_id[:8]} exists but "
+              "no transcript was ever written — session unrecoverable; check "
+              "the launching shell for a leaked CLAUDE_CODE_CHILD_SESSION")
+    _log(f"BLACKHOLE {session_id[:8]}: {reason}")
+    if CFG["escalate_cmd"]:
+        try:
+            subprocess.run(
+                [str(Path(CFG["escalate_cmd"]).expanduser()),
+                 orphan.parent.name, session_id,
+                 f"Unpersisted session (black hole): {reason}"],
+                timeout=60, check=False, capture_output=True,
+            )
+        except Exception as e:
+            _log(f"ESCALATE_FAIL {session_id[:8]}: {e}")
+    return True
+
+
 def _session_cwd(jsonl_path: Path) -> str | None:
     """The real working dir the session ran in, read from the JSONL. Unlike the
     encoded project-dir name, this is unambiguous (hyphens in sub-mode names like
@@ -1099,6 +1130,8 @@ def main():
     jsonl_path, agent = find_session(session_id, transcript_hint)
 
     if not jsonl_path or not agent:
+        if not jsonl_path and report_blackhole(session_id):
+            sys.exit(0)
         _log(f"SKIP {session_id[:8]}: no agent match (path={jsonl_path})")
         sys.exit(0)
 

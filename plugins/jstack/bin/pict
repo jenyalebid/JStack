@@ -610,7 +610,8 @@ def gather_timeline(directory: Path, sources: list[Source]) -> None:
         return
     log_event = os.environ.get("PICT_LOG_EVENT", str(PLUGIN_BIN / "log_event"))
     try:
-        r = subprocess.run([log_event, "tail", seat, "-n", str(n)],
+        r = subprocess.run([log_event, "tail", seat, "-n", str(n),
+                            "--origin", "direct"],
                            capture_output=True, text=True, timeout=8)
         entries = r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):

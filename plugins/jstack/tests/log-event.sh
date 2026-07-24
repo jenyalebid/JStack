@@ -312,6 +312,21 @@ err=$("$LOG_EVENT" alpha --at 10:05 --date "$DAY" "Headline" --body "swallowed" 
 [[ $(SQL "SELECT agent, submode FROM entries WHERE headline='Deep seat write'") == "[('alpha', 'social/chat')]" ]] \
   && pass "multi-slash submode still writes" || fail "multi-slash submode write"
 
+# ---- tail --origin direct: the injection view --------------------------------
+# Auto-session (indirect) rows never ride the human-driven view; legacy ''
+# rows (pre-origin era) count as direct.
+"$LOG_EVENT" hank/chat --at 09:00 --date "$DAY" "Human drove this" >/dev/null
+"$LOG_EVENT" hank/chat --at 09:05 --date "$DAY" --origin indirect "Published by a cron" >/dev/null
+python3 -c "import sqlite3; c=sqlite3.connect('$DB'); c.execute(\"INSERT INTO entries(date,time,agent,submode,headline,details,created_at,context,origin) VALUES('$DAY','09:10','hank','chat','Legacy pre-origin row','[]','x','','')\"); c.commit()"
+t=$("$LOG_EVENT" tail hank/chat -n 10 --origin direct)
+[[ "$t" == *"Human drove this"* && "$t" == *"Legacy pre-origin row"* && "$t" != *"Published by a cron"* ]] \
+  && pass "tail --origin direct drops indirect, keeps legacy" || fail "tail --origin direct filter"
+t=$("$LOG_EVENT" tail hank/chat -n 10)
+[[ "$t" == *"Published by a cron"* ]] \
+  && pass "unfiltered tail still shows indirect" || fail "unfiltered tail shows indirect"
+"$LOG_EVENT" tail hank/chat --origin indirect >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "tail --origin rejects non-direct values" || fail "tail --origin value gate"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "log-event: $fails FAILED" >&2

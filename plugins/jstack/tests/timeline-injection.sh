@@ -195,6 +195,19 @@ else
   fail "per-dir: sibling seat boots its own lineage only"
 fi
 
+# (l) auto-session entries never ride an injection: origin=indirect rows
+# (crons, publish wakes) are excluded from the injected content — the
+# injection is the seat's human-driven narrative only.
+"$LOG_EVENT" gamma/chat --at 12:30 --date "$DAY" --origin indirect "Published by a cron" >/dev/null
+l_out=$(ctx "$ROOT/Gamma")
+if echo "$l_out" | grep -q "Published by a cron"; then
+  fail "indirect entries excluded from injection"
+else
+  echo "$l_out" | grep -q "Chat entry four" \
+    && pass "indirect entries excluded from injection" \
+    || fail "indirect entries excluded from injection (direct content missing)"
+fi
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "timeline-injection: $fails FAILED" >&2

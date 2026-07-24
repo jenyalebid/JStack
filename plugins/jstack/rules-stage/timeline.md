@@ -9,9 +9,12 @@ paths:
 The timeline is the single running record of what happened, when — and each
 seat's memory: a session's entries under its `agent/submode` source are
 injected into that seat's next LIVE session on start (a human sitting down
-mid-history; headless spawns never inject). Feeds daily briefs, nightly
-reviews, and every seat's cold start. **Not a session log. Not a commit log.
-Not a build report.**
+mid-history). Auto sessions and injections never mix, in either direction:
+headless spawns never receive an injection, and `origin=indirect` entries
+(crons, publish wakes, spawned work) never ride in one — the injected view
+is `tail --origin direct`, the seat's human-driven narrative. Feeds daily
+briefs, nightly reviews, and every seat's cold start. **Not a session log.
+Not a commit log. Not a build report.**
 
 Store: sqlite at `{timeline_dir}/timeline.db` (default `~/Logs/Timeline/`) —
 the ONLY artifact; there are no rendered files. Everything goes through the
@@ -140,7 +143,8 @@ a **date** question ("what happened Monday?") → `log_event recall`; a
 and recall are the same mechanism — one store, different read shapes.
 
 ```bash
-log_event tail alpha/chat -n 10     # a seat's recent history (what injection shows)
+log_event tail alpha/chat -n 10     # a seat's recent history, all origins
+log_event tail alpha/chat -n 10 --origin direct  # human-driven only (what injection shows)
 log_event tail alpha -n 20          # all of an agent's seats
 log_event tail alpha/chat --json    # structured: ids, session ids, origins, verdicts, context
 log_event recall 2026-04-28                    # a day replayed, all seats

@@ -305,6 +305,21 @@ line = eng.CFG["log_file"].read_text().strip().splitlines()[-1]
 m2 = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?:SELFWRITE|SPAWN) (\w{8})\S* . (\w+)", line)
 check("SELFWRITE log line matches dashboard regex", bool(m2) and m2.group(3) == "alpha")
 
+# ---- black-hole detection ----------------------------------------------
+# A session dir with no transcript = the CLI never persisted the session
+# (e.g. leaked CLAUDE_CODE_CHILD_SESSION). Must be reported, not skipped.
+fake_projects = tmp / "projects"
+(fake_projects / "-Users-x-Agents-Alpha-chat" / "bh-session-id").mkdir(parents=True)
+eng.CLAUDE_PROJECTS = fake_projects
+check("black hole reported (session dir, no jsonl)",
+      eng.report_blackhole("bh-session-id") is True)
+check("BLACKHOLE line logged",
+      "BLACKHOLE bh-sessi" in eng.CFG["log_file"].read_text())
+check("no session dir → not a black hole",
+      eng.report_blackhole("never-existed-id") is False)
+# A session WITH a transcript never reaches report_blackhole via main (guarded
+# by `not jsonl_path`), and a jsonl-less id with no dir stays a benign skip.
+
 print()
 if fails:
     print(f"session-review: {len(fails)} FAILED", file=sys.stderr)

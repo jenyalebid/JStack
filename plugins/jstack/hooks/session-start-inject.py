@@ -12,7 +12,9 @@ injection reads back through `log_event tail`.
 Injection fires ONLY into live, human-driven sessions — that is the point of
 it: a person sitting down mid-history. Headless spawns (schedulers, watchers,
 daemons running `claude --print`) never inject, for every seat, regardless of
-config.
+config. The content law is the mirror image: only `origin=direct` entries
+ride the injection (`log_event tail --origin direct`) — auto sessions
+neither receive injections nor appear in them.
 
 Which seats get injected, and how many entries, is host config — the
 `timeline_inject` map in $JSTACK_REVIEW_CONFIG (~/.claude/jstack/review.json):
@@ -153,9 +155,14 @@ def inject_count(cfg: dict, agent: str, submode: str) -> int:
 
 
 def tail(seat: str, n: int) -> str:
+    # --origin direct: the injection is a person sitting down mid-history —
+    # it carries the seat's human-driven narrative only. Auto sessions
+    # (origin=indirect: crons, publish wakes, spawned work) neither receive
+    # injections (the live-session gate above) nor ride in them.
     try:
         r = subprocess.run(
-            [str(PLUGIN_BIN / "log_event"), "tail", seat, "-n", str(n)],
+            [str(PLUGIN_BIN / "log_event"), "tail", seat, "-n", str(n),
+             "--origin", "direct"],
             capture_output=True, text=True, timeout=8,
         )
         return r.stdout.strip() if r.returncode == 0 else ""

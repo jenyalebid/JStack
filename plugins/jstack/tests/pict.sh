@@ -197,29 +197,31 @@ DUP_HITS=$(echo "$OUT4" | grep -c "Chat rule body." || true)
 # 13. plugin hook enumerated in the hooks table with plugin origin
 echo "$OUT4" | grep -q "plugin fake@test" || fail4 "plugin hook not enumerated"
 
-# 14. structure is real markdown: stage ## headings, per-source ### headings;
-#     bodies are plain text (no fences) with content heading lines escaped,
-#     so ONLY pict anatomy reaches the outline
-S2=$(echo "$OUT4" | grep -c "^## " || true)
-S3=$(echo "$OUT4" | grep -c "^### " || true)
-[ "$S2" -gt 0 ] || fail4 "no stage headings"
-[ "$S3" -gt 0 ] || fail4 "no per-source headings"
-echo "$OUT4" | grep -q '^\\# Org root law' || fail4 "content heading not escaped"
-echo "$OUT4" | grep -q '^# Org root law' && fail4 "bare content heading leaked"
+# 14. structure is real markdown and # is pict's lane: every separator is a
+#     level-1 heading; bodies are plain text (no fences, no backslash
+#     escapes) with content headings demoted one level (# -> ##) so they
+#     nest under pict anatomy instead of colliding with it
+echo "$OUT4" | grep -q "^# Stage " || fail4 "no stage headings"
+echo "$OUT4" | grep -Eq "^# [0-9]+/[0-9]+ · " || fail4 "no per-source headings"
+echo "$OUT4" | grep -q '^## Org root law' || fail4 "content heading not demoted"
+echo "$OUT4" | grep -q '^# Org root law' && fail4 "content heading leaked at level 1"
+echo "$OUT4" | grep -q '^\\#' && fail4 "backslash escape survived (scheme is demotion)"
 echo "$OUT4" | grep -q '^`\{3,\}' && fail4 "code fence in output (paints as code)"
 echo "$OUT4" | python3 -c '
 import re, sys
+ANATOMY = re.compile(r"^# (pict|Stage |[0-9]+/[0-9]+ · |on-demand · |"
+                     r"On-demand rules|Path rules|All registered hooks)")
 for ln in sys.stdin.read().splitlines():
-    if re.match(r"^#{1,6} ", ln):
-        assert ln.startswith(("# pict", "## ", "### ")), f"leaked: {ln}"
-' || fail4 "content heading leaked into the document outline"
+    if re.match(r"^# ", ln):
+        assert ANATOMY.match(ln), f"level-1 heading that is not pict anatomy: {ln}"
+' || fail4 "content leaked into pict's level-1 lane"
 
 # 15. totals present, honestly labeled
 echo "$OUT4" | grep -q "emulatable share" || fail4 "request-share total missing"
 echo "$OUT4" | grep -q "TOTAL of the above" || fail4 "grand total missing"
 
-# --- 16. --request mode: byte truth — wire order, envelope completeness,
-#         per-file splits inside composite blocks, unattributed gaps ---------
+# --- 16. --request mode: byte truth — model-read order, envelope
+#         completeness, per-file splits inside composite blocks, gaps -------
 python3 - "$TMP" <<'PY'
 import json, sys
 from pathlib import Path
@@ -252,12 +254,17 @@ for marker in BASE-PROMPT-BYTES DRIVER-PRE-BYTES DRIVER-TAIL-BYTES \
   echo "$OUT5" | grep -q "$marker" || fail5 "--request missing $marker"
 done
 echo "$OUT5" | grep -q "tool schema — Bash" || fail5 "--request missing tool schema"
+# model-read order: system -> tools -> messages -> envelope keys (the CLI
+# serializes messages before system in the JSON; the doc follows the model)
 P_BASE=$(echo "$OUT5" | grep -n "BASE-PROMPT-BYTES" | head -1 | cut -d: -f1)
-P_TOOL=$(echo "$OUT5" | grep -n "^## .* tool schema — Bash" | head -1 | cut -d: -f1)
+P_TOOL=$(echo "$OUT5" | grep -n "^# .* tool schema — Bash" | head -1 | cut -d: -f1)
 P_WALK=$(echo "$OUT5" | grep -n "WALKUP-REMINDER-BYTES" | head -1 | cut -d: -f1)
 P_HOOK=$(echo "$OUT5" | grep -n "HOOK-CONTEXT-BYTES" | head -1 | cut -d: -f1)
-[ "$P_BASE" -lt "$P_TOOL" ] && [ "$P_TOOL" -lt "$P_WALK" ] && [ "$P_WALK" -lt "$P_HOOK" ] \
-  || fail5 "--request wire order wrong"
+P_ENV=$(echo "$OUT5" | grep -n "^# .*envelope · model" | head -1 | cut -d: -f1)
+[ "$P_BASE" -lt "$P_TOOL" ] && [ "$P_TOOL" -lt "$P_WALK" ] && \
+  [ "$P_WALK" -lt "$P_HOOK" ] && [ "$P_HOOK" -lt "$P_ENV" ] \
+  || fail5 "--request model-read order wrong"
+echo "$OUT5" | grep -q "raw wire key order" || fail5 "raw wire key order not stated"
 # every top-level key the renderer does not model still gets a section
 echo "$OUT5" | grep -q "envelope · model" || fail5 "model envelope section missing"
 echo "$OUT5" | grep -q "envelope · max_tokens" || fail5 "max_tokens envelope missing"
@@ -266,9 +273,18 @@ echo "$OUT5" | grep -q "UMARKER-1" || fail5 "unknown key content invisible"
 # composite block splits at the source file, gaps stay visible + labeled
 echo "$OUT5" | grep -q "character.md" || fail5 "file boundary not attributed"
 echo "$OUT5" | grep -q "unattributed" || fail5 "gap segment not labeled"
-# content heading lines are escaped, never bare
-echo "$OUT5" | grep -q '^\\# Character law' || fail5 "content heading not escaped"
-echo "$OUT5" | grep -q '^# Character law' && fail5 "bare content heading leaked"
+# content headings demote one level; a bare --- directly under text gets a
+# preceding blank so it can never read as a setext underline
+echo "$OUT5" | grep -q '^## Character law' || fail5 "content heading not demoted"
+echo "$OUT5" | grep -q '^# Character law' && fail5 "content heading leaked at level 1"
+echo "$OUT5" | grep -q '^\\#' && fail5 "backslash escape survived (scheme is demotion)"
+echo "$OUT5" | python3 -c '
+import sys
+lines = sys.stdin.read().splitlines()
+for a, b in zip(lines, lines[1:]):
+    assert not (a.strip() and set(b.strip()) == {"-"} and len(b.strip()) >= 3), \
+        f"setext hazard: {a!r} / {b!r}"
+' || fail5 "bare rule line rides directly under text (phantom setext heading)"
 # a non-text field on a block (cache_control) is noted, never dropped
 echo "$OUT5" | grep -q "cache_control" || fail5 "non-text block field invisible"
 

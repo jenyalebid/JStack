@@ -84,13 +84,14 @@ Out of scope (native harness, not file composition): the base system prompt,
 tool/MCP schemas, the skills/commands description list, session guidance.
 
 A summary table with per-source ~token weights (bytes/4) heads the document.
-Structure is real markdown: every component and every file boundary is a
-heading (the document outline IS the injection anatomy — navigator-ready).
-Bodies render as plain markdown text — no code fences (source editors paint
-fenced blocks as code) — with ONE visible transform: a leading backslash on
-content lines that would otherwise enter the outline (ATX headings, setext
-underlines, horizontal rules). Where one file ends and the next begins is
-the point.
+Structure is real markdown and `#` is pict's lane: every separator — stage,
+component, file boundary — is a level-1 heading, so the document outline IS
+the injection anatomy. Bodies render as plain markdown text — no code fences
+(source editors paint fenced blocks as code) — with ONE visible transform:
+content ATX headings render one level deeper than sent (# → ##) so they nest
+under pict's separators instead of colliding with them, and a bare ---/===
+line directly under text gets a preceding blank so it cannot read as a
+setext underline. Where one file ends and the next begins is the point.
 
 Env overrides (tests; same convention as inject-path-rules.py):
   JSTACK_RULES_DIR      — rules source dir        (default <claude_dir>/rules)
@@ -720,7 +721,7 @@ def _walkup_marks(text: str) -> list[tuple[int, str, str]]:
             note += f" · wired as symlink `{alias}`"
         marks.append((m.start(), m.group(1), note))
     for m in _WALKUP_STUB.finditer(text):
-        marks.append((m.start(), f"# {m.group(1)} stub", "no file — harness text"))
+        marks.append((m.start(), f"{m.group(1)} stub", "no file — harness text"))
     marks.sort()
     return marks
 
@@ -893,23 +894,31 @@ def _segments(body: str, marks: list[tuple[int, int, str]],
     return segs
 
 
-_HEADING_LINE = re.compile(r"^ {0,3}#{1,6}(\s|$)")
+_HEADING_LINE = re.compile(r"^( {0,3})#{1,6}(\s|$)")
 _RULE_LINE = re.compile(r"^ {0,3}(-{3,}|={3,}|_{3,}|\*{3,})[ \t]*$")
 
 
 def neutral(body: str) -> list[str]:
     """Verbatim body as plain markdown text — readable in any md editor, no
-    code fences (source editors paint fenced blocks as code). The one
-    transform: a leading backslash on lines that would otherwise enter the
-    document outline (ATX headings, setext underlines, horizontal rules), so
-    only pict's own anatomy headings exist as structure. Everything else is
-    byte-identical."""
+    code fences (source editors paint fenced blocks as code), no escape
+    glyphs. `#` is pict's separator lane, so the one transform: content ATX
+    headings render one level deeper than sent (# → ##, ## → ###, …) — they
+    nest under pict's anatomy in the outline instead of colliding with it —
+    and a bare ---/===/*** line directly under text gets a preceding blank
+    line so it cannot read as a setext underline. Every other byte is
+    verbatim."""
     if not body.strip():
         return ["(empty)"]
     out = []
     for ln in body.splitlines():
-        if _HEADING_LINE.match(ln) or _RULE_LINE.match(ln):
-            ln = "\\" + ln
+        m = _HEADING_LINE.match(ln)
+        if m:
+            i = len(m.group(1))
+            ln = ln[:i] + "#" + ln[i:]
+        elif _RULE_LINE.match(ln) and out and out[-1].strip():
+            out.append("")
+            out.append(ln)
+            continue
         out.append(ln)
     return out
 
@@ -917,14 +926,18 @@ def neutral(body: str) -> list[str]:
 def render_request(path: Path, directory: Path | None = None,
                    sources_extra: list[Path] | None = None) -> str:
     """Byte-truth mode: render a captured /v1/messages request body — every
-    top-level key, system block, tool schema, and message part, verbatim, in
-    wire order. Components are real markdown headings (the document outline
-    IS the request anatomy); bodies render as plain text with heading/rule
-    lines backslash-escaped so they never pollute the outline (the escape is
-    the one visible transform). Composite blocks split per source
-    file via the attribution pool; unmatched bytes still render, labeled
-    unattributed. Complete by construction: a top-level key this tool does
-    not model gets its own verbatim section rather than being dropped."""
+    top-level key, system block, tool schema, and message part, verbatim.
+    Sections come in the order the model READS them (system → tools →
+    messages → envelope keys), not raw JSON key order — the CLI serializes
+    `messages` before `system` in the body, but the model always gets system
+    first; the header states the raw wire key order. Components are level-1
+    markdown headings (`#` is pict's lane — the document outline IS the
+    request anatomy); bodies render as plain text with content headings one
+    level deeper than sent (see neutral()). Composite blocks split per
+    source file via the attribution pool; unmatched bytes still render,
+    labeled unattributed. Complete by construction: a top-level key this
+    tool does not model gets its own verbatim section rather than being
+    dropped."""
     directory = (directory or Path.cwd()).resolve()
     req = json.loads(path.read_text())
     total_bytes = len(path.read_bytes())
@@ -948,7 +961,11 @@ def render_request(path: Path, directory: Path | None = None,
         segs = _segments(body, marks, gap) if marks else []
         comps.append((label, kind, body, src, segs, note))
 
-    for key in req:
+    # model-read order: system, then tools, then the conversation, then the
+    # remaining envelope keys in their wire order
+    keys = ([k for k in ("system", "tools", "messages") if k in req]
+            + [k for k in req if k not in ("system", "tools", "messages")])
+    for key in keys:
         if key == "system":
             sysblocks = req["system"]
             if isinstance(sysblocks, str):
@@ -1031,11 +1048,15 @@ def render_request(path: Path, directory: Path | None = None,
     lines: list[str] = []
     lines.append(f"# pict --request — `{display(path)}`\n")
     lines.append(f"Model `{req.get('model', '?')}` · request body {total_bytes:,} "
-                 f"bytes · every top-level key rendered verbatim, in wire order · "
+                 f"bytes · every top-level key rendered verbatim, in the order "
+                 f"the model reads it (system → tools → messages → envelope; "
+                 f"raw wire key order: {', '.join(f'`{k}`' for k in req)}) · "
                  f"attribution pool resolved from `{display(directory)}` "
                  f"({len(pool)} candidate texts). Content rendered below: "
                  f"{rendered:,} bytes; the remainder of the body is JSON framing "
-                 f"(keys, quotes, escapes) — no content is omitted.\n")
+                 f"(keys, quotes, escapes) — no content is omitted. Content "
+                 f"headings render one level deeper than sent (# → ##); `#` "
+                 f"headings are pict's anatomy only.\n")
     lines.append("| # | component | bytes | % of request | source |")
     lines.append("|---|-----------|-------|--------------|--------|")
     for i, (label, _, body, src, segs, _note) in enumerate(comps, 1):
@@ -1051,7 +1072,7 @@ def render_request(path: Path, directory: Path | None = None,
     lines.append("")
     total = len(comps)
     for i, (label, kind, body, src, segs, note) in enumerate(comps, 1):
-        lines.append(f"## {i}/{total} · {label}")
+        lines.append(f"# {i}/{total} · {label}")
         lines.append("")
         meta = f"{kind} · {len(body.encode()):,} bytes · source: {src}"
         if note:
@@ -1060,7 +1081,7 @@ def render_request(path: Path, directory: Path | None = None,
         lines.append("")
         if segs:
             for j, (slabel, stext) in enumerate(segs, 1):
-                lines.append(f"### {i}.{j} · {slabel} · {len(stext.encode()):,} bytes")
+                lines.append(f"# {i}.{j} · {slabel} · {len(stext.encode()):,} bytes")
                 lines.append("")
                 lines += neutral(stext)
                 lines.append("")
@@ -1153,9 +1174,9 @@ def render(directory: Path, opts: dict) -> str:
     for s in sources:
         if s.stage != prev_stage:
             stage_no += 1
-            lines.append(f"\n## Stage {stage_no} · {STAGES[s.stage]}\n")
+            lines.append(f"\n# Stage {stage_no} · {STAGES[s.stage]}\n")
             prev_stage = s.stage
-        lines.append(f"### {s.order}/{total} · {s.label}")
+        lines.append(f"# {s.order}/{total} · {s.label}")
         lines.append("")
         meta = s.mechanism
         if s.body is not None:
@@ -1169,14 +1190,14 @@ def render(directory: Path, opts: dict) -> str:
         lines.append("")
 
     lines.append("---\n")
-    lines.append("## On-demand rules — matching files exist under this directory\n")
+    lines.append("# On-demand rules — matching files exist under this directory\n")
     lines.append("NOT loaded at spawn. Each loads only when one of its matching files")
     lines.append("is read/edited (native) or about to be mutated (JStack PreToolUse")
     lines.append("hook, re-injected after ~400KB of transcript growth).\n")
     if not anchored:
         lines.append("*(none)*\n")
     for rule, globs, body in anchored:
-        lines.append(f"### on-demand · {display(rule)}")
+        lines.append(f"# on-demand · {display(rule)}")
         lines.append("")
         meta = (f"fires on `{', '.join(globs)}` · {len(body.splitlines())} "
                 f"lines · ~{tokens(body)} tokens")
@@ -1192,7 +1213,7 @@ def render(directory: Path, opts: dict) -> str:
 
     if elsewhere:
         lines.append("---\n")
-        lines.append("## Path rules with no matching files here\n")
+        lines.append("# Path rules with no matching files here\n")
         lines.append("Would fire only if the session touches matching paths elsewhere")
         lines.append("(cross-tree) or creates matching files:\n")
         for stem, globs in elsewhere:
@@ -1201,7 +1222,7 @@ def render(directory: Path, opts: dict) -> str:
 
     if hooks:
         lines.append("---\n")
-        lines.append("## All registered hooks (user settings + installed plugins)\n")
+        lines.append("# All registered hooks (user settings + installed plugins)\n")
         lines.append("Conditional injectors and gates. Listed, not executed" +
                      (" — except SessionStart hooks rendered above (--exec-hooks)."
                       if opts["exec_hooks"] else

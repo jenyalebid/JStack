@@ -208,6 +208,49 @@ else
     || fail "indirect entries excluded from injection (direct content missing)"
 fi
 
+# (m) --explain: the injector answers "what would this seat be injected" as
+# data (ids + N). Anything that DISPLAYS or checks an injection asks this —
+# a consumer that re-derives the window from the db grows its own second
+# truth and drifts (a UI that marks the cron flood as injected). The answer
+# obeys the same two laws as the injection itself: the config walk sets N,
+# origin=indirect never rides.
+id_of() { "$LOG_EVENT" tail "$1" -n 50 --json | python3 -c '
+import json,sys
+want=sys.argv[1]
+print(next((str(r["id"]) for r in json.load(sys.stdin) if r["headline"]==want), ""))
+' "$2"; }
+explain() { JSTACK_REVIEW_CONFIG="${2:-$CFG}" python3 "$HOOK" --explain "$1"; }
+field() { python3 -c 'import json,sys;print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
+
+m_out=$(explain gamma/chat)
+cron_id=$(id_of gamma/chat "Published by a cron")
+live_id=$(id_of gamma/chat "Chat entry four")
+[[ "$(echo "$m_out" | field ok)" == "True" && "$(echo "$m_out" | field n)" == "3" ]] \
+  && pass "--explain answers ok with the seat's configured N" \
+  || fail "--explain answers ok with the seat's configured N ($m_out)"
+m_ids=$(echo "$m_out" | field ids)
+# Both ids must exist, or the two legs below would pass on nothing.
+if [[ -z "$cron_id" || -z "$live_id" ]]; then
+  fail "--explain fixture: seeded rows not found (cron='$cron_id' live='$live_id')"
+elif echo "$m_ids" | grep -qE "(^|[^0-9])$cron_id([^0-9]|$)"; then
+  fail "--explain excludes indirect rows (cron id $cron_id marked: $m_ids)"
+else
+  pass "--explain excludes indirect rows"
+fi
+if echo "$m_ids" | grep -qE "(^|[^0-9])$live_id([^0-9]|$)"; then
+  pass "--explain names the rows the injection carries"
+else
+  fail "--explain names the rows the injection carries ($m_ids)"
+fi
+
+# unconfigured seat and the review seat both answer n=0 — never a guess
+[[ "$(explain gamma/social | field n)" == "0" ]] \
+  && pass "--explain: unconfigured seat answers n=0" \
+  || fail "--explain: unconfigured seat answers n=0"
+[[ "$(explain gamma/review "$CFG2" | field n)" == "0" ]] \
+  && pass "--explain: review seat answers n=0" \
+  || fail "--explain: review seat answers n=0"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "timeline-injection: $fails FAILED" >&2

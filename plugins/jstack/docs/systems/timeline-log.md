@@ -45,6 +45,17 @@ Recall routing: a date question ("what happened Monday?") is `recall`; a keyword
 
 Seat tails also match the agent's submode-less rows (pre-seat-era migrations) so seats aren't blind right after migration; those age out of the last-N window naturally. `verdict` stamps an independent review's call on the seat's latest entry — it rides `tail`, `recall`, and injection (`↳ verdict:`).
 
+### Asking what a seat gets injected
+
+The injection window is not "the seat's last N rows": `tail --origin direct` drops auto/cron entries (`origin=indirect` — they neither receive injections nor ride in them), and a per-dir config walk decides N. Anything that displays, checks, or audits an injection asks the injector for its own answer instead of re-deriving it:
+
+```bash
+hooks/session-start-inject.py --explain <agent[/submode]>
+# {"ok": true, "seat": "alpha/social/chat", "n": 10, "ids": [3099, 3567, ...]}
+```
+
+`ok: false` means the answer couldn't be computed — a consumer renders that as unknown, never as "nothing injects". Liveness is deliberately not part of the answer: it reports what a person sitting down in that seat would receive, which is what a marker in a UI means. A second implementation of this window is a second truth, and the copy that isn't the injector is the one that goes stale and lies.
+
 ## The store
 
 - Sqlite, WAL — concurrent session-ends write safely.

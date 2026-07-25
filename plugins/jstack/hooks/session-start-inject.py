@@ -154,20 +154,63 @@ def inject_count(cfg: dict, agent: str, submode: str) -> int:
         seat = seat.rsplit("/", 1)[0]
 
 
-def tail(seat: str, n: int) -> str:
+def tail(seat: str, n: int, as_json: bool = False) -> str:
     # --origin direct: the injection is a person sitting down mid-history —
     # it carries the seat's human-driven narrative only. Auto sessions
     # (origin=indirect: crons, publish wakes, spawned work) neither receive
     # injections (the live-session gate above) nor ride in them.
+    cmd = [str(PLUGIN_BIN / "log_event"), "tail", seat, "-n", str(n),
+           "--origin", "direct"]
+    if as_json:
+        cmd.append("--json")
     try:
-        r = subprocess.run(
-            [str(PLUGIN_BIN / "log_event"), "tail", seat, "-n", str(n),
-             "--origin", "direct"],
-            capture_output=True, text=True, timeout=8,
-        )
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
         return r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def explain(seat: str) -> dict:
+    """What a live session of `seat` would be injected, as data.
+
+    THE answer for any consumer that needs to show or check the injection
+    (dashboard markers, audits, tests): ask this instead of re-deriving the
+    window from the timeline db. The config walk and the origin law live in
+    exactly one place — a second implementation is a second truth, and the
+    one that isn't the injector is the one that goes stale and lies.
+
+    Liveness is deliberately NOT part of the answer: this is the
+    hypothetical "if a person sat down in this seat right now", which is
+    what a marker in a UI means. Shape:
+
+        {"ok": bool, "seat": str, "n": int, "ids": [int, ...]}
+
+    ok=False means the answer could not be computed (log_event unreachable
+    or unparseable) — a caller must render that as unknown, never as "these
+    rows don't inject".
+    """
+    agent, _, submode = seat.partition("/")
+    agent = agent.lower()
+    submode = submode.lower() or "chat"
+    out = {"ok": True, "seat": f"{agent}/{submode}", "n": 0, "ids": []}
+    if not agent or submode == "review":
+        return out
+    out["n"] = n = inject_count(_config(), agent, submode)
+    if n <= 0:
+        return out
+    raw = tail(out["seat"], n, as_json=True)
+    if not raw:
+        # No entries and a failed call are indistinguishable in the text
+        # tail, so json mode is asked for explicitly: empty output here
+        # means the call itself produced nothing.
+        out["ok"] = False
+        return out
+    try:
+        rows = json.loads(raw)
+        out["ids"] = [int(r["id"]) for r in rows if r.get("id") is not None]
+    except (json.JSONDecodeError, ValueError, TypeError, KeyError):
+        out["ok"] = False
+    return out
 
 
 def build_context(agent: str, submode: str, entries: str, n: int) -> str:
@@ -185,6 +228,20 @@ def build_context(agent: str, submode: str, entries: str, n: int) -> str:
 
 
 def main() -> int:
+    # `--explain <agent/seat>` — machine mode, no stdin contract: prints the
+    # injection answer for a seat as JSON (see explain()). Consumers that
+    # display or verify injections call this; the kill switch below is a
+    # session-time gate, not part of the answer.
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--explain":
+        seat = argv[1] if len(argv) > 1 else ""
+        if not seat:
+            print("--explain needs a seat (agent or agent/submode)",
+                  file=sys.stderr)
+            return 2
+        print(json.dumps(explain(seat)))
+        return 0
+
     if os.environ.get("JSTACK_TIMELINE_INJECT_DISABLED") or \
             os.environ.get("JSTACK_CONTINUITY_INJECT_DISABLED"):
         return 0

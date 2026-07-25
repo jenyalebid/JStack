@@ -40,11 +40,19 @@ echo "- memory index line" > "$CLAUDE/projects/$KEY/memory/MEMORY.md"
 cat > "$CLAUDE/jstack/review.json" <<EOF
 {"agent_root": "$FIX/Agents", "timeline_inject": {"*/chat": 2}}
 EOF
+# Origin-aware stub: the injection view is `tail --origin direct`. A caller
+# that drops the flag gets the cron line too — which is how a re-derived
+# injection window (any consumer that doesn't ask for the direct view) shows
+# up as an auto row in the render.
 cat > "$TMP/log_event" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = "tail" ] || exit 1
 echo "2026-01-01 — did a thing"
 echo "2026-01-02 — did another thing"
+case " $* " in
+  *" --origin direct "*) ;;
+  *) echo "2026-01-03 — published by a cron" ;;
+esac
 EOF
 chmod +x "$TMP/log_event"
 
@@ -101,6 +109,12 @@ echo "$OUT" | grep -q "memory index line" || fail "memory index missing"
 # 5. timeline entries present via stub log_event
 echo "$OUT" | grep -q "did another thing" || fail "timeline entries missing"
 echo "$OUT" | grep -q 'seat `alpha/chat`' || fail "seat resolution wrong"
+
+# 5b. the injection carries the human-driven narrative only — pict must ask
+# for the direct view, exactly as the hook does. An auto row in the render
+# means the emulation drifted off the injection law it claims to preview.
+echo "$OUT" | grep -q "published by a cron" \
+  && fail "emulated injection carried an auto row (tail asked without --origin direct)"
 
 # 6. headless preview: interactive_only seat goes quiet
 cat > "$CLAUDE/jstack/review.json" <<EOF

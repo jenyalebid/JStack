@@ -3,11 +3,17 @@
 
 A file on disk is not context in a session. This hook closes the loop on the
 timeline (the single running memory): on session start it resolves the agent +
-sub-mode from the session's cwd and injects that seat's last N timeline entries
-as SessionStart additionalContext, so the session starts sighted instead of
-cold. The WRITE half is the session-end engine (selfwrite/review) and the Stop
-hook for auto sessions — both log via `log_event <agent/submode> ...`; the
-injection reads back through `log_event tail`.
+sub-mode from the session's cwd and injects everything that seat's last N
+SESSIONS wrote as SessionStart additionalContext, so the session starts sighted
+instead of cold. The WRITE half is the session-end engine (selfwrite/review)
+and the Stop hook for auto sessions — both log via `log_event <agent/submode>
+...`; the injection reads back through `log_event tail --sessions`.
+
+The window unit is the session, not the entry: "the last ten times I sat in
+this seat" is what a person resuming actually means, and it holds steady when
+a session writes more than one entry (pipeline consolidations, multi-topic
+days) — an entry-counted window would quietly shorten the recalled history
+exactly then. Rows with no session_id count as one session each.
 
 Injection fires ONLY into live, human-driven sessions — that is the point of
 it: a person sitting down mid-history. Headless spawns (schedulers, watchers,
@@ -16,12 +22,15 @@ config. The content law is the mirror image: only `origin=direct` entries
 ride the injection (`log_event tail --origin direct`) — auto sessions
 neither receive injections nor appear in them.
 
-Which seats get injected, and how many entries, is host config — the
+Which seats get injected, and how many SESSIONS deep, is host config — the
 `timeline_inject` map in $JSTACK_REVIEW_CONFIG (~/.claude/jstack/review.json):
 
     "timeline_inject": {"alpha/chat": 10, "*/pm": 10, "*/social": 10}
 
-Values are an int, or a legacy {"n": N, ...} dict (extra keys ignored). Match
+Values are an int session count, or a dict carrying it as {"sessions": N} (or
+legacy {"n": N}; extra keys ignored — pre-session-window configs read as
+session counts, which is the same number for the common one-entry session and
+strictly more history otherwise, never less). Match
 is per-dir, nearest wins: at each depth exact "agent/seat" beats wildcard
 "*/seat", then the seat's parent dir is tried ("alpha/social/chat" falls back
 to "*/social"). Seats with no match anywhere up get nothing. No config key →
@@ -130,12 +139,13 @@ def _is_interactive() -> bool:
 
 
 def inject_count(cfg: dict, agent: str, submode: str) -> int:
-    """Entries to inject for a seat — per-dir, nearest match wins.
+    """Sessions to inject for a seat — per-dir, nearest match wins.
 
     At each depth the exact "agent/seat" key beats "*/seat"; no hit → try the
-    seat's parent dir. Values are an int or a legacy {"n": N, ...} dict (extra
-    keys ignored — whether to inject at all is the caller's live-session gate,
-    not per-seat config)."""
+    seat's parent dir. Values are an int, or a dict carrying the count as
+    "sessions" (legacy "n" honored — same key, now read as sessions; extra
+    keys ignored — whether to inject at all is the caller's live-session
+    gate, not per-seat config)."""
     inject = cfg.get("timeline_inject")
     if not isinstance(inject, dict):
         return 0
@@ -146,7 +156,9 @@ def inject_count(cfg: dict, agent: str, submode: str) -> int:
                 continue
             val = inject[key]
             try:
-                return int(val.get("n", 0)) if isinstance(val, dict) else int(val)
+                if isinstance(val, dict):
+                    return int(val.get("sessions", val.get("n", 0)))
+                return int(val)
             except (TypeError, ValueError):
                 return 0
         if "/" not in seat:
@@ -159,7 +171,7 @@ def tail(seat: str, n: int, as_json: bool = False) -> str:
     # it carries the seat's human-driven narrative only. Auto sessions
     # (origin=indirect: crons, publish wakes, spawned work) neither receive
     # injections (the live-session gate above) nor ride in them.
-    cmd = [str(PLUGIN_BIN / "log_event"), "tail", seat, "-n", str(n),
+    cmd = [str(PLUGIN_BIN / "log_event"), "tail", seat, "--sessions", str(n),
            "--origin", "direct"]
     if as_json:
         cmd.append("--json")
@@ -183,7 +195,11 @@ def explain(seat: str) -> dict:
     hypothetical "if a person sat down in this seat right now", which is
     what a marker in a UI means. Shape:
 
-        {"ok": bool, "seat": str, "n": int, "ids": [int, ...]}
+        {"ok": bool, "seat": str, "sessions": int, "ids": [int, ...]}
+
+    `sessions` is the configured window depth (0 = this seat injects
+    nothing); `ids` are the entry ids inside it — more than one per session
+    when a session logged more than once.
 
     ok=False means the answer could not be computed (log_event unreachable
     or unparseable) — a caller must render that as unknown, never as "these
@@ -192,10 +208,10 @@ def explain(seat: str) -> dict:
     agent, _, submode = seat.partition("/")
     agent = agent.lower()
     submode = submode.lower() or "chat"
-    out = {"ok": True, "seat": f"{agent}/{submode}", "n": 0, "ids": []}
+    out = {"ok": True, "seat": f"{agent}/{submode}", "sessions": 0, "ids": []}
     if not agent or submode == "review":
         return out
-    out["n"] = n = inject_count(_config(), agent, submode)
+    out["sessions"] = n = inject_count(_config(), agent, submode)
     if n <= 0:
         return out
     raw = tail(out["seat"], n, as_json=True)
@@ -217,8 +233,9 @@ def build_context(agent: str, submode: str, entries: str, n: int) -> str:
     seat = f"{agent}/{submode}"
     return (
         "<jstack-timeline>\n"
-        f"Injected on entry by JStack — the last timeline entries {seat} (your seat) "
-        "wrote, oldest first. This is your own recent history: you are not starting "
+        f"Injected on entry by JStack — everything {seat} (your seat) wrote across "
+        f"its last {n} sessions, oldest first. This is your own recent history: "
+        "you are not starting "
         "cold. Build on it — don't re-discover, re-propose, or re-litigate what's "
         "already below. A `↳ verdict:` line is the independent review's call on that "
         "run — if its note names a move to avoid, pick differently.\n\n"

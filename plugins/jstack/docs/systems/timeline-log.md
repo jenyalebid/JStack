@@ -7,7 +7,7 @@ The timeline is the single running memory: a sqlite store of seat-tagged entries
 | Piece | Path | Role |
 |-------|------|------|
 | Writer/query CLI | `bin/log_event` | The only sanctioned writer; also serves seat queries, recalls, verdicts |
-| Read-half hook | `hooks/session-start-inject.py` | Injects a seat's last N entries on SessionStart (`timeline_inject` config) |
+| Read-half hook | `hooks/session-start-inject.py` | Injects everything a seat's last N **sessions** wrote, on SessionStart (`timeline_inject` config) |
 | User command | `skills/recall/SKILL.md` | `/jstack:recall` — date words + scope → `log_event recall` → readable outline |
 | Format rule | `rules-stage/timeline.md` | Auto-loads (via `/jstack:install-rules` + path-rule-injection) when the timeline is touched — carries the format spec and editorial bar |
 | Tests | `tests/log-event.sh`, `tests/timeline-injection.sh` | Hermetic CLI-contract + injection-contract verification |
@@ -41,17 +41,17 @@ log_event show <id>                                  # everything one entry hold
 log_event verdict <agent[/submode]> shipped|drift|blocked|empty --note "..."
 ```
 
-Recall routing: a date question ("what happened Monday?") is `recall`; a keyword question ("when did we ship X?") is `grep`; either chains into `show <id>` for one entry's full depth. All are cheaper and more reliable than transcript archaeology — and they are the same mechanism as seat injection: one store, different read shapes (`tail` = last-N per seat, `recall` = per date, `grep` = per keyword, `show` = per entry).
+Recall routing: a date question ("what happened Monday?") is `recall`; a keyword question ("when did we ship X?") is `grep`; either chains into `show <id>` for one entry's full depth. All are cheaper and more reliable than transcript archaeology — and they are the same mechanism as seat injection: one store, different read shapes (`tail` = last-N entries or last-N sessions per seat, `recall` = per date, `grep` = per keyword, `show` = per entry).
 
 Seat tails also match the agent's submode-less rows (pre-seat-era migrations) so seats aren't blind right after migration; those age out of the last-N window naturally. `verdict` stamps an independent review's call on the seat's latest entry — it rides `tail`, `recall`, and injection (`↳ verdict:`).
 
 ### Asking what a seat gets injected
 
-The injection window is not "the seat's last N rows": `tail --origin direct` drops auto/cron entries (`origin=indirect` — they neither receive injections nor ride in them), and a per-dir config walk decides N. Anything that displays, checks, or audits an injection asks the injector for its own answer instead of re-deriving it:
+The injection window is not "the seat's last N rows": it counts **sessions** (`tail --sessions N` — one sitting is one unit, and a session that logged three times rides whole), `--origin direct` drops auto/cron entries (`origin=indirect` — they neither receive injections nor ride in them), and a per-dir config walk decides N. Anything that displays, checks, or audits an injection asks the injector for its own answer instead of re-deriving it:
 
 ```bash
 hooks/session-start-inject.py --explain <agent[/submode]>
-# {"ok": true, "seat": "alpha/social/chat", "n": 10, "ids": [3099, 3567, ...]}
+# {"ok": true, "seat": "alpha/social/chat", "sessions": 10, "ids": [3099, 3567, ...]}
 ```
 
 `ok: false` means the answer couldn't be computed — a consumer renders that as unknown, never as "nothing injects". Liveness is deliberately not part of the answer: it reports what a person sitting down in that seat would receive, which is what a marker in a UI means. A second implementation of this window is a second truth, and the copy that isn't the injector is the one that goes stale and lies.
@@ -68,7 +68,7 @@ hooks/session-start-inject.py --explain <agent[/submode]>
 |------|---------|---------|
 | `JSTACK_TIMELINE_DIR` | `~/Logs/Timeline` | Directory holding `timeline.db` |
 | `JSTACK_TIMELINE_ORIGIN` | unset (→ direct) | Default origin for writes in this process tree — spawn plumbing sets `indirect` on unattended sessions |
-| `timeline_inject` (review config) | none | `{"agent/submode": N, "*/submode": N}` — seats injected on SessionStart |
+| `timeline_inject` (review config) | none | `{"agent/submode": N, "*/submode": N}` — seats injected on SessionStart, N = **sessions** deep |
 
 Self-contained python3 stdlib — no venv, no host imports. Safe to call from hooks, crons, spawned reviews, or interactively.
 

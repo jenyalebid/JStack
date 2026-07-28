@@ -144,7 +144,8 @@ and recall are the same mechanism — one store, different read shapes.
 
 ```bash
 log_event tail alpha/chat -n 10     # a seat's recent history, all origins
-log_event tail alpha/chat -n 10 --origin direct  # human-driven only (what injection shows)
+log_event tail alpha/chat --sessions 10 --origin direct  # the seat's last 10 sittings,
+                                    # human-driven only — exactly what injection shows
 log_event tail alpha -n 20          # all of an agent's seats
 log_event tail alpha/chat --json    # structured: ids, session ids, origins, verdicts, context
 log_event recall 2026-04-28                    # a day replayed, all seats

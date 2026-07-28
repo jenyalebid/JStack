@@ -327,6 +327,26 @@ t=$("$LOG_EVENT" tail hank/chat -n 10)
 "$LOG_EVENT" tail hank/chat --origin indirect >/dev/null 2>&1
 [[ $? -eq 2 ]] && pass "tail --origin rejects non-direct values" || fail "tail --origin value gate"
 
+# ---- tail --sessions: the window counts sittings, not entries ----------------
+# One session that logged three times is ONE unit and comes back whole; a row
+# with no session id is its own session (legacy rows can't collapse into one
+# bucket and eat the window).
+"$LOG_EVENT" iris/chat --at 08:00 --date "$DAY" --session s-one "Iris session one" >/dev/null
+"$LOG_EVENT" iris/chat --at 08:30 --date "$DAY" --session s-two "Iris two first" >/dev/null
+"$LOG_EVENT" iris/chat --at 09:00 --date "$DAY" --session s-two "Iris two second" >/dev/null
+"$LOG_EVENT" iris/chat --at 09:30 --date "$DAY" "Iris sessionless" >/dev/null
+t=$("$LOG_EVENT" tail iris/chat --sessions 2)
+[[ "$t" == *"Iris sessionless"* && "$t" == *"Iris two first"* && "$t" == *"Iris two second"* \
+   && "$t" != *"Iris session one"* ]] \
+  && pass "tail --sessions windows by session, whole sessions ride" \
+  || fail "tail --sessions window ($t)"
+t=$("$LOG_EVENT" tail iris/chat -n 2)
+[[ "$t" == *"Iris two second"* && "$t" != *"Iris two first"* ]] \
+  && pass "tail -n still counts entries" || fail "tail -n entry count ($t)"
+t=$("$LOG_EVENT" tail iris/chat --sessions 99)
+[[ "$t" == *"Iris session one"* ]] \
+  && pass "tail --sessions beyond history returns all" || fail "tail --sessions overflow"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "log-event: $fails FAILED" >&2

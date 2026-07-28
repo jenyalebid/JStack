@@ -69,6 +69,11 @@ Kill switch: JSTACK_REVIEW_DISABLED=1. Loop guard: SKIP_SESSION_HOOK=1 is
 set on every spawn (the SessionEnd hook honors it).
 """
 
+# PEP 604 annotations (str | None) evaluate at def time — without this the
+# file crashes on the python3 a launchd/cron caller resolves (macOS system
+# 3.9). The engine is spawned by plumbing, not only by interactive shells.
+from __future__ import annotations
+
 import fcntl
 import json
 import os

@@ -91,7 +91,7 @@ Log line contract (dashboards parse this): the self-write emits `YYYY-MM-DD HH:M
 What a session *did* goes to the timeline as a seat-tagged entry (`log_event {agent}/{submode}`) — the thread the seat's next run reads on entry so it builds on prior runs instead of starting cold. The session-end self-write logs it (the `review` action does the same in its timeline phase); auto sessions log theirs in-session via the Stop hook. Store and views:
 
     log_event <agent[/submode]> "headline" [--at HH:MM] [--date YYYY-MM-DD] [--detail "..."]... [--session <sid>]
-    log_event tail <agent[/submode]> [-n N] [--json]
+    log_event tail <agent[/submode]> [-n N | --sessions N] [--json]
     log_event verdict <agent[/submode]> shipped|drift|blocked|empty --note "..."
 
 Storage is sqlite (`{timeline_dir}/timeline.db`, WAL — concurrent session-ends are safe) — the only artifact; reads and writes both go through `log_event`. Entries carry an `origin` (`direct` = a human drove the session, `indirect` = cron/gateway/spawned) resolved flag > `JSTACK_TIMELINE_ORIGIN` env > direct; the engine sets the env on its spawns (`indirect` for `auto_review_submodes` crons, `direct` otherwise) and the Stop hook's instructed command passes `--origin indirect`. `verdict` stamps an independent review's call on a seat's latest entry; it rides `tail`/injection. Stdlib only, no host dependency — portable to any machine running the plugin.

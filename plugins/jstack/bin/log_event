@@ -7,9 +7,12 @@ Write:
               [--pipeline-task <repo>#<issue>] [--session <id>]
 
 Query / admin (first positional is the subcommand):
-    log_event tail <agent[/submode]> [-n N] [--json]
-        Last N entries for a seat, oldest→newest. Seat form filters agent+submode;
-        bare agent matches all its submodes. Human format includes verdict lines.
+    log_event tail <agent[/submode]> [-n N | --sessions N] [--json]
+        A seat's recent history, oldest→newest. -n counts ENTRIES; --sessions
+        counts SESSIONS and returns every entry those sessions wrote (the
+        window seat injection uses — one sitting is one unit, however many
+        entries it logged). Seat form filters agent+submode; bare agent
+        matches all its submodes. Human format includes verdict lines.
     log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]
     log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> [<seat>|all] [--full] [--json]
     log_event show <id>
@@ -28,6 +31,11 @@ pass the submode when the seat is known (e.g. alpha/chat).
 
 Self-contained: python3 stdlib only. No venv, no host imports.
 """
+# PEP 604 annotations (str | None) are evaluated at def time without this —
+# which crashes on the python3 a launchd/cron caller gets (macOS system 3.9),
+# even though every interactive shell here resolves a modern one. Any host
+# process may shell out to this binary; it must run on the old one.
+from __future__ import annotations
 
 import json
 import os
@@ -259,51 +267,100 @@ def set_verdict(seat: str, verdict: str, note: str) -> str | None:
 
 # -------------------------------------------------------------------- queries
 
-def tail_entries(seat: str, n: int, origin: str | None = None) -> list[dict]:
-    """Last n entries for a seat, oldest→newest. Bare agent = all submodes.
+_ENTRY_COLS = ("id, date, time, agent, submode, headline, details, verdict,"
+               " verdict_note, session_id, context, origin")
+
+# A row with no session_id is its own session — legacy (pre-session) rows and
+# any writer that omitted --session must not collapse into one giant bucket
+# that eats the whole window.
+_SESSION_KEY = "COALESCE(NULLIF(session_id, ''), 'entry:' || id)"
+
+
+def _seat_filter(seat: str) -> tuple[str, tuple]:
+    """(where, params) selecting a seat's rows.
 
     Seats are directories: a seat query matches its own dir plus every
     ancestor dir (social/chat also pulls social), never siblings — a chat
     seat's tail can't pick up a neighboring work dir's lineage. It also
     matches the agent's submode-less rows — entries migrated from the
-    pre-seat era (and any bare-source writes). Broader rows age out of the
-    last-n window as seat-tagged entries accrue; without this, every seat
-    would boot blind right after migration.
+    pre-seat era (and any bare-source writes). Bare agent = all submodes."""
+    agent, submode = parse_source(seat)
+    if not submode:
+        return "agent = ?", (agent,)
+    lineage = [submode]
+    while "/" in lineage[-1]:
+        lineage.append(lineage[-1].rsplit("/", 1)[0])
+    lineage.append("")
+    marks = ",".join("?" * len(lineage))
+    return f"agent = ? AND submode IN ({marks})", (agent, *lineage)
+
+
+def _entry_row(row: tuple) -> dict:
+    eid, date, ts, a, s, h, dt, v, vn, sid, ctx, org = row
+    return {"id": eid, "date": date, "time": ts, "agent": a, "submode": s,
+            "headline": h, "details": json.loads(dt),
+            "verdict": v, "verdict_note": vn,
+            "session_id": sid, "context": ctx, "origin": org}
+
+
+def tail_entries(seat: str, n: int, origin: str | None = None) -> list[dict]:
+    """Last n entries for a seat, oldest→newest.
+
+    Broader (submode-less) rows age out of the last-n window as seat-tagged
+    entries accrue; without them a seat would boot blind right after
+    migration.
 
     origin='direct' keeps only human-driven entries (auto/cron rows are
     origin='indirect'; pre-origin legacy '' rows count as direct). This is
     the injection view — a person sitting down reads the seat's worked
     narrative, not the auto flood's publish log."""
-    agent, submode = parse_source(seat)
-    con = connect()
-    if submode:
-        lineage = [submode]
-        while "/" in lineage[-1]:
-            lineage.append(lineage[-1].rsplit("/", 1)[0])
-        lineage.append("")
-        marks = ",".join("?" * len(lineage))
-        where = f"agent = ? AND submode IN ({marks})"
-        params: tuple = (agent, *lineage)
-    else:
-        where = "agent = ?"
-        params = (agent,)
+    where, params = _seat_filter(seat)
     if origin == "direct":
         where += " AND origin != 'indirect'"
+    con = connect()
     rows = con.execute(
-        f"SELECT id, date, time, agent, submode, headline, details, verdict,"
-        f" verdict_note, session_id, context, origin FROM entries WHERE {where}"
+        f"SELECT {_ENTRY_COLS} FROM entries WHERE {where}"
         " ORDER BY date DESC, time DESC, id DESC LIMIT ?", params + (n,),
     ).fetchall()
     con.close()
-    out = []
-    for eid, date, ts, a, s, h, dt, v, vn, sid, ctx, org in reversed(rows):
-        out.append({
-            "id": eid, "date": date, "time": ts, "agent": a, "submode": s,
-            "headline": h, "details": json.loads(dt),
-            "verdict": v, "verdict_note": vn,
-            "session_id": sid, "context": ctx, "origin": org,
-        })
-    return out
+    return [_entry_row(r) for r in reversed(rows)]
+
+
+def tail_session_window(seat: str, sessions: int,
+                        origin: str | None = None) -> list[dict]:
+    """Every entry the seat's last `sessions` sessions wrote, oldest→newest.
+
+    The window unit is the SESSION, not the entry — what a person sitting
+    down wants is "the last ten times I sat here", and a session that wrote
+    three entries is still one sitting. An entry-counted window silently
+    shortens the recalled history whenever a session logs more than once
+    (pipeline consolidations, multi-topic days), which is exactly when the
+    history matters most. Rows with no session_id count as one session each
+    (see _SESSION_KEY).
+
+    Session recency is its newest entry's timestamp; all of a chosen
+    session's entries ride, and the returned entries stay in chronological
+    order across sessions."""
+    where, params = _seat_filter(seat)
+    if origin == "direct":
+        where += " AND origin != 'indirect'"
+    con = connect()
+    keys = [r[0] for r in con.execute(
+        f"SELECT {_SESSION_KEY} AS skey FROM entries WHERE {where}"
+        " GROUP BY skey ORDER BY MAX(date || ' ' || time) DESC, MAX(id) DESC"
+        " LIMIT ?", params + (max(sessions, 0),),
+    )]
+    if not keys:
+        con.close()
+        return []
+    marks = ",".join("?" * len(keys))
+    rows = con.execute(
+        f"SELECT {_ENTRY_COLS} FROM entries WHERE {where}"
+        f" AND {_SESSION_KEY} IN ({marks}) ORDER BY date, time, id",
+        params + tuple(keys),
+    ).fetchall()
+    con.close()
+    return [_entry_row(r) for r in rows]
 
 
 def format_tail(entries: list[dict]) -> str:
@@ -421,7 +478,8 @@ def _write_usage() -> str:
             '       (--at/--date default to now/today, machine-local — omit '
             'unless logging an earlier event;\n'
             '        --origin defaults from $JSTACK_TIMELINE_ORIGIN, else direct)\n'
-            '   or: log_event tail <agent[/submode]> [-n N] [--json]\n'
+            '   or: log_event tail <agent[/submode]> [-n N | --sessions N] '
+            '[--json]\n'
             '   or: log_event grep "<substring>" [--seat <agent[/submode]>] '
             '[--since YYYY-MM-DD] [--json]\n'
             '   or: log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> '
@@ -432,12 +490,14 @@ def _write_usage() -> str:
 
 
 def _cmd_tail(rest: list[str]) -> int:
-    seat, n, as_json, origin = None, 10, False, None
+    seat, n, sessions, as_json, origin = None, 10, None, False, None
     i = 0
     while i < len(rest):
         a = rest[i]
         if a == "-n":
             n = int(rest[i + 1]); i += 2
+        elif a == "--sessions":
+            sessions = int(rest[i + 1]); i += 2
         elif a == "--json":
             as_json = True; i += 1
         elif a == "--origin":
@@ -459,7 +519,10 @@ def _cmd_tail(rest: list[str]) -> int:
     if not seat:
         print("log_event tail: seat required (agent or agent/submode)", file=sys.stderr)
         return 2
-    entries = tail_entries(seat, n, origin=origin)
+    if sessions is not None:
+        entries = tail_session_window(seat, sessions, origin=origin)
+    else:
+        entries = tail_entries(seat, n, origin=origin)
     if as_json:
         print(json.dumps(entries, ensure_ascii=False, indent=2))
     elif entries:

@@ -9,7 +9,8 @@
 #   (a) agent-root cwd → "chat" seat; injects that seat's entries
 #   (b) submode cwd    → that seat's entries only, other seats excluded
 #   (c) legacy bare-agent rows (submode-less, pre-migration) ride seat tails
-#   (d) -N cap honored (only the last N entries appear)
+#   (d) N cap honored — the window counts SESSIONS (session-less rows are one
+#       session each, so N rows here); a multi-entry session rides whole
 #   (e) verdict stamps ride the injection
 #   (f) review submode → no output
 #   (g) non-workspace cwd → no output
@@ -80,11 +81,35 @@ pm_out=$(ctx "$ROOT/Gamma/pm")
 echo "$pm_out" | grep -q "Legacy bare entry" \
   && pass "legacy bare rows ride seat tail" || fail "legacy bare rows ride seat tail"
 
-# (d) -N cap: chat allows 3 → oldest chat entries fall off
+# (d) N cap: chat allows 3 sessions; these rows carry no session id, so each
+# is its own session → oldest chat entries fall off at 3.
 echo "$out" | grep -q "Chat entry one" && fail "N cap honored (entry one should be cut)" \
   || pass "N cap honored"
 echo "$out" | grep -q "Chat entry two" && pass "N window correct (two..four)" \
   || fail "N window correct (two missing)"
+
+# (d2) the window unit is the SESSION, not the entry: one session that logged
+# three times spends ONE of the three slots and rides whole. An entry-counted
+# window would show only its last entry and drop the two older sessions.
+CFG_S="$TMP/review-sessions.json"
+printf '{ "agent_root": "%s", "timeline_inject": {"delta/chat": 3} }' "$ROOT" > "$CFG_S"
+mkdir -p "$ROOT/Delta/chat"; printf '# Delta\n' > "$ROOT/Delta/CLAUDE.md"
+"$LOG_EVENT" delta/chat --at 09:00 --date "$DAY" --session sess-old-a "Delta oldest" >/dev/null
+"$LOG_EVENT" delta/chat --at 09:30 --date "$DAY" --session sess-old-b "Delta older" >/dev/null
+"$LOG_EVENT" delta/chat --at 10:00 --date "$DAY" --session sess-multi "Delta multi first" >/dev/null
+"$LOG_EVENT" delta/chat --at 10:30 --date "$DAY" --session sess-multi "Delta multi second" >/dev/null
+"$LOG_EVENT" delta/chat --at 11:00 --date "$DAY" --session sess-multi "Delta multi third" >/dev/null
+d_out=$(ctx "$ROOT/Delta/chat" "$CFG_S")
+if echo "$d_out" | grep -q "Delta multi first" && echo "$d_out" | grep -q "Delta multi third"; then
+  pass "multi-entry session rides whole"
+else
+  fail "multi-entry session rides whole ($d_out)"
+fi
+if echo "$d_out" | grep -q "Delta oldest" && echo "$d_out" | grep -q "Delta older"; then
+  pass "session window keeps the two older sessions (3 sessions, 5 entries)"
+else
+  fail "session window keeps the two older sessions ($d_out)"
+fi
 
 # (e) verdict rides injection
 echo "$pm_out" | grep -q "↳ verdict: blocked — waiting on a decision" \
@@ -209,7 +234,7 @@ else
 fi
 
 # (m) --explain: the injector answers "what would this seat be injected" as
-# data (ids + N). Anything that DISPLAYS or checks an injection asks this —
+# data (ids + session depth). Anything that DISPLAYS or checks an injection asks this —
 # a consumer that re-derives the window from the db grows its own second
 # truth and drifts (a UI that marks the cron flood as injected). The answer
 # obeys the same two laws as the injection itself: the config walk sets N,
@@ -225,9 +250,9 @@ field() { python3 -c 'import json,sys;print(json.load(sys.stdin)[sys.argv[1]])' 
 m_out=$(explain gamma/chat)
 cron_id=$(id_of gamma/chat "Published by a cron")
 live_id=$(id_of gamma/chat "Chat entry four")
-[[ "$(echo "$m_out" | field ok)" == "True" && "$(echo "$m_out" | field n)" == "3" ]] \
-  && pass "--explain answers ok with the seat's configured N" \
-  || fail "--explain answers ok with the seat's configured N ($m_out)"
+[[ "$(echo "$m_out" | field ok)" == "True" && "$(echo "$m_out" | field sessions)" == "3" ]] \
+  && pass "--explain answers ok with the seat's configured session count" \
+  || fail "--explain answers ok with the seat's configured session count ($m_out)"
 m_ids=$(echo "$m_out" | field ids)
 # Both ids must exist, or the two legs below would pass on nothing.
 if [[ -z "$cron_id" || -z "$live_id" ]]; then
@@ -243,13 +268,13 @@ else
   fail "--explain names the rows the injection carries ($m_ids)"
 fi
 
-# unconfigured seat and the review seat both answer n=0 — never a guess
-[[ "$(explain gamma/social | field n)" == "0" ]] \
-  && pass "--explain: unconfigured seat answers n=0" \
-  || fail "--explain: unconfigured seat answers n=0"
-[[ "$(explain gamma/review "$CFG2" | field n)" == "0" ]] \
-  && pass "--explain: review seat answers n=0" \
-  || fail "--explain: review seat answers n=0"
+# unconfigured seat and the review seat both answer sessions=0 — never a guess
+[[ "$(explain gamma/social | field sessions)" == "0" ]] \
+  && pass "--explain: unconfigured seat answers sessions=0" \
+  || fail "--explain: unconfigured seat answers sessions=0"
+[[ "$(explain gamma/review "$CFG2" | field sessions)" == "0" ]] \
+  && pass "--explain: review seat answers sessions=0" \
+  || fail "--explain: review seat answers sessions=0"
 
 echo
 if [[ $fails -gt 0 ]]; then

@@ -88,15 +88,13 @@ These rules carry team conventions; the skills carry framework truth. Where they
 
 ## Build is not verify
 
-A successful build tells you nothing about whether the feature works. Always verify visually — run on simulator, walk the user flow, screenshot the result. "The compiler is happy" is the floor, not the ceiling.
+A successful build tells you nothing about whether the feature works. Always verify visually — install on a simulator, walk the user flow, screenshot the result. "The compiler is happy" is the floor, not the ceiling.
 
-## Live iteration: build automatically, NEVER install automatically
+## Live iteration: edit → build → install → verify → report
 
-During a live session with the user, when they request a code edit: edit → build → report. Don't ask "want me to build?" — the build IS the verification step.
+When the user requests a code edit, run the whole loop and report the result. Don't ask "want me to build?", and don't stop at a green compile to ask permission to install — a simulator install is local, reversible, and the only thing that turns a build into evidence. Load-bearing changes get walked and screenshotted, not described.
 
-**Install — any install, simulator or hardware — needs explicit per-action authorization, same gate as `git push`.** That includes installing via Xcode, `xcrun simctl install`, or any wrapper script. After a green build, stop and report "built green, ready to install" — wait for the user's go.
-
-Exception: if the user explicitly said "run on sim X" as a standing directive for this loop, install+launch on every rebuild until that loop ends. Don't re-ask each time.
+Installing on physical hardware or distributing a build to testers leaves this machine — ask first for those.
 
 ## Git discipline — major-version branches
 
@@ -104,7 +102,7 @@ Exception: if the user explicitly said "run on sim X" as a standing directive fo
 - Task branches cut from the active version branch, not `main`.
 - Live session = commit to active version branch directly. No PR ceremony unless asked.
 - Don't commit every individual edit during live iteration. One commit at a natural stopping point.
-- Never `git push` without explicit per-action authorization. "Commit and push" applies to THAT push only.
+- Stage exactly your own files. On a machine with concurrent sessions, never sweep another session's dirty tree into your commit.
 
 ## Widget / extension version parity
 

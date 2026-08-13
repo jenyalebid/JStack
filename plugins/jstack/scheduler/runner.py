@@ -79,11 +79,26 @@ def rate_limit_reset(output: str, now: datetime) -> "datetime|None":
     job's next_run is never pinned, and the run comes back hours later on a
     stale due-time — duplicate work on a live account.
 
-    The CLI quotes a clock time with no date even for the WEEKLY cap, whose real
-    reset can be days out, so a weekly defer lands early and re-limits. That is
-    the intended trade (see engine._defer_for_rate_limit): an early retry costs
-    a fast-failing spawn and is bounded by the defer cap, while surrendering the
-    slot loses the day's work outright."""
+    A BARE clock is all this reads, and that is deliberate — do not "fix" it to
+    parse the dated form. The CLI quotes a date once the reset is more than a
+    day out, which in practice means the WEEKLY cap: "resets 5am" when the reset
+    is tomorrow morning, "resets Aug 15 at 5am" when it is two days out. _RESET_RE
+    requires the digits to follow "resets" immediately, so the dated form does not
+    match and this returns None — which routes the job to the blind-retry arm in
+    engine._defer_for_rate_limit (a fixed interval, bounded by the defer cap)
+    instead of pinning next_run to the quoted moment.
+
+    That is the right outcome, because the quoted weekly reset overstates the
+    outage. On 2026-08-13 the message read "resets Aug 15 at 5am" and rate-limited
+    19 runs fleet-wide between 05:31 and 07:06; every job from 08:00 on succeeded,
+    so the cap in fact lifted in about two and a half hours, not two days. Honouring
+    that date would have surrendered two days of every rate-limited job — for a
+    publish wake, the post itself. The blind arm's runway covers a real outage of
+    this length; the quoted one does not describe it.
+
+    So the asymmetry is intended: an early retry costs a fast-failing spawn and is
+    bounded by the defer cap, while surrendering the slot loses the work outright.
+    Parse a same-day clock, distrust a multi-day date."""
     if not is_usage_limit(output):
         return None
     m = _RESET_RE.search(output)

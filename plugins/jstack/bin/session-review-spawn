@@ -873,6 +873,10 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
 
     _log(f"SELFWRITE {session_id[:8]} → {agent}/{submode} "
          f"(dub {dub_id[:8]}{', delta since ' + boundary if boundary else ''})")
+    # Snapshot the store before the spawn, exactly as spawn_review does: the
+    # artifact of a self-write is a timeline row, and a clean exit is not
+    # evidence that one appeared.
+    pre_max_id = _timeline_max_id(CFG["timeline_dir"])
     try:
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True,
@@ -902,7 +906,30 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
              f"exit {result.returncode}: {(result.stderr or '')[:200]}")
         return
 
-    _log(f"SELFWRITE_DONE {session_id[:8]} → {agent} ({len(result.stdout)} chars)")
+    # Three outcomes, three log lines. SELFWRITE_DONE used to fire on exit 0
+    # alone, so a dub that wrote nothing — or claimed a log_event that never
+    # executed — was indistinguishable from one that filed an entry, and the
+    # seat silently kept booting cold while the log read as success.
+    #
+    # Skipping IS legitimate here (the prompt says so: "if nothing this session
+    # is timeline-worthy, SKIP this step"), which is why a missing row cannot
+    # simply be an error the way it is on the review path. The claim in the
+    # dub's own output is what separates a deliberate skip from a silent
+    # failure — the same `log_event\b` heuristic validate_review_output uses.
+    out = result.stdout or ""
+    grew = _timeline_max_id(CFG["timeline_dir"]) > pre_max_id
+    claimed = bool(re.search(r"log_event\b", out))
+    # The dub is deleted on every exit path, so its output is the only surviving
+    # record of why nothing was written. Carry a slice of it into the log.
+    tail = " ".join(out.split())[-200:]
+
+    if grew:
+        _log(f"SELFWRITE_DONE {session_id[:8]} → {agent} ({len(out)} chars, +1 entry)")
+    elif claimed:
+        _log(f"SELFWRITE_NOROW {session_id[:8]} → {agent}: claimed log_event but no "
+             f"timeline row appeared (command never executed): {tail}")
+    else:
+        _log(f"SELFWRITE_NOENTRY {session_id[:8]} → {agent}: dub wrote no entry: {tail}")
 
 
 def spawn_review(session_id: str, agent: str, agent_title: str,

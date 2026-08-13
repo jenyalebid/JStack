@@ -78,7 +78,17 @@ All keys optional; defaults are fully portable. Host-relevant keys:
 | `state_dir` | `~/.claude/jstack/review-state` | Claims, debounce markers, slots |
 | `log_file` | `{state_dir}/session-review.log` | Pin to a host path if a dashboard parses it |
 
-Log line contract (dashboards parse this): the self-write emits `YYYY-MM-DD HH:MM:SS SELFWRITE <sid8> → <agent>/<submode>` plus `SELFWRITE_DONE` / `SELFWRITE_FAIL` / `SELFWRITE_TIMEOUT`; the legacy review emits `SPAWN <sid8> → <agent> (...)` plus `DONE` / `INVALID` / `TIMEOUT` / `BLOCKED`.
+Log line contract (dashboards parse this): the self-write emits `YYYY-MM-DD HH:MM:SS SELFWRITE <sid8> → <agent>/<submode>` plus one terminal line — `SELFWRITE_DONE` / `SELFWRITE_NOROW` / `SELFWRITE_NOENTRY` / `SELFWRITE_FAIL` / `SELFWRITE_TIMEOUT`; the legacy review emits `SPAWN <sid8> → <agent> (...)` plus `DONE` / `INVALID` / `TIMEOUT` / `BLOCKED`.
+
+The self-write's artifact is a timeline row, so its terminal line reports what actually landed in the db — not merely that the dub exited 0. The engine snapshots `MAX(id)` before the spawn and compares after, the same check `validate_review_output` applies to the review path:
+
+| Line | Row appeared | Meaning |
+|---|---|---|
+| `SELFWRITE_DONE` | yes | Entry filed. Suffixed `(<n> chars, +1 entry)` |
+| `SELFWRITE_NOROW` | no | The dub's output claimed `log_event` but no row appeared — the command never executed. A real failure |
+| `SELFWRITE_NOENTRY` | no | No claim either: the dub judged nothing timeline-worthy, which the prompt explicitly allows. Not a failure |
+
+`NOROW` and `NOENTRY` both carry the tail of the dub's own output, because the dub transcript is deleted on every exit path and is otherwise the only record of why nothing was written. Distinguishing them matters: a seat whose self-writes silently produce nothing keeps booting cold, and before this split every one of these outcomes logged as `SELFWRITE_DONE`.
 
 ## Kill switches & safety
 

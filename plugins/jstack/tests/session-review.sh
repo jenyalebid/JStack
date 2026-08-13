@@ -305,6 +305,59 @@ line = eng.CFG["log_file"].read_text().strip().splitlines()[-1]
 m2 = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?:SELFWRITE|SPAWN) (\w{8})\S* . (\w+)", line)
 check("SELFWRITE log line matches dashboard regex", bool(m2) and m2.group(3) == "alpha")
 
+# ---- selfwrite outcome reporting ----------------------------------------
+# A clean exit is not evidence a timeline row landed. The three outcomes must be
+# distinguishable in the log, or a seat that never gets written keeps booting
+# cold behind a SELFWRITE_DONE that means nothing.
+import sqlite3 as _sq
+import subprocess as _sp
+
+_tldir = Path(eng.CFG["timeline_dir"])
+_tldir.mkdir(parents=True, exist_ok=True)
+_con = _sq.connect(_tldir / "timeline.db")
+_con.execute("CREATE TABLE IF NOT EXISTS entries "
+             "(id INTEGER PRIMARY KEY AUTOINCREMENT, headline TEXT)")
+_con.commit(); _con.close()
+
+_DUB = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+_proj = tmp / "sw-proj"; _proj.mkdir(exist_ok=True)
+_jsonl = _proj / "sw.jsonl"; _jsonl.write_text('{"cwd":"%s"}\n' % tmp)
+_real_run = eng.subprocess.run
+
+def _selfwrite_case(stdout, writes_row):
+    """spawn_selfwrite with the dub + `claude --print` calls stubbed; returns its log line."""
+    (_proj / f"{_DUB}.jsonl").write_text("{}\n")
+
+    def fake_run(cmd, **kw):
+        if "dub-session" in str(cmd[0]):
+            return _sp.CompletedProcess(cmd, 0, _DUB, "")
+        if writes_row:
+            c = _sq.connect(_tldir / "timeline.db")
+            c.execute("INSERT INTO entries (headline) VALUES ('written')")
+            c.commit(); c.close()
+        return _sp.CompletedProcess(cmd, 0, stdout, "")
+
+    eng.subprocess.run = fake_run
+    try:
+        eng.spawn_selfwrite("11111111-2222-3333-4444-555555555555",
+                            "alpha", "Alpha", "chat", _jsonl)
+    finally:
+        eng.subprocess.run = _real_run
+    lines = eng.CFG["log_file"].read_text().strip().splitlines()
+    return next((l for l in reversed(lines) if " SELFWRITE_" in l), "")
+
+_r = _selfwrite_case("wrote it with log_event", True)
+check("selfwrite: row landed → SELFWRITE_DONE", "SELFWRITE_DONE" in _r and "+1 entry" in _r)
+
+_r = _selfwrite_case("I ran log_event for the seat.", False)
+check("selfwrite: claimed log_event but no row → SELFWRITE_NOROW", "SELFWRITE_NOROW" in _r)
+
+_r = _selfwrite_case("Nothing timeline-worthy this session.", False)
+check("selfwrite: deliberate skip → SELFWRITE_NOENTRY", "SELFWRITE_NOENTRY" in _r)
+
+_r = _selfwrite_case("", False)
+check("selfwrite: silent empty output → SELFWRITE_NOENTRY", "SELFWRITE_NOENTRY" in _r)
+
 # ---- black-hole detection ----------------------------------------------
 # A session dir with no transcript = the CLI never persisted the session
 # (e.g. leaked CLAUDE_CODE_CHILD_SESSION). Must be reported, not skipped.

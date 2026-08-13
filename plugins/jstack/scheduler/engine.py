@@ -383,31 +383,36 @@ class Engine:
         hammer — past the cap, the already-advanced normal schedule stands.
 
         Returns True iff a retry was actually scheduled (next_run pinned). False
-        means no reset time was parsed or the defer cap was reached — the caller
-        must decide the terminal outcome (recurring: normal schedule stands;
-        once: finalize, since there is no schedule to fall back on)."""
+        means the defer cap was reached — the caller must decide the terminal
+        outcome (recurring: normal schedule stands; once: finalize, since there
+        is no schedule to fall back on). A missing reset time is no longer a
+        False on its own: it retries blind, once and recurring alike."""
         jid = job["id"]
         defers = int(st.get("rate_limit_defers") or 0)
         reset_at = getattr(run, "rate_limit_reset_at", None)
         if defers < _MAX_RATE_LIMIT_DEFERS:
-            recurring = (job.get("schedule") or {}).get("kind") != "once"
             if reset_at is not None:
                 reset_ms = int(reset_at.timestamp() * 1000) + _RATE_LIMIT_BUFFER_SECONDS * 1000
                 why = "reset"
-            elif recurring:
+            else:
                 # Rate-limited but the reset time never made it out of the run's
                 # output. Retry blind rather than surrender the slot — a daily
                 # job that "falls back to the normal schedule" here is not
-                # retrying, it is skipping the whole day. A once job keeps the
-                # existing park: it has no schedule to fall back on, and a blind
-                # retry there recreates the dangling-zombie failure.
+                # retrying, it is skipping the whole day.
+                #
+                # A once job takes the same arm, and used to be excluded on the
+                # reasoning that a blind retry "recreates the dangling-zombie
+                # failure". It does not: the zombie was a job left enabled with
+                # next_run NULL, and this arm pins a real next_run before it
+                # returns. Parking was never the only alternative to a zombie,
+                # and treating it as one turned every unparseable rate limit on
+                # a one-shot into dropped work — a one-shot publish wake fired
+                # exactly on time, was rate-limited seconds in, and its post was
+                # never published, with the terminal park reached before a
+                # single retry. The cap below is what bounds this; past it a
+                # once job still finalizes, which is the honest terminal state.
                 reset_ms = _ms(self._now()) + _RATE_LIMIT_BLIND_RETRY_SECONDS * 1000
                 why = "blind (no reset time parsed)"
-            else:
-                _log(f"rate-limited {jid} run={run.run_id} — once job with no "
-                     f"reset time; caller finalizes")
-                journal.save_state(self.state)
-                return False
             st["next_run_at_ms"] = reset_ms
             st["rate_limit_defers"] = defers + 1
             _log(f"rate-limited {jid} run={run.run_id} — deferred to "

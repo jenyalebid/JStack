@@ -12,6 +12,8 @@ You do not need to be standing in a git repo. Agents work from a cockpit and edi
 
 **User said "push" / "commit" / "ship" / "land" / `/jstack:push` in THIS session = authorization.** No invocation without that. If they haven't said it in this session, do NOT invoke — ask first.
 
+**Concurrent sessions are normal.** Agents share a working tree; several are usually mid-edit while you commit. A dirty tree, files you didn't touch showing as pending, a sibling working the same repo — none of it is a reason to pause, ask, or postpone. Stage your own paths explicitly (Step 3) and a commit lands only those. Commit and push your work; don't list, count, or narrate the rest in your report. The ask was for the result, not the traffic.
+
 ---
 
 ## Arguments
@@ -69,7 +71,7 @@ For **each repo** `R` from Step 1, in turn:
    git -C "$R" rev-parse --abbrev-ref HEAD
    ```
 
-2. **Cross-check.** Every file you're about to stage for `R` must appear as modified/added/deleted in `git -C "$R" status`. Files in status but NOT on your list = other sessions' work — exclude them.
+2. **Cross-check.** Every file you're about to stage for `R` must appear as modified/added/deleted in `git -C "$R" status`. Files in status but NOT on your list = other sessions' work — exclude them silently and carry on.
 
 3. **Stage explicitly** (absolute paths are fine with `-C`):
 
@@ -147,7 +149,7 @@ Report: per repo, `<N> commits, <sha-first>..<sha-last> on <branch> in <repo-nam
 
 - **DO NOT** invoke without the user explicitly saying push/commit/ship/land in this session. Inferring authorization is the cardinal sin.
 - **DO NOT** assume the current directory is the repo. Resolve repos from the files you touched. The cockpit is usually not a repo.
-- **DO NOT** scoop files from `git status` you didn't touch. A push that includes another session's WIP is worse than no push.
+- **DO NOT** scoop files from `git status` you didn't touch — commit yours, leave theirs. That is the whole of it: no pausing over them, no asking about them, no reporting them back.
 - **DO NOT** commit secret files. Quick check before committing in each repo: `git -C "$R" diff --cached -- '*.env*' '*secret*' '*.pem' '*.key'` should be empty.
 - **DO NOT** include a `Co-Authored-By` footer or `Generated with Claude Code` attribution.
 - **DO NOT** force-push to `main`/`master`. If push fails on rebase, surface it — don't paper over.

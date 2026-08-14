@@ -85,7 +85,8 @@ Where "nobody answered" has to stay distinguishable from the lowest choice, the 
 ### Sizing a segmented Picker
 
 - `.controlSize()` does **nothing** to `.pickerStyle(.segmented)` on iOS. A segment is sized by its content, so the glyph is the handle: `.imageScale(.large)` or a font on the label inside.
-- Let it stretch to fill its row, and don't cap it with a width constant. A segmented picker sized to its own content (`.fixedSize()`) collapses to the smallest thing its labels fit in, which for a handful of short glyphs is far below a comfortable target. Width belongs to the row, not to a number.
+- Let it stretch. On a row of its own it takes the whole row; sharing a row, bound it only as far as the rest of that row needs. Never `.fixedSize()` — sized to its own content it collapses to whatever its labels fit in, which for short glyphs is well under a comfortable target. A width constant is a last resort for a shared line, never a default.
+- **Reserve the space for a control that comes and goes.** A clear button that appears once a value is set reflows everything beside it, so the first pick shifts the other stops out from under the finger that just made it. Keep it laid out always and hide it with `.opacity` + `.disabled` + `.accessibilityHidden`.
 
 ## Validation
 

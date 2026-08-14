@@ -74,6 +74,19 @@ Form {
 - **Stepper:** For small numeric adjustments with clear bounds
 - **Slider:** For continuous values in a range. Show the current value alongside
 
+## Values That Can Be Unset
+
+Where "nobody answered" has to stay distinguishable from the lowest choice, the control is a `Picker` — never a `Slider`.
+
+- **A `Picker` selection matching no tag renders as nothing selected.** Bind `Binding<T?>` and tag each row `.tag(Optional(value))`; `nil` draws an empty control. This is the only stock way to show unset.
+- **A `Slider` cannot express it.** Its value is a non-optional `Binding<V>` in SwiftUI and a plain `float` pinned to min/max in `UISlider`, so an untouched slider always draws a thumb somewhere — and a thumb somewhere reads as an answer.
+- **Never seed an optional control with a default or carried-forward value.** Once stored, a pre-filled value is indistinguishable from a real one, which destroys the field for any statistic built on it. Write only what was actually picked, and give it a clear affordance so a wrong pick costs no more to undo than it did to make.
+
+### Sizing a segmented Picker
+
+- `.controlSize()` does **nothing** to `.pickerStyle(.segmented)` on iOS. A segment is sized by its content, so the glyph is the handle: `.imageScale(.large)` or a font on the label inside.
+- Segmented pickers stretch to fill their row, which makes one control a different width on every surface. `.fixedSize()` pins it to its own content — one size everywhere, and no per-surface width constants.
+
 ## Validation
 
 - Validate on field exit (`.onSubmit`, focus change), not on every keystroke

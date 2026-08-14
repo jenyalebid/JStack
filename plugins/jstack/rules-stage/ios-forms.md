@@ -85,7 +85,7 @@ Where "nobody answered" has to stay distinguishable from the lowest choice, the 
 ### Sizing a segmented Picker
 
 - `.controlSize()` does **nothing** to `.pickerStyle(.segmented)` on iOS. A segment is sized by its content, so the glyph is the handle: `.imageScale(.large)` or a font on the label inside.
-- Segmented pickers stretch to fill their row, which makes one control a different width on every surface. `.fixedSize()` pins it to its own content — one size everywhere, and no per-surface width constants.
+- Let it stretch to fill its row, and don't cap it with a width constant. A segmented picker sized to its own content (`.fixedSize()`) collapses to the smallest thing its labels fit in, which for a handful of short glyphs is far below a comfortable target. Width belongs to the row, not to a number.
 
 ## Validation
 

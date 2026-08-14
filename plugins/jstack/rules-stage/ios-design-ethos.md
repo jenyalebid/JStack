@@ -86,9 +86,19 @@ If the SwiftUI skills are installed, they layer — consult the right one instea
 
 These rules carry team conventions; the skills carry framework truth. Where they disagree on framework behavior, the newest Apple skill wins — then update the rule.
 
+## Every view ships with a preview
+
+A new or rewritten view lands with a `#Preview`. Not decoration — it is how the states the running app won't show you get looked at: the empty list, the record with nothing in it yet, the longest string a row can hold, dark mode.
+
+A view that reads a store or a service through the environment can't preview anything until something supplies them, so the harness is part of the app, not per-file boilerplate: one file in `Support/` holding an in-memory stack, a seeded sample set, and a wrapper installing the same environment the app installs. Previews then read as one wrapper call and the view. The seed carries the awkward shapes on purpose — those are what the canvas is for.
+
+A preview that stops compiling is broken, and gets fixed by the change that broke it rather than deleted.
+
 ## Build is not verify
 
 A successful build tells you nothing about whether the feature works. Always verify visually — install on a simulator, walk the user flow, screenshot the result. "The compiler is happy" is the floor, not the ceiling.
+
+A preview isn't that verification either — it renders one view against data you wrote. It complements the walk; it never replaces it.
 
 ## Live iteration: edit → build → install → verify → report
 

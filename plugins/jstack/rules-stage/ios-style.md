@@ -48,6 +48,7 @@ Universal design principles for iOS projects. These are the baseline — compone
 ### iOS 26 Known Issues
 - **Toolbar labels in NavigationStack**: Labels and custom views in `.toolbar` may render invisible or clipped on iOS 26 (Liquid Glass). Apply `.fixedSize()` to toolbar content (Labels, Text, HStacks) to force correct sizing. Always verify toolbar content is visible in screenshots — code looking correct does not mean it renders correctly.
 - **Non-interactive toolbar items**: Liquid Glass gives all toolbar items a glass outline that makes them look like buttons. For informational content (labels, stats, text) use `.sharedBackgroundVisibility(.hidden)` on the ToolbarItem to remove the glass outline. Only actual buttons should have the outline.
+- **A toolbar button's tint is resolved once.** `.buttonStyle(.borderedProminent)` + `.tint(colour)` inside `.toolbar` is bridged to a bar button item and keeps the colour it was first built with. The body re-runs on every change — the label, the title and `.disabled` all follow — and only the fill stays behind, so the log says the view updated while the screenshot says it did not. Where the tint is state a user can change (a colour picker, a theme), draw the fill inside the label (`.background(tint, in: Capsule())` in a `ButtonStyle`) instead of tinting the button.
 
 ## View Composition
 

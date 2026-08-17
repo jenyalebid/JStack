@@ -76,7 +76,7 @@ Call the bundled terminal-open adapter (on PATH while jstack is enabled). Contra
 open-terminal-here <cwd> [--prompt-file <path>] [--name <title>] [extra-claude-args...]
 ```
 
-**Session title — required on every invocation.** `--name` is never omitted: a handoff terminal without an `HF ·` title is a failed handoff. Format (that's a middle dot `·`, never a period):
+**Session title — required on every invocation.** `--name` is never omitted: a handoff terminal without an `HF ·` title is a failed handoff. Format:
 - plain handoff → `HF · <topic>`
 - `@agent` handoff → `HF→<Agent> · <topic>`
 

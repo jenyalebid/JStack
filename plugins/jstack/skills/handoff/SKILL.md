@@ -76,11 +76,11 @@ Call the bundled terminal-open adapter (on PATH while jstack is enabled). Contra
 open-terminal-here <cwd> [--prompt-file <path>] [--name <title>] [extra-claude-args...]
 ```
 
-**Session title — required on every invocation.** `--name` is never omitted: a handoff terminal without an `HF.` title is a failed handoff. Format:
-- plain handoff → `HF.<topic>`
-- `@agent` handoff → `HF→<Agent>.<topic>`
+**Session title — required on every invocation.** `--name` is never omitted: a handoff terminal without an `HF ·` title is a failed handoff. Format (that's a middle dot `·`, never a period):
+- plain handoff → `HF · <topic>`
+- `@agent` handoff → `HF→<Agent> · <topic>`
 
-`<topic>` is **derived, never literal**: name what the handoff is actually about in 1–3 words, the way a fresh session's default title would — read the handoff doc you just wrote and title that (e.g. a session mid-refactor of the auth retry queue → `HF.retry queue`). Never paste the focus argument or the user's phrasing verbatim, and never skip the topic; the argument scopes the doc, the title names the work.
+`<topic>` is **derived, never literal**: name what the handoff is actually about in 1–3 words, the way a fresh session's default title would — read the handoff doc you just wrote and title that (e.g. a session mid-refactor of the auth retry queue → `HF · retry queue`). Never paste the focus argument or the user's phrasing verbatim, and never skip the topic; the argument scopes the doc, the title names the work.
 
 Invocation — **always emit it through the guard below**, never the bare `--prompt-file` form:
 
@@ -96,7 +96,7 @@ else
   # Pre-0.15.0 adapter (pass-through): use a real claude flag every version forwards
   # verbatim. The temp file lingers in /tmp (OS-cleaned, never in the workspace). The
   # name must be a single shell token here — pass-through adapters don't re-quote it.
-  SAFE_TITLE="${TITLE// /-}"  # "HF.retry queue" → "HF.retry-queue"
+  SAFE_TITLE="${TITLE// · /·}"; SAFE_TITLE="${SAFE_TITLE// /-}"  # "HF · retry queue" → "HF·retry-queue"
   open-terminal-here "$TARGET_CWD" --append-system-prompt-file "$HANDOFF_TMP" --name "$SAFE_TITLE"
 fi
 ```

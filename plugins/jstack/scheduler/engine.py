@@ -436,14 +436,20 @@ class Engine:
                 self.state.pop(jid, None)
                 journal.save_state(self.state)
                 _log(f"one-shot {jid} completed — removed from registry")
-            elif status != "ok":
+            else:
+                # A one-shot is spent the moment it finishes, either way. Its
+                # dtstart is in the past, so leaving it enabled parks a corpse
+                # that can never fire again but ages forever — every staleness
+                # check reads it as a dead job. delete_after_run chooses
+                # removal vs retention; it does not mean "stay enabled".
                 def _park(reg):
                     for j in reg["jobs"]:
                         if j.get("id") == jid:
                             j["enabled"] = False
                     return reg
                 self.registry = registry.mutate(_park)
-                _log(f"one-shot {jid} failed — parked (enabled:false)")
+                _log(f"one-shot {jid} {'completed' if status == 'ok' else 'failed'}"
+                     f" — parked (enabled:false)")
         except (OSError, ValueError) as e:
             _log(f"one-shot finalize failed for {jid}: {e!r}")
         try:

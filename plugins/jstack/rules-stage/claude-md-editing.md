@@ -17,13 +17,34 @@ Process lives in exactly one place. CLAUDE.md sites point to it; they do not res
 - Path-scoped technical pattern → `~/.claude/rules/*.md` with `paths:`. CLAUDE.md does not duplicate.
 - Repeatable workflow invoked from anywhere → global slash command at `~/.claude/commands/{name}.md`.
 - Project architecture → that project's own CLAUDE.md. Agent CLAUDE.md does not restate.
-- Owner preference / past correction → auto-memory or feedback notes.
+- Owner preference that governs how work is done → the layer of the walk-up that owns it, stated once as law.
+- A platform truth or failure mode that cost real time → an on-demand reference file, reached by name when the symptom appears.
 
 If the content already exists upstream, your edit is a one-line pointer — not a copy.
 
-## Principles over examples
+## Memory holds personal things
+
+Auto-memory is for what is personal to the owner and would otherwise be forgotten. Everything else is one of two things: stale, or a rule. A rule belongs in the layer that owns it, where one write reaches every agent through the walk-up; stale gets deleted. A memory that has become law is a memory that has finished its job — move it and drop it.
+
+## Guide, don't restrict
+
+Instructions carry HOW to do the thing. What to do is the task, and it arrives with the work; a doc that enumerates whats becomes a checklist that ages badly and steers the reader away from thinking.
+
+Say what to avoid only broadly, and only where the wrong move is genuinely inviting. A pile of narrow prohibitions reads as distrust and monopolizes attention — the reader spends it on compliance instead of on the problem.
+
+## Examples
+
+A good example is a trap. The reader copies its surface instead of applying the principle, and every output starts to look like the sample. State the principle and let the shape follow from it.
+
+An example of a *failure* is worth including when the failure is counterintuitive — where the wrong move looks correct and the reader cannot get there by reasoning. Describe the failure shape; a reader who has never seen it should recognize it when it appears.
+
+## Principles over templates
 
 Write what to do and why, not the literal output shape. No verbatim report templates, no phase-by-phase walkthroughs, no agent-specific concrete examples pasted into another agent's playbook. A reader who knows the principle should be able to produce the correct shape; if they need a template, the template belongs in the canonical home, not here.
+
+## A repeated correction is a binding bug
+
+When the same correction has to be given twice, the wording is rarely the problem. The law exists in a layer that does not load for that session type, or a broader line nearby steers the opposite way. Fix the binding — move the law up a layer, or code the seam so the wrong move is not reachable. Rewriting the sentence more precisely buys wording-level compliance and nothing else.
 
 ## Laws are timeless — no provenance in instruction text
 
@@ -44,6 +65,8 @@ Reread the final file top to bottom before moving on: does any line carry proven
 1. Grep for the procedure / duty / format you're about to write. If it exists elsewhere, you're pointing at it, not restating it.
 2. Read the file you're editing in full. Don't add a section that contradicts or duplicates one already there.
 3. If a migration changes who-does-what, check every audit signal that depends on the old contract (cron payloads, meta-review checks, tests) and update them together. A one-side edit is a contract drift.
+4. **Changing a law means finding every place it is stated, hardest first.** A law that has been live a while exists at several strengths — the decisive statement, a restatement further down, a worked example, a counter-set in a reference file, the shared skill that repeats it for every instance. Edit whichever one you happened to be reading and the strongest copy stands, so nothing changes while the diff says it did. Grep the law's own words rather than the heading, then fix the copy a reader reaches first and the copy written most absolutely.
+5. **A doc describing a coded gate is checked against that gate.** Prose drifts wider than the code it claims to describe — it says the check reads intent where the check counts markers — and readers obey the prose over the code. State what the implementation actually reads, and what it does not.
 
 ## Bloat ceiling
 

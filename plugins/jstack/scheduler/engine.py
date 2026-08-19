@@ -116,7 +116,26 @@ class Engine:
             for job in self.jobs():
                 jid = job["id"]
                 st = self.state.setdefault(jid, {})
-                if not job.get("enabled", True):
+                # Enabled-state transitions, observed HERE rather than stamped at
+                # the mutation sites: the tick sees the registry however it was
+                # written — CLI, dashboard, a hand edit, a git checkout — so no
+                # path can flip a job silently. That record is what lets the cron
+                # outcome validator tell "the cron stopped firing" (a real miss)
+                # from "the job was switched off for that occurrence" (nothing to
+                # judge); without it, the first morning after a pause false-fails
+                # fired_within_window against an occurrence the job was off for
+                # (SC-2026-08-19-001, lynda-social-plan). First sight of a job
+                # SEEDS the flag and claims no transition — a stamp means an
+                # observed flip, never merely "the engine restarted".
+                is_enabled = bool(job.get("enabled", True))
+                if "enabled" not in st:
+                    st["enabled"] = is_enabled
+                    dirty = True
+                elif st["enabled"] != is_enabled:
+                    st["enabled"] = is_enabled
+                    st["enabled_changed_at_ms"] = now_ms
+                    dirty = True
+                if not is_enabled:
                     # drop (not None-out) so a later re-enable re-anchors from
                     # then-now instead of triggering catch-up over the gap
                     if "next_run_at_ms" in st:

@@ -117,3 +117,11 @@ Installing on physical hardware or distributing a build to testers leaves this m
 ## Widget / extension version parity
 
 When you bump `CURRENT_PROJECT_VERSION` or `MARKETING_VERSION` on the parent app target, every widget / live-activity / extension target in the same pbxproj matches in the SAME commit. Parent bump and extension bump are one atomic edit, not two.
+
+## Labels and layout
+
+Button labels are Title Case on every surface.
+
+When a layout constraint bites, it is absorbed by spacing and padding. The
+content unit being read keeps its size and shape — resizing or reshaping it to
+make room trades the thing the screen exists for against the gap around it.

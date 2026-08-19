@@ -96,15 +96,17 @@ A preview that stops compiling is broken, and gets fixed by the change that brok
 
 ## Build is not verify
 
-A successful build tells you nothing about whether the feature works. Always verify visually — install on a simulator, walk the user flow, screenshot the result. "The compiler is happy" is the floor, not the ceiling.
+A successful build tells you nothing about whether the feature works. Always verify visually — install it, walk the user flow, screenshot the result. "The compiler is happy" is the floor, not the ceiling.
+
+Install where the person who asked will actually look at it. UI they requested is judged on their own device, at their scale, with their chrome — a simulator standing in for that is a different screen answering a question about this one. The simulator is the target when nobody is waiting on the result: unattended runs, seeded state, interaction rigs.
 
 A preview isn't that verification either — it renders one view against data you wrote. It complements the walk; it never replaces it.
 
 ## Live iteration: edit → build → install → verify → report
 
-When the user requests a code edit, run the whole loop and report the result. Don't ask "want me to build?", and don't stop at a green compile to ask permission to install — a simulator install is local, reversible, and the only thing that turns a build into evidence. Load-bearing changes get walked and screenshotted, not described.
+When the user requests a code edit, run the whole loop and report the result. Don't ask "want me to build?", and don't stop at a green compile to ask permission to install — the install is reversible, and the only thing that turns a build into evidence. Load-bearing changes get walked and screenshotted, not described.
 
-Installing on physical hardware or distributing a build to testers leaves this machine — ask first for those.
+Distributing a build to testers puts it in other people's hands — that asks first. Installing on the requester's own device asks first only where no project overlay has already granted it standing; where one has, asking turns their own verification into a checkpoint they have to answer.
 
 ## Git discipline — major-version branches
 

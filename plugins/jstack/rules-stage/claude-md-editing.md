@@ -70,7 +70,7 @@ Reread the final file top to bottom before moving on: does any line carry proven
 
 ## Bloat ceiling
 
-Anthropic spec — each CLAUDE.md ≤ 200 lines; walk-up total (org root + agent root + sub-mode + any USER.md) ≤ 400. Going over isn't "needs trimming later" — it's a failed edit. Trim now or pick a different destination.
+Anthropic spec — each CLAUDE.md ≤ 200 lines; walk-up total (org root + agent root + sub-mode) ≤ 400. Going over isn't "needs trimming later" — it's a failed edit. Trim now or pick a different destination.
 
 ## Tone
 

@@ -184,7 +184,10 @@ def build_reason(rows: list, seat: str) -> str:
         "Do the thing the message asks for, then record it:",
         f'  {PLUGIN_BIN}/msg done <id> --note "what you actually did"',
         "",
-        "Or, if it genuinely belongs later — a real blocker, not reluctance:",
+        "Or, if it genuinely belongs later — a real blocker, not reluctance. "
+        "Bare = the next session picks it up; a named hour books a wake to act "
+        "then, so only name one when that hour is the point:",
+        f'  {PLUGIN_BIN}/msg defer <id> --note "why"',
         f'  {PLUGIN_BIN}/msg defer <id> --until "YYYY-MM-DD HH:MM" --note "why"',
         "",
         "To answer the sender (they get it in their own inbox, or live if they're "

@@ -11,8 +11,11 @@
 #   - send -> inbox -> read -> reply roundtrip, reply lands in the sender's own
 #     inbox and joins the thread
 #   - done requires a note, records it, and removes the item from the inbox
-#   - defer hides an item until its time, then it re-opens; a past --until is
-#     refused
+#   - defer with no time means "not this session": hidden from the deferring
+#     session, open to the next one, and it books nothing
+#   - defer --until books a REAL wake at that hour (argv captured from a stub
+#     scheduler); a booking that fails is loud and exits non-zero
+#   - a past --until is refused, and so is a date with no hour
 #   - attachments are copied into the RECEIVER's pad
 #   - a wake that cannot be booked still files the message (exit 0)
 #   - the timeline's own `entries` table is untouched
@@ -153,12 +156,54 @@ out=$("$MSG" done "$MID" --note "again" 2>&1); rc=$?
 "$MSG" send @bob "Later thing" >/dev/null
 LID=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Later thing'" | grep -oE '[0-9]+')
 
+# 4a. bare defer — "not this session". The default: costs nothing, books nothing.
+CLAUDE_CODE_SESSION_ID=sess-A "$MSG" defer "$LID" --note "blocked on X" >/dev/null
+[[ "$(CLAUDE_CODE_SESSION_ID=sess-A "$MSG" inbox --seat bob/chat)" == "(nothing)" ]] \
+  && pass "bare defer hides from the deferring session" || fail "bare defer hides from the deferring session"
+[[ "$(CLAUDE_CODE_SESSION_ID=sess-B "$MSG" inbox --seat bob/chat)" == *"Later thing"* ]] \
+  && pass "bare defer re-opens on the next session" || fail "bare defer re-opens on the next session"
+[[ "$(SQL "SELECT deferred_until, deferred_session FROM messages WHERE id=$LID")" == "[(None, 'sess-A')]" ]] \
+  && pass "bare defer names no time" || fail "bare defer names no time"
+[[ "$("$MSG" read "$LID")" == *"blocked on X"* ]] && pass "defer reason kept" || fail "defer reason kept"
+[[ "$("$MSG" read "$LID")" == *"next session"* ]] && pass "bare defer renders as next session" || fail "bare defer renders as next session"
+
+# 4b. a named time must be a real hour, and must be ahead
 out=$("$MSG" defer "$LID" --until "2020-01-01 09:00" 2>&1); rc=$?
 [[ $rc -ne 0 && "$out" == *"in the past"* ]] && pass "past defer refused" || fail "past defer refused"
+out=$("$MSG" defer "$LID" --until "2099-01-01" 2>&1); rc=$?
+[[ $rc -ne 0 && "$out" == *"HH:MM"* ]] && pass "date with no hour refused" || fail "date with no hour refused"
 
-"$MSG" defer "$LID" --until "2099-01-01 09:00" --note "blocked on X" >/dev/null
-[[ "$("$MSG" inbox --seat bob/chat)" == "(nothing)" ]] && pass "deferred hides until due" || fail "deferred hides until due"
-[[ "$("$MSG" read "$LID")" == *"blocked on X"* ]] && pass "defer reason kept" || fail "defer reason kept"
+# 4c. --until books a REAL wake — a stub scheduler records what it was asked
+export WAKE_ARGV="$TMP/wake-argv"
+cat > "$TMP/stub-python" <<'EOS'
+#!/bin/sh
+printf '%s\n' "$@" > "$WAKE_ARGV"
+exit 0
+EOS
+chmod +x "$TMP/stub-python"
+cat > "$JSTACK_REVIEW_CONFIG" <<EOF
+{"agent_root": "$AR", "mail": {"python": "$TMP/stub-python", "scheduler_home": "$TMP"}}
+EOF
+out=$("$MSG" defer "$LID" --until "2099-01-01 09:00" --note "needs a build" 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == *"wake booked"* ]] && pass "timed defer books a wake" || fail "timed defer books a wake (rc=$rc: $out)"
+[[ "$(cat "$WAKE_ARGV")" == *"add-once"* ]] && pass "wake reaches the scheduler" || fail "wake reaches the scheduler"
+grep -qx "2099-01-01 09:00" "$WAKE_ARGV" && pass "wake booked for the named hour" || fail "wake booked for the named hour"
+grep -qx "bob-chat" "$WAKE_ARGV" && pass "wake targets the receiving seat" || fail "wake targets the receiving seat"
+grep -q "\[inbox:$LID\]" "$WAKE_ARGV" && pass "wake carries the routing marker" || fail "wake carries the routing marker"
+[[ "$("$MSG" inbox --seat bob/chat)" == "(nothing)" ]] && pass "timed defer hides until due" || fail "timed defer hides until due"
+
+# 4d. a booking that fails is loud — a defer that silently does nothing is the bug
+cat > "$JSTACK_REVIEW_CONFIG" <<EOF
+{"agent_root": "$AR", "mail": {"python": "/nonexistent/python", "scheduler_home": "/nonexistent"}}
+EOF
+out=$("$MSG" defer "$LID" --until "2099-02-01 09:00" 2>&1); rc=$?
+[[ $rc -ne 0 && "$out" == *"WAKE WAS NOT BOOKED"* ]] \
+  && pass "unbookable timed defer is loud" || fail "unbookable timed defer is loud (rc=$rc)"
+[[ "$(SQL "SELECT deferred_until FROM messages WHERE id=$LID")" == *"2099-02-01"* ]] \
+  && pass "unbookable defer still moved the item" || fail "unbookable defer still moved the item"
+cat > "$JSTACK_REVIEW_CONFIG" <<EOF
+{"agent_root": "$AR"}
+EOF
 
 python3 -c "import sqlite3; sqlite3.connect('$DB').execute(\"UPDATE messages SET deferred_until='2020-01-01T09:00:00' WHERE id=$LID\").connection.commit()"
 [[ "$("$MSG" inbox --seat bob/chat)" == *"Later thing"* ]] && pass "deferred re-opens when due" || fail "deferred re-opens when due"

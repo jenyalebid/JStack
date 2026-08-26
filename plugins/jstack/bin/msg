@@ -12,8 +12,13 @@ Read:
     msg sent [-n N] [--json]
 
 Close (an open item MUST reach one of these):
-    msg done <id> --note "what I did"
-    msg defer <id> --until "YYYY-MM-DD HH:MM" [--note "why"]
+    msg done  <id> --note "what I did"
+    msg defer <id> [--note "why"]                          -> next session
+    msg defer <id> --until "YYYY-MM-DD HH:MM" [--note ...] -> books a wake
+
+Defer means "not this session". Bare, it re-opens at this seat's next session
+and costs nothing. With a time it books a real wake at that hour — a named
+time is a commitment to act then, not a date written on a note nobody reads.
 
 Addressing — `@agent` is the agent's cockpit, hyphens walk down to a sub-seat:
 
@@ -86,6 +91,7 @@ CREATE TABLE IF NOT EXISTS messages (
     thread_id      INTEGER NOT NULL DEFAULT 0,
     state          TEXT NOT NULL DEFAULT 'unread',
     deferred_until TEXT,
+    deferred_session TEXT,
     resolution     TEXT,
     resolved_at    TEXT,
     resolved_by    TEXT,
@@ -137,8 +143,22 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
     con.executescript(_SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(messages)")}
+    if "deferred_session" not in cols:
+        con.execute("ALTER TABLE messages ADD COLUMN deferred_session TEXT")
+        con.commit()
     con.row_factory = sqlite3.Row
     return con
+
+
+def session_id() -> str:
+    """The calling session, or '-' when there is none.
+
+    A defer with no time means 'not this session' — so the item has to be
+    hidden from exactly one session and open to every other. The sentinel
+    keeps a defer made outside a session honest: '-' never matches a real
+    session id, so the item re-opens on the next real one."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or "-"
 
 
 def agent_root() -> Path:
@@ -336,8 +356,9 @@ def _row_header(row) -> str:
     bits = [f"[#{row['id']}]", f"from {row['from_seat']}", row["created_at"].replace("T", " ")]
     if row["wake"]:
         bits.append("WAKE")
-    if row["state"] == "deferred" and row["deferred_until"]:
-        bits.append(f"deferred → {row['deferred_until'].replace('T', ' ')}")
+    if row["state"] == "deferred":
+        bits.append(f"deferred → {row['deferred_until'].replace('T', ' ')}"
+                    if row["deferred_until"] else "deferred → next session")
     if row["reply_to"]:
         bits.append(f"reply to #{row['reply_to']}")
     return " · ".join(bits)
@@ -377,15 +398,21 @@ def _dump(rows, as_json: bool, full: bool = False) -> None:
 
 
 def _due_clause() -> str:
-    """Open = unread, or deferred whose time has come."""
-    return ("(state = 'unread' OR (state = 'deferred' AND "
-            "(deferred_until IS NULL OR deferred_until <= ?)))")
+    """Open = unread, deferred-to-next-session seen from any other session, or
+    deferred to a named time that has come. Binds (session_id, now)."""
+    return ("(state = 'unread' OR (state = 'deferred' AND ("
+            "(deferred_until IS NULL AND IFNULL(deferred_session, '-') <> ?) OR "
+            "(deferred_until IS NOT NULL AND deferred_until <= ?))))")
+
+
+def _due_args() -> tuple:
+    return (session_id(), now_iso())
 
 
 def open_for_seat(con, seat: str) -> list:
     return con.execute(
         f"SELECT * FROM messages WHERE to_seat = ? AND {_due_clause()} "
-        "ORDER BY created_at, id", (seat, now_iso())).fetchall()
+        "ORDER BY created_at, id", (seat, *_due_args())).fetchall()
 
 
 def _wake_prompt(row) -> str:
@@ -404,7 +431,10 @@ def _wake_prompt(row) -> str:
         "This wake exists to act on the message and record what you did.",
         f'  done:   msg done {row["id"]} --note "what you did"',
         f'  answer: msg reply {row["id"]} "..."   (add --wake if they need it now)',
-        f'  wait:   msg defer {row["id"]} --until "YYYY-MM-DD HH:MM" --note why',
+        f'  wait:   msg defer {row["id"]} --note why'
+        '   (re-opens on the next session)',
+        f'          msg defer {row["id"]} --until "YYYY-MM-DD HH:MM" --note why'
+        '   (books a wake)',
     ]
     return "\n".join(parts)
 
@@ -434,8 +464,22 @@ def _deliver_live(seat: str, text: str) -> "str|None":
     return f"typed:{sid[-1]}" if sid else "typed"
 
 
-def _book_wake(seat: str, seat_dir: Path, row) -> "str|None":
-    """Book an immediate one-shot on the host scheduler — the wake.
+def seat_dir_for(seat: str) -> "Path|None":
+    """'mario/chat' -> its workspace dir, or None if it is no longer a seat.
+
+    The stored seat string is the identity; a wake has to be booked against a
+    directory. A seat that has since been renamed away returns None rather
+    than a path nothing boots in."""
+    agent, _, submode = (seat or "").partition("/")
+    root = _agent_dirs().get(agent.lower())
+    if root is None or not submode:
+        return None
+    d = root / submode
+    return d if _is_seat(d) else None
+
+
+def _book_wake(seat: str, seat_dir: Path, row, at: "str|None" = None) -> "str|None":
+    """Book a one-shot on the host scheduler — the wake. Default: one minute out.
 
     Not a new spawn path: the scheduler already owns 'run claude in this
     workspace with this context message, with a timeout, a model tier and a
@@ -451,7 +495,7 @@ def _book_wake(seat: str, seat_dir: Path, row) -> "str|None":
         env["SCHEDULER_HOME"] = str(Path(home).expanduser())
     python = str(Path(mail.get("python") or sys.executable or "python3").expanduser())
 
-    at = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
+    at = at or (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
     agent_id = seat.replace("/", "-")
     argv = [
         python, "-m", "scheduler.cli", "add-once",
@@ -561,11 +605,12 @@ def cmd_inbox(args) -> int:
     if args.all:
         rows = con.execute(
             f"SELECT * FROM messages WHERE {_due_clause()} ORDER BY created_at, id",
-            (now_iso(),)).fetchall()
+            _due_args()).fetchall()
     elif args.agent:
         rows = con.execute(
             f"SELECT * FROM messages WHERE to_agent = ? AND {_due_clause()} "
-            "ORDER BY created_at, id", (args.agent.lstrip("@").lower(), now_iso())).fetchall()
+            "ORDER BY created_at, id",
+            (args.agent.lstrip("@").lower(), *_due_args())).fetchall()
     else:
         seat = args.seat or sender_seat()
         if not seat:
@@ -645,24 +690,48 @@ def cmd_defer(args) -> int:
     if row["state"] == "done":
         _fail(f"#{args.id} is already closed")
     raw = (args.until or "").strip()
-    try:
-        when = datetime.strptime(raw, "%Y-%m-%d %H:%M")
-    except ValueError:
-        try:
-            when = datetime.strptime(raw, "%Y-%m-%d")
-        except ValueError:
-            _fail("--until must be 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'")
-    if when <= datetime.now():
-        _fail("--until is in the past — a defer must move the item forward")
     note = (args.note or "").strip()
     body = row["body"]
     if note:
         body = (body + "\n\n" if body else "") + f"[deferred {now_iso()}] {note}"
-    con.execute("UPDATE messages SET state='deferred', deferred_until=?, body=? WHERE id=?",
+
+    # No time — the default and the common case: not this session, next one.
+    if not raw:
+        con.execute("UPDATE messages SET state='deferred', deferred_until=NULL, "
+                    "deferred_session=?, body=? WHERE id=?",
+                    (session_id(), body, args.id))
+        con.commit()
+        print(f"#{args.id} deferred — it re-opens on this seat's next session.")
+        return 0
+
+    try:
+        when = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+    except ValueError:
+        _fail("--until must be 'YYYY-MM-DD HH:MM'. Omit it to defer to the next "
+              "session — a named time books a wake, so it needs an hour to fire at.")
+    if when <= datetime.now():
+        _fail("--until is in the past — a defer must move the item forward")
+    con.execute("UPDATE messages SET state='deferred', deferred_until=?, "
+                "deferred_session=NULL, body=? WHERE id=?",
                 (when.isoformat(timespec="seconds"), body, args.id))
     con.commit()
-    print(f"#{args.id} deferred to {raw} — it re-opens then.")
-    return 0
+
+    # A named time is a commitment to act then, so it books the wake. A defer
+    # that only re-opens in a mailbox nobody may open that day is the thing
+    # this branch exists to stop being.
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
+    seat_dir = seat_dir_for(row["to_seat"])
+    booked = _book_wake(row["to_seat"], seat_dir, row,
+                        at=when.strftime("%Y-%m-%d %H:%M")) if seat_dir else None
+    if booked:
+        con.execute("UPDATE messages SET delivery=? WHERE id=?", (booked, args.id))
+        con.commit()
+        print(f"#{args.id} deferred to {raw} — wake booked, it spawns then.")
+        return 0
+    print(f"#{args.id} deferred to {raw}, but THE WAKE WAS NOT BOOKED — it "
+          f"re-opens in the inbox at that time and nothing spawns to act on it. "
+          f"Defer without --until, or book the wake yourself.", file=sys.stderr)
+    return 1
 
 
 def cmd_pending(args) -> int:
@@ -731,9 +800,11 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--from", dest="frm", metavar="SEAT")
     d.set_defaults(func=cmd_done)
 
-    df = sub.add_parser("defer", help="push a message to a later time")
+    df = sub.add_parser("defer", help="push a message to the next session, or to a time")
     df.add_argument("id", type=int)
-    df.add_argument("--until", required=True, metavar='"YYYY-MM-DD HH:MM"')
+    df.add_argument("--until", metavar='"YYYY-MM-DD HH:MM"',
+                    help="a named time — books a wake that spawns then. "
+                         "Omit to defer to this seat's next session")
     df.add_argument("--note")
     df.set_defaults(func=cmd_defer)
 

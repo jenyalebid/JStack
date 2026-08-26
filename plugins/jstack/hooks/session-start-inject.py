@@ -278,7 +278,9 @@ def build_inbox(seat: str, rows: list) -> str:
     lines += [
         f'  act, then:  msg done {rows[0]["id"]} --note "what you did"',
         '  answer:     msg reply <id> "..." [--wake]',
-        '  genuinely later:  msg defer <id> --until "YYYY-MM-DD HH:MM" --note why',
+        '  not this session:  msg defer <id> --note why',
+        '  at a set hour:     msg defer <id> --until "YYYY-MM-DD HH:MM" --note why'
+        '   (books a wake)',
         "</jstack-inbox>",
     ]
     return "\n".join(lines)

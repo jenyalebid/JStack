@@ -26,6 +26,7 @@ history cannot carry, because nobody else can write to your history.
 msg send @agent[-seat] "<content>" [--wake] [--file PATH]... [--reply-to ID]
                                    [--from SEAT]
 msg reply <id> "<content>" [--wake] [--file PATH]...
+msg defer <id> [--until "<YYYY-MM-DD HH:MM>"] [--note "<why>"]
 ```
 
 - **Subject is the first line**, body is the rest. One content argument; no
@@ -72,8 +73,22 @@ cockpit. So the law binds one seat; the agent-wide view is just a query
 
 ## Lifecycle
 
-`unread` → `done` | `deferred`. A deferred item re-opens on its own at
-`deferred_until` and is indistinguishable from unread from then on.
+`unread` → `done` | `deferred`. A re-opened deferral is indistinguishable from
+unread from then on.
+
+**Defer means "not this session", and that is its bare form.** It records the
+deferring session id, so the item is hidden from exactly that session and open
+to every other one — the next session picks it up, at no cost. A defer made
+outside any session stores a sentinel that no real session id matches, so it
+still re-opens on the next real one rather than vanishing.
+
+**`--until` is the exception, and it books a real wake** at that hour through
+the same scheduler rung `send --wake` uses. A named time is therefore a
+commitment to act then, not a label to park something under; it needs an hour
+(a bare date is refused) and a booking that fails is loud and exits non-zero.
+The failure this splits apart: a defer that reads like a booking, moves the
+item to a date, and schedules nothing — so the work happens only if that seat
+happens to open a session that day.
 
 **Closing requires `--note`.** That note is the point of the whole system: the
 record of what a message actually caused, readable by the sender via

@@ -45,6 +45,14 @@ _MAX_RATE_LIMIT_DEFERS = 6
 # A blind retry can be early (the limit is still up, we get rate-limited again
 # and defer once more, capped); surrendering the day cannot be recovered at all.
 _RATE_LIMIT_BLIND_RETRY_SECONDS = 2700
+# Hard wall on how far a rate-limited job may chase its slot, measured from the
+# time it was ORIGINALLY scheduled for. Past this the work is stale enough that
+# running it is its own hazard — a 07:00 morning brief landing at 21:00 is not
+# the brief, and a publish wake that drifts most of a day publishes into the
+# wrong audience. The defer counter alone does not bound this: a quoted reset
+# can sit five hours out, so six of them chain to over a day. `_MAX_RATE_LIMIT
+# _DEFERS` bounds how many times we try; this bounds how long we keep trying.
+_MAX_RATE_LIMIT_RECOVERY_SECONDS = 6 * 3600
 
 
 def _schedule_fp(job: dict) -> str:
@@ -353,6 +361,10 @@ class Engine:
                 st["consecutive_errors"] = 0
                 st["last_error"] = None
                 st["rate_limit_defers"] = 0
+                # The wall's anchor goes with the counter — a job that finally
+                # got through has no outage left to be measured from, and a
+                # stale anchor would expire its NEXT rate limit instantly.
+                st.pop("rate_limit_anchor_ms", None)
             elif status == "rate_limited":
                 # transient usage-window exhaustion — not a job fault, so it must
                 # not increment the error streak that drives alerting.
@@ -402,13 +414,21 @@ class Engine:
         hammer — past the cap, the already-advanced normal schedule stands.
 
         Returns True iff a retry was actually scheduled (next_run pinned). False
-        means the defer cap was reached — the caller must decide the terminal
-        outcome (recurring: normal schedule stands; once: finalize, since there
-        is no schedule to fall back on). A missing reset time is no longer a
+        means recovery is over — the caller must decide the terminal outcome
+        (recurring: normal schedule stands; once: finalize, since there is no
+        schedule to fall back on). Recovery ends on EITHER bound: the defer
+        count, or the elapsed-time wall below. A missing reset time is not a
         False on its own: it retries blind, once and recurring alike."""
         jid = job["id"]
         defers = int(st.get("rate_limit_defers") or 0)
         reset_at = getattr(run, "rate_limit_reset_at", None)
+        # The wall is measured from the slot the job was ORIGINALLY due for, so
+        # it cannot be walked forward by the defers themselves — each deferred
+        # run is scheduled for its deferred time, and anchoring on that would
+        # re-arm the full runway at every hop and never expire.
+        anchor_ms = int(st.get("rate_limit_anchor_ms")
+                        or getattr(run, "scheduled_for_ms", None) or _ms(self._now()))
+        deadline_ms = anchor_ms + _MAX_RATE_LIMIT_RECOVERY_SECONDS * 1000
         if defers < _MAX_RATE_LIMIT_DEFERS:
             if reset_at is not None:
                 reset_ms = int(reset_at.timestamp() * 1000) + _RATE_LIMIT_BUFFER_SECONDS * 1000
@@ -432,8 +452,22 @@ class Engine:
                 # once job still finalizes, which is the honest terminal state.
                 reset_ms = _ms(self._now()) + _RATE_LIMIT_BLIND_RETRY_SECONDS * 1000
                 why = "blind (no reset time parsed)"
+            if reset_ms > deadline_ms:
+                # The retry the outage is asking for lands past the wall. Give
+                # up here rather than book it: the point of the wall is that
+                # work this stale should not run, and a defer that honoured the
+                # quoted reset anyway would walk straight through it — a weekly
+                # cap quotes a reset days out, which is the exact case the wall
+                # exists for.
+                _log(f"rate-limited {jid} run={run.run_id} — retry at "
+                     f"{datetime.fromtimestamp(reset_ms / 1000, tz=timezone.utc).isoformat()} "
+                     f"is past the {_MAX_RATE_LIMIT_RECOVERY_SECONDS // 3600}h "
+                     f"recovery wall; giving up on this slot")
+                journal.save_state(self.state)
+                return False
             st["next_run_at_ms"] = reset_ms
             st["rate_limit_defers"] = defers + 1
+            st["rate_limit_anchor_ms"] = anchor_ms
             _log(f"rate-limited {jid} run={run.run_id} — deferred to "
                  f"{datetime.fromtimestamp(reset_ms / 1000, tz=timezone.utc).isoformat()} "
                  f"({why}, defer {defers + 1}/{_MAX_RATE_LIMIT_DEFERS})")

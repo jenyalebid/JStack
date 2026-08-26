@@ -1,45 +1,75 @@
-# Agent Inbox — Architecture & Usage
+# Agent Messaging — Architecture & Usage
 
-Addressed seat-to-seat messaging with a tracked outcome: one seat sends another
-a message, it lands in a mailbox that seat cannot walk past, and closing it
-records what was done. The store is a `messages` table in the same sqlite file
-as the timeline; `bin/msg` is its only sanctioned writer.
+Seat-to-seat messaging in exactly two forms: an **update** that obliges
+nobody, and a **task** that blocks its sender until it is answered. The store
+is a `messages` table in the same sqlite file as the timeline; `bin/msg` is
+its only sanctioned writer.
 
-The timeline answers "what did this seat do?". The inbox answers "what is this
-seat being asked to do, by whom, and what came of it?" — the half a per-seat
-history cannot carry, because nobody else can write to your history.
+The timeline answers "what did this seat do?". This answers "what did another
+seat need from it, and what came back?" — the half a per-seat history cannot
+carry, because nobody else can write to your history.
+
+## The design constraint
+
+A mailbox that accumulates is worse than no mailbox. The failure it produces
+is specific and bad: an agent opens a chat to do one thing, inherits a pile of
+half-relevant requests someone left lying around, and goes off doing those
+instead. So the system is built so accumulation is impossible rather than
+discouraged:
+
+- An **update** is delivered exactly once and then it is gone. Unread ones
+  older than `UPDATE_TTL_DAYS` are never shown to anyone.
+- A **task** binds to the single session it was delivered to. No other session
+  can see it — not the seat's next session, not a cron worker in that seat,
+  not the cockpit.
+- A task that reaches nobody is **not filed at all**. The send fails and no
+  row is written, because a task nobody is doing is not a message.
+
+There is no state in which mail is waiting to be found.
 
 ## Components
 
 | Piece | Path | Role |
 |-------|------|------|
-| Writer/query CLI | `bin/msg` | The only sanctioned writer; also serves inbox reads and closure |
-| Read half | `hooks/session-start-inject.py` | Injects a seat's open items on SessionStart, above the timeline block |
-| Enforcement | `hooks/stop-inbox-guard.py` | Blocks the first stop that leaves an item open |
-| Live delivery | host command (`mail.deliver_live`) | Optional — types into a running session |
-| Wake | `scheduler/` `add-once` | Optional — spawns the receiver when nobody is home |
+| Writer/query CLI | `bin/msg` | The only sanctioned writer; also serves reads |
+| Update delivery | `hooks/session-start-inject.py` | Injects unseen updates once, then consumes them |
+| Task enforcement | `hooks/stop-inbox-guard.py` | Blocks a session that holds an unanswered task |
+| Live rung | host command (`mail.deliver_live`) | Types a task into a running session |
+| Spawn rung | `scheduler/` `add-once` | Spawns a session for the task when nobody is live |
 | Tests | `tests/msg.sh`, `tests/inbox-guard.sh` | Hermetic CLI- and hook-contract verification |
 
 ## Writer contract
 
 ```bash
-msg send @agent[-seat] "<content>" [--wake] [--file PATH]... [--reply-to ID]
-                                   [--from SEAT]
+msg send @agent[-seat] "<content>" [--wake] [--file PATH]... [--from SEAT]
 msg reply <id> "<content>" [--wake] [--file PATH]...
-msg defer <id> [--until "<YYYY-MM-DD HH:MM>"] [--note "<why>"]
 ```
 
-- **Subject is the first line**, body is the rest. One content argument; no
-  separate subject to compose.
-- **`--wake`** means the receiver acts now. Without it the message waits for
-  their next session. This is the sender's call and the only knob they get.
-- **`--file`** copies into the receiving seat's pad, so the attachment outlives
-  the sender's scratch. A file already inside that pad is recorded in place
-  rather than copied beside itself (a share-sheet drop lands there first).
-- **`--from`** overrides the sending seat (`JSTACK_MAIL_FROM` env does the
-  same). Hosts filing on a human's behalf pass `--from boss`.
-- Sender identity otherwise comes from cwd — the same seat resolution the
-  injector uses.
+- **Subject is the first line**, body is the rest. One content argument.
+- **`--wake` is the whole distinction.** Without it, an update. With it, a
+  task: reached now, answered now.
+- **`--file`** copies into the receiving seat's pad. A file already inside the
+  receiving agent's tree is recorded in place rather than copied beside itself
+  (a share-sheet drop lands there first).
+- **`--from`** overrides the sending seat (`JSTACK_MAIL_FROM` too). Hosts
+  filing on a human's behalf pass `--from boss`. Otherwise the seat comes from
+  cwd, and failing that from the session's own workspace — so a message sent
+  after `cd`-ing into a repo still carries the seat that sent it.
+
+## When a task is legitimate
+
+The bar is that it genuinely needs *them*: their access, their device, context
+the sender cannot get, or the operator asked for it. Two failures the wording
+exists to prevent, because both look reasonable from inside:
+
+- **Handing off by citation.** A doc names another agent as the owner of an
+  area, so work touching that area gets mailed to them. Ownership says who
+  carries a thing long-term, never who may touch it — work in front of you is
+  yours to finish, in whatever repo it lands in.
+- **Mailing a correction.** Something sent earlier turns out to be wrong or
+  moot, and the reflex is to send a second message saying so. That doubles the
+  traffic to fix the first message. An update will pass on its own; a task is
+  answered, not amended.
 
 ## Addressing
 
@@ -54,80 +84,54 @@ holds its own `chat/` resolves to that operator seat.
 @self                 -> the sending seat
 ```
 
-A seat is a directory holding a `CLAUDE.md`. Anything else — a pad, a scratch
-dir, an unknown agent — is refused **at send time**, because a message filed
-where no session boots could never be read. `@boss` is refused too: the host's
-own human channel owns that and has its own reply path.
+A seat is a directory holding a `CLAUDE.md`. Anything else is refused **at
+send time**, because a message filed where no session boots could never be
+read. `@boss` is refused: the host's own human channel owns that.
 
 Hyphen resolution tries the longest agent-name match first, then the whole
-remaining string as one directory before splitting it — so an agent or a seat
-whose real name contains a hyphen wins over the same string read as a nesting.
-
-## Why messages are addressed to a seat
-
-An agent has many seats and most are workers whose whole job is one task. If
-mail to `mario` surfaced in every mario seat, a worker would boot, inherit "you
-have unread mail, handle it first", and be hijacked by something meant for the
-cockpit. So the law binds one seat; the agent-wide view is just a query
-(`msg inbox --agent mario`).
+remaining string as one directory before splitting it — so an agent or seat
+whose real name contains a hyphen wins over the same string read as nesting.
 
 ## Lifecycle
 
-`unread` → `done` | `deferred`. A re-opened deferral is indistinguishable from
-unread from then on.
+```
+update  ──delivered──>  seen                    (or ages out unseen)
+task    ──replied───>   answered
+```
 
-**Defer means "not this session", and that is its bare form.** It records the
-deferring session id, so the item is hidden from exactly that session and open
-to every other one — the next session picks it up, at no cost. A defer made
-outside any session stores a sentinel that no real session id matches, so it
-still re-opens on the next real one rather than vanishing.
+That is the entire state machine. There is no close verb, no defer, no
+retraction: the reply is the close, and nothing else can be pending.
 
-**`--until` is the exception, and it books a real wake** at that hour through
-the same scheduler rung `send --wake` uses. A named time is therefore a
-commitment to act then, not a label to park something under; it needs an hour
-(a bare date is refused) and a booking that fails is loud and exits non-zero.
-The failure this splits apart: a defer that reads like a booking, moves the
-item to a date, and schedules nothing — so the work happens only if that seat
-happens to open a session that day.
+## Delivery
 
-**Closing requires `--note`.** That note is the point of the whole system: the
-record of what a message actually caused, readable by the sender via
-`msg sent`. A close with no note is refused; a double close is a no-op that
-reports who closed it and how.
+**An update** waits for the receiver's next session. That is its only rung.
 
-## Delivery — four rungs
+**A task** tries two, in order, and fails if neither takes it:
 
-Tried in order. Each is allowed to fail; a message is never lost to a broken
-rung, it only arrives by a slower one.
-
-1. **SessionStart injection** — the seat's next session.
-2. **Stop hook** — any live session, any transport, one turn later. This is the
-   universal floor: it needs no knowledge of how the session is running, so a
-   raw terminal, a GUI client and a headless run are all reachable.
-3. **`mail.deliver_live`** — a host command that types into a running session.
-   Fast path, seconds, mid-turn. Absent config → skipped silently.
-4. **Scheduler one-shot** — `--wake` with nobody home. The message rides inline
-   as the run's prompt with an `[inbox:<id>]` routing marker, so the woken
-   session needs no injection to see what it was woken for.
+1. **`mail.deliver_live`** — a host command that types into a running session.
+   Returns the session id, which the task binds to.
+2. **Scheduler one-shot** — the task rides inline as the run's prompt behind an
+   `[inbox:<id>]` marker, so the spawned session needs no injection to see what
+   it was woken for. Wakes are headless `claude --print`: one turn, then exit.
 
 ## Enforcement
 
-Injection states the law; the Stop hook is what makes it hold.
+The Stop hook binds tasks handed to **this exact session** — matched by
+session id (typed in live) or by the `[inbox:N]` in its own first prompt
+(spawned for it). One block per (session, task); `stop_hook_active` and a
+marker written *before* the block make a loop impossible; an unwritable marker
+means allow.
 
-- One block per **(session, message)** — a long session gets one block per
-  message, not one per turn, and mail arriving mid-session still gets its own.
-- `stop_hook_active` and a marker file written *before* the block is emitted
-  make a loop impossible; an unwritable marker means allow, never risk it.
-- **User-driven sessions** are bound to every open item in the seat.
-  **Headless sessions** are bound only to the item they were woken for. A cron
-  worker with unrelated mail in its seat stops untouched.
+It cannot surface anything else. Updates never block. A task belonging to
+another session is invisible to it. That is the anti-ambush guarantee, and it
+is one SQL clause rather than a policy.
 
 ## Injection follows the timeline's gate exactly
 
-The inbox block is built in the same hook as the timeline block, after the same
-single `_is_interactive()` check. It is structurally impossible for the inbox
-to inject where the timeline would not — they cannot drift. Headless work gets
-neither: it was given its task, and the seat's mail is not it.
+Updates are built in the same hook as the timeline block, after the same
+single `_is_interactive()` check, and placed *below* it — the seat's own
+history is what it builds on; another seat's news is not. Headless work gets
+neither.
 
 ## Configuration
 
@@ -136,16 +140,15 @@ neither: it was given its task, and the seat's mail is not it.
 | `agent_root` (review config) | `~/Agents` | Where seats live |
 | `mail.deliver_live` | unset | argv list; `{seat}`/`{text}` substituted. Exit 0 + sid on stdout = delivered |
 | `mail.scheduler_home` | package default | Where the scheduler's `schedule.json` lives |
-| `mail.category` | `inbox` | Run-category for a wake |
+| `mail.category` | `inbox` | Run-category for a spawn |
 | `mail.python` | `sys.executable` | Interpreter for the scheduler call |
-| `mail.wake` | `true` | `false` never books a wake |
-| `JSTACK_INBOX_INJECT_DISABLED` | unset | Kill switch for injection |
+| `mail.wake` | `true` | `false` disables the spawn rung |
+| `JSTACK_INBOX_INJECT_DISABLED` | unset | Kill switch for update injection |
 | `JSTACK_INBOX_GUARD_DISABLED` | unset | Kill switch for the Stop block |
 | `JSTACK_MAIL_FROM` | unset | Sending seat override |
 
-With no `mail` block at all the inbox still works end to end — messages file,
-inject, and enforce. Only the two delivery rungs that need host knowledge go
-quiet.
+With no `mail` block at all, updates still work end to end; tasks cannot be
+delivered, so they fail at send rather than pretending.
 
 ## The store
 

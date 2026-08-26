@@ -229,10 +229,12 @@ def explain(seat: str) -> dict:
     return out
 
 
-def inbox_open(seat: str) -> list:
-    """Open inbox items for a seat (bin/msg is the only reader of that truth)."""
+def inbox_updates(seat: str) -> list:
+    """This seat's unseen updates. Reading them consumes them — an update is
+    delivered exactly once, which is what keeps a mailbox from becoming a
+    backlog. bin/msg is the only reader of that truth."""
     try:
-        r = subprocess.run([str(PLUGIN_BIN / "msg"), "pending-for", seat],
+        r = subprocess.run([str(PLUGIN_BIN / "msg"), "updates-for", seat],
                            capture_output=True, text=True, timeout=8)
     except (OSError, subprocess.SubprocessError):
         return []
@@ -246,25 +248,23 @@ def inbox_open(seat: str) -> list:
 
 
 def build_inbox(seat: str, rows: list) -> str:
-    """The inbox block — injected ABOVE the timeline because it outranks it.
+    """Updates another seat sent — news, shown once, then gone.
 
-    The timeline is history to build on; the inbox is work someone is waiting
-    on. A session that reads its history first and its mail second has the
-    priority backwards."""
+    Deliberately NOT a queue and deliberately not urgent. Nothing here is
+    owed to anyone: a request that needed doing would have arrived as a task,
+    in the session it was sent to, not as something to find later."""
     lines = [
-        "<jstack-inbox>",
-        f"{len(rows)} open message{'s' if len(rows) != 1 else ''} addressed to "
-        f"{seat}. This is a priority channel, not background reading: each item "
-        "is acted on, closed, or deferred BEFORE other work — including whatever "
-        "you were about to be asked to do. Closing records what you did.",
+        "<jstack-updates>",
+        f"{len(rows)} note{'s' if len(rows) != 1 else ''} sent to {seat} since "
+        "your last session. Context only — nobody is waiting on any of it, "
+        "there is nothing to close, and you will not see it again. Act on one "
+        "only if it changes what you are about to do.",
         "",
     ]
     for r in rows:
         head = f"[#{r['id']}] from {r['from_seat']} · {str(r['created_at']).replace('T', ' ')}"
-        if r.get("wake"):
-            head += " · WAKE"
         if r.get("reply_to"):
-            head += f" · reply to #{r['reply_to']}"
+            head += f" · answering your #{r['reply_to']}"
         lines.append(head)
         lines.append(f"  {r['subject']}")
         if r.get("body"):
@@ -275,14 +275,7 @@ def build_inbox(seat: str, rows: list) -> str:
         for att in json.loads(r.get("attachments") or "[]"):
             lines.append(f"  attached: {att}")
         lines.append("")
-    lines += [
-        f'  act, then:  msg done {rows[0]["id"]} --note "what you did"',
-        '  answer:     msg reply <id> "..." [--wake]',
-        '  not this session:  msg defer <id> --note why',
-        '  at a set hour:     msg defer <id> --until "YYYY-MM-DD HH:MM" --note why'
-        '   (books a wake)',
-        "</jstack-inbox>",
-    ]
+    lines.append("</jstack-updates>")
     return "\n".join(lines)
 
 
@@ -342,16 +335,19 @@ def main() -> int:
     seat = f"{agent}/{submode}"
     blocks = []
 
-    # Inbox first: mail someone is waiting on outranks history to build on.
-    rows = inbox_open(seat)
-    if rows and not os.environ.get("JSTACK_INBOX_INJECT_DISABLED"):
-        blocks.append(build_inbox(seat, rows))
-
     n = inject_count(cfg, agent, submode)
     if n > 0:
         entries = tail(seat, n)
         if entries:
             blocks.append(build_context(agent, submode, entries, n))
+
+    # Updates last, and only if consuming them succeeded. They are news from
+    # other seats, not work — so they sit below this seat's own history rather
+    # than above it, and they are shown exactly once.
+    if not os.environ.get("JSTACK_INBOX_INJECT_DISABLED"):
+        rows = inbox_updates(seat)
+        if rows:
+            blocks.append(build_inbox(seat, rows))
 
     if not blocks:
         return 0

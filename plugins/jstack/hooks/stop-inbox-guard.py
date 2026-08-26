@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""JStack Stop hook — an open inbox item cannot be walked past.
+"""JStack Stop hook — a task handed to THIS session gets its answer.
 
-The inbox is a priority channel: an addressed message must be acted on,
-closed, or deferred — never quietly ignored. Injection at SessionStart states
-that law; this hook is what makes it hold when a session reads the injection
-and gets on with something else anyway.
+A task is another agent's blocking request: they sent it with `--wake`, it was
+delivered into this session, and they are waiting on the reply. Ending the
+turn without answering leaves them waiting on something that will never come.
+This hook is what makes the answer happen.
 
-Mechanism: block the stop once per (session, message) with the open items and
-the exact commands that close them. The model handles them and stops for real.
-A compliant session never sees this hook — it closed its items already.
+It binds one thing and one thing only: **tasks handed to this exact session** —
+either typed into it live (the task records this session id) or the task this
+session was spawned for (its first prompt carries `[inbox:N]`).
 
-Who it binds:
-
-  * **User-driven sessions** — every open item for the seat. A person's
-    session is the seat's cockpit and the inbox is the seat's mail.
-  * **Headless sessions** — ONLY the one item the session was woken for
-    (its first prompt carries `[inbox:N]`). A cron worker whose job is a
-    social post must never be hijacked by mail addressed to the cockpit;
-    that is the whole reason messages are addressed to a seat. But the wake
-    that exists BECAUSE of message N still has to close N.
+What it will never do is surface something that was merely sitting around.
+Updates are not tasks and are never blocked on. A task belonging to another
+session — one that was never delivered here — is invisible to this hook. So
+opening a chat cannot make an agent go off doing whatever accumulated in a
+mailbox: nothing accumulates, and nothing undelivered is discoverable.
 
 Loop guards (all three):
   - `stop_hook_active` — the harness sets it while the model is continuing
@@ -82,15 +78,17 @@ def resolve_seat(cwd: str) -> "str|None":
     return f"{rel.parts[0].lower()}/{submode}"
 
 
-def open_items(seat: str, session_id: str = "") -> list:
-    """Open items for the seat, as this session sees them.
+def open_items(seat: str, session_id: str = "", woken: str = "") -> list:
+    """Tasks handed to THIS session and still unanswered.
 
-    The session id is passed rather than inherited: a bare defer means "not
-    this session", so a guard that could not name its own session would block
-    on the item the agent just deferred."""
+    Both handles are passed explicitly rather than inherited: the session id
+    matches a task typed in live, `woken` the task this run was spawned for.
+    A task matching neither was never delivered here and is not ours."""
     argv = [str(PLUGIN_BIN / "msg"), "pending-for", seat]
     if session_id:
         argv += ["--session", session_id]
+    if woken:
+        argv += ["--woken", woken]
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=8)
     except (OSError, subprocess.SubprocessError):
@@ -127,27 +125,6 @@ def first_prompt(jsonl_path: Path) -> str:
     return ""
 
 
-def is_user_engaged(jsonl_path: Path) -> bool:
-    """Same discriminator the timeline Stop hook uses: promptSource="typed"
-    or TUI mode entries — only a human at a terminal produces either."""
-    try:
-        with jsonl_path.open() as f:
-            for line in f:
-                try:
-                    e = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                t = e.get("type")
-                if t in ("mode", "permission-mode"):
-                    return True
-                if (t == "user" and not e.get("isMeta")
-                        and e.get("promptSource") == "typed"):
-                    return True
-    except OSError:
-        return False   # unreadable → treat as headless: bind only a wake's own item
-    return False
-
-
 def already_blocked(session_id: str) -> set:
     try:
         return set((STATE_DIR / session_id).read_text().split())
@@ -167,17 +144,15 @@ def record_blocked(session_id: str, ids: set) -> bool:
 
 
 def build_reason(rows: list, seat: str) -> str:
+    n = len(rows)
     lines = [
-        f"Inbox — {len(rows)} open item{'s' if len(rows) != 1 else ''} addressed to "
-        f"{seat}. These are not optional and they are not background reading: each "
-        "one gets acted on, closed, or deferred before this session ends.",
+        f"{n} task{'s' if n != 1 else ''} {'were' if n != 1 else 'was'} handed to "
+        f"this session and {'have' if n != 1 else 'has'} no answer yet. The sender "
+        f"is blocked waiting on it — answer before the turn ends.",
         "",
     ]
     for r in rows:
-        head = f"[#{r['id']}] from {r['from_seat']}"
-        if r.get("wake"):
-            head += " · WAKE (they need this now)"
-        lines.append(head)
+        lines.append(f"[#{r['id']}] from {r['from_seat']}")
         lines.append(f"  {r['subject']}")
         if r.get("body"):
             body = r["body"].strip().splitlines()
@@ -188,20 +163,14 @@ def build_reason(rows: list, seat: str) -> str:
             lines.append(f"  attached: {att}")
         lines.append("")
     lines += [
-        "Do the thing the message asks for, then record it:",
-        f'  {PLUGIN_BIN}/msg done <id> --note "what you actually did"',
+        "Do it, then answer — the reply IS the close, there is nothing else:",
+        f'  {PLUGIN_BIN}/msg reply <id> "what you did, or the answer they wanted"',
         "",
-        "Or, if it genuinely belongs later — a real blocker, not reluctance. "
-        "Bare = the next session picks it up; a named hour books a wake to act "
-        "then, so only name one when that hour is the point:",
-        f'  {PLUGIN_BIN}/msg defer <id> --note "why"',
-        f'  {PLUGIN_BIN}/msg defer <id> --until "YYYY-MM-DD HH:MM" --note "why"',
+        "If you cannot do it, say that in the reply and why. An answer that "
+        "reports a refusal or a blocker is a real answer; silence is not.",
         "",
-        "To answer the sender (they get it in their own inbox, or live if they're "
-        "running):",
-        f'  {PLUGIN_BIN}/msg reply <id> "..." [--wake]',
-        "",
-        "Then stop. Handle only the inbox here — do not start unrelated work.",
+        "Then stop. This is the only thing you owe anyone here — do not go "
+        "looking for other mail and do not start unrelated work.",
     ]
     return "\n".join(lines)
 
@@ -224,21 +193,11 @@ def main() -> None:
     if not session_id or not seat:
         allow()
 
-    rows = open_items(seat, session_id)
+    transcript = Path(d.get("transcript_path") or "").expanduser()
+    m = _WAKE_MARKER.search(first_prompt(transcript))
+    rows = open_items(seat, session_id, m.group(1) if m else "")
     if not rows:
         allow()
-
-    transcript = Path(d.get("transcript_path") or "").expanduser()
-    if not is_user_engaged(transcript):
-        # Headless: bind ONLY the item this session was woken for. An
-        # unrelated cron worker in this seat stops untouched.
-        woken = _WAKE_MARKER.search(first_prompt(transcript))
-        if not woken:
-            allow()
-        wid = woken.group(1)
-        rows = [r for r in rows if str(r["id"]) == wid]
-        if not rows:
-            allow()
 
     ids = {str(r["id"]) for r in rows}
     fresh = ids - already_blocked(session_id)

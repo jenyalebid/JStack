@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
-"""msg — addressed agent-to-agent messaging with a tracked outcome.
+"""msg — agent-to-agent messaging in exactly two forms.
 
-Send:
-    msg send @seat "content" [--wake] [--file PATH]... [--reply-to ID]
-    msg reply <id> "content" [--wake] [--file PATH]...
+    msg send @seat "content"           an UPDATE: news, no reply expected
+    msg send @seat "content" --wake    a TASK: they act now and answer
+    msg reply <id> "content"           the answer to a task
 
-Read:
-    msg inbox [--seat S | --agent A | --all] [--json]
-    msg read <id> [--json]
-    msg thread <id> [--json]
-    msg sent [-n N] [--json]
+    msg inbox / read <id> / thread <id> / sent      reading
 
-Close (an open item MUST reach one of these):
-    msg done  <id> --note "what I did"
-    msg defer <id> [--note "why"]                          -> next session
-    msg defer <id> --until "YYYY-MM-DD HH:MM" [--note ...] -> books a wake
+An **update** is a note. It shows up once in the receiver's next session as
+context and is done — it obliges nobody, closes itself, and never comes back.
 
-Defer means "not this session". Bare, it re-opens at this seat's next session
-and costs nothing. With a time it books a real wake at that hour — a named
-time is a commitment to act then, not a date written on a note nobody reads.
+A **task** is a request you cannot do yourself, and `--wake` is what makes it
+one: the receiver is reached now — typed into their live session, or a session
+is spawned for it — they do it, and they reply. The answer comes back to you.
+It is a subagent call to another agent, and it lives and dies inside that one
+exchange.
+
+Nothing accumulates. A task binds ONLY the session it was delivered to, so
+opening a chat can never make an agent go off doing something that has been
+sitting around; an unanswered task is the sender's problem to notice, visible
+in `msg sent`, and it is invisible to every other session.
+
+The bar for a task is that it genuinely needs them — their access, their
+device, context you cannot get. Work you could do yourself is not a task
+because a doc names someone else as the owner, and a message is never sent to
+correct or withdraw an earlier message.
 
 Addressing — `@agent` is the agent's cockpit, hyphens walk down to a sub-seat:
 
@@ -55,9 +61,6 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-_OPEN_STATES = ("unread", "deferred")
-_STATES = ("unread", "deferred", "done")
-
 def _is_seat(path: Path) -> bool:
     """A seat is a directory holding a CLAUDE.md — the same evidence the
     injector and review engine use to recognize one.
@@ -89,13 +92,15 @@ CREATE TABLE IF NOT EXISTS messages (
     wake           INTEGER NOT NULL DEFAULT 0,
     reply_to       INTEGER,
     thread_id      INTEGER NOT NULL DEFAULT 0,
-    state          TEXT NOT NULL DEFAULT 'unread',
-    deferred_until TEXT,
-    deferred_session TEXT,
+    -- update | seen | task | answered
+    state          TEXT NOT NULL DEFAULT 'update',
     resolution     TEXT,
     resolved_at    TEXT,
     resolved_by    TEXT,
     origin_session TEXT,
+    -- The session a task was handed to. A task binds to this one session and
+    -- no other, which is what makes a stale item impossible.
+    bound_session  TEXT,
     delivery       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_seat, state, created_at);
@@ -144,21 +149,23 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA busy_timeout=5000")
     con.executescript(_SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(messages)")}
-    if "deferred_session" not in cols:
-        con.execute("ALTER TABLE messages ADD COLUMN deferred_session TEXT")
+    if "bound_session" not in cols:
+        con.execute("ALTER TABLE messages ADD COLUMN bound_session TEXT")
         con.commit()
+    for dead in ("deferred_until", "deferred_session"):
+        if dead in cols:
+            try:
+                con.execute(f"ALTER TABLE messages DROP COLUMN {dead}")
+                con.commit()
+            except sqlite3.Error:
+                pass
     con.row_factory = sqlite3.Row
     return con
 
 
 def session_id() -> str:
-    """The calling session, or '-' when there is none.
-
-    A defer with no time means 'not this session' — so the item has to be
-    hidden from exactly one session and open to every other. The sentinel
-    keeps a defer made outside a session honest: '-' never matches a real
-    session id, so the item re-opens on the next real one."""
-    return os.environ.get("CLAUDE_CODE_SESSION_ID") or "-"
+    """The calling session, or '' when there is none."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
 
 
 def agent_root() -> Path:
@@ -271,22 +278,56 @@ def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
     return base, submode, seat_dir
 
 
-def sender_seat() -> "str|None":
-    """The calling session's seat from cwd — same resolution as the injector."""
-    env = os.environ.get("JSTACK_MAIL_FROM", "").strip()
-    if env:
-        return env
+def _seat_of(path: "Path|None") -> "str|None":
+    """A directory -> the seat it sits in, or None. The injector's resolution."""
+    if path is None:
+        return None
     root = agent_root()
     try:
-        rel = Path.cwd().resolve().relative_to(root.resolve())
+        rel = path.resolve().relative_to(root.resolve())
     except (ValueError, OSError):
         return None
-    if not rel.parts:
-        return None
-    if not (root / rel.parts[0] / "CLAUDE.md").is_file():
+    if not rel.parts or not (root / rel.parts[0] / "CLAUDE.md").is_file():
         return None
     submode = "/".join(p.lower() for p in rel.parts[1:]) or "chat"
     return f"{rel.parts[0].lower()}/{submode}"
+
+
+def _session_cwd() -> "Path|None":
+    """The calling session's own workspace, read from its transcript.
+
+    cwd is where the agent last `cd`'d to, which is routinely somewhere else —
+    a repo, an infra dir. The transcript records the workspace the session was
+    started in, so a message sent or closed from anywhere still carries the
+    seat that did it, rather than an anonymous '?'."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    if not sid:
+        return None
+    try:
+        hits = sorted((Path.home() / ".claude" / "projects").glob(f"*/{sid}.jsonl"))
+    except OSError:
+        return None
+    for path in hits:
+        try:
+            with path.open() as fh:
+                for _ in range(40):
+                    line = fh.readline()
+                    if not line:
+                        break
+                    cwd = (json.loads(line) or {}).get("cwd")
+                    if cwd:
+                        return Path(cwd)
+        except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+            continue
+    return None
+
+
+def sender_seat() -> "str|None":
+    """The calling session's seat: an override, then cwd, then its workspace."""
+    env = os.environ.get("JSTACK_MAIL_FROM", "").strip()
+    if env:
+        return env
+    return _seat_of(Path.cwd()) or _seat_of(_session_cwd())
 
 
 # ---------------------------------------------------------------- attachments
@@ -354,11 +395,8 @@ def _short(row, width: int = 78) -> str:
 
 def _row_header(row) -> str:
     bits = [f"[#{row['id']}]", f"from {row['from_seat']}", row["created_at"].replace("T", " ")]
-    if row["wake"]:
-        bits.append("WAKE")
-    if row["state"] == "deferred":
-        bits.append(f"deferred → {row['deferred_until'].replace('T', ' ')}"
-                    if row["deferred_until"] else "deferred → next session")
+    bits.append({"task": "TASK — unanswered", "answered": "task, answered"}
+                .get(row["state"], "update"))
     if row["reply_to"]:
         bits.append(f"reply to #{row['reply_to']}")
     return " · ".join(bits)
@@ -375,12 +413,12 @@ def _render(row, full: bool = False) -> str:
             lines.append("")
             lines.append("  Attachments:")
             lines.extend(f"    {a}" for a in atts)
-        if row["state"] == "done":
+        if row["state"] == "answered":
             lines.append("")
-            lines.append(f"  ✓ closed {(row['resolved_at'] or '').replace('T', ' ')}"
+            lines.append(f"  ✓ answered {(row['resolved_at'] or '').replace('T', ' ')}"
                          f" by {row['resolved_by'] or '?'}")
             if row["resolution"]:
-                lines.append(f"    {row['resolution']}")
+                lines.extend("    " + ln for ln in row["resolution"].splitlines())
     return "\n".join(lines)
 
 
@@ -397,28 +435,52 @@ def _dump(rows, as_json: bool, full: bool = False) -> None:
 # ------------------------------------------------------------------- delivery
 
 
-def _due_clause() -> str:
-    """Open = unread, deferred-to-next-session seen from any other session, or
-    deferred to a named time that has come. Binds (session_id, now)."""
-    return ("(state = 'unread' OR (state = 'deferred' AND ("
-            "(deferred_until IS NULL AND IFNULL(deferred_session, '-') <> ?) OR "
-            "(deferred_until IS NOT NULL AND deferred_until <= ?))))")
+#: How far back an unseen update is still news. Older than this it is not
+#: shown to anyone — a note nobody read for a week is not worth a session's
+#: attention, and silently ageing out is the only thing that guarantees the
+#: mailbox cannot grow into a backlog.
+UPDATE_TTL_DAYS = 7
+UPDATE_MAX = 8
 
 
-def _due_args() -> tuple:
-    return (session_id(), now_iso())
+def unseen_updates(con, seat: str) -> list:
+    """Updates this seat has not been shown yet, newest first, capped and aged.
 
-
-def open_for_seat(con, seat: str) -> list:
+    Reading them marks them seen — an update is delivered exactly once."""
+    cutoff = (datetime.now() - timedelta(days=UPDATE_TTL_DAYS)).isoformat(timespec="seconds")
     return con.execute(
-        f"SELECT * FROM messages WHERE to_seat = ? AND {_due_clause()} "
-        "ORDER BY created_at, id", (seat, *_due_args())).fetchall()
+        "SELECT * FROM messages WHERE to_seat = ? AND state = 'update' "
+        "AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?",
+        (seat, cutoff, UPDATE_MAX)).fetchall()
+
+
+def mark_seen(con, rows) -> None:
+    ids = [r["id"] for r in rows]
+    if not ids:
+        return
+    con.execute(f"UPDATE messages SET state='seen' WHERE id IN "
+                f"({','.join('?' * len(ids))})", ids)
+    con.commit()
+
+
+def tasks_for_session(con, sid: str) -> list:
+    """Unanswered tasks handed to THIS session — never any other.
+
+    The whole no-backlog guarantee is this one clause: a task nobody delivered
+    to you is not yours to discover, so no session can ever be ambushed by
+    something that has been sitting around."""
+    if not sid:
+        return []
+    return con.execute(
+        "SELECT * FROM messages WHERE state = 'task' AND bound_session = ? "
+        "ORDER BY created_at, id", (sid,)).fetchall()
 
 
 def _wake_prompt(row) -> str:
     atts = json.loads(row["attachments"] or "[]")
     parts = [
-        f"[inbox:{row['id']}] Message from {row['from_seat']} — handle it, then close it.",
+        f"[inbox:{row['id']}] Task from {row['from_seat']}. They are waiting on "
+        f"your answer — do it now, then reply.",
         "",
         row["subject"],
     ]
@@ -428,13 +490,11 @@ def _wake_prompt(row) -> str:
         parts += ["", "Attachments:"] + [f"  {a}" for a in atts]
     parts += [
         "",
-        "This wake exists to act on the message and record what you did.",
-        f'  done:   msg done {row["id"]} --note "what you did"',
-        f'  answer: msg reply {row["id"]} "..."   (add --wake if they need it now)',
-        f'  wait:   msg defer {row["id"]} --note why'
-        '   (re-opens on the next session)',
-        f'          msg defer {row["id"]} --until "YYYY-MM-DD HH:MM" --note why'
-        '   (books a wake)',
+        f'  msg reply {row["id"]} "what you did, or the answer they asked for"',
+        "",
+        "That reply is the whole point of this task and it goes straight back "
+        "to them. Nothing else is expected of you: this is the only thing in "
+        "your inbox, and when you have answered it there is nothing left.",
     ]
     return "\n".join(parts)
 
@@ -511,14 +571,12 @@ def _book_wake(seat: str, seat_dir: Path, row, at: "str|None" = None) -> "str|No
         r = subprocess.run(argv, capture_output=True, text=True, timeout=30,
                            env=env, cwd=str(plugin_root))
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"warning: wake could not be booked ({e}) — message is filed, "
-              f"it will inject on the seat's next session", file=sys.stderr)
+        print(f"warning: wake could not be booked ({e})", file=sys.stderr)
         return None
     if r.returncode != 0:
         detail = (r.stderr or r.stdout or "").strip().splitlines()
         print(f"warning: wake could not be booked "
-              f"({detail[-1] if detail else 'scheduler refused'}) — message is "
-              f"filed, it will inject on the seat's next session", file=sys.stderr)
+              f"({detail[-1] if detail else 'scheduler refused'})", file=sys.stderr)
         return None
     return f"spawned:{at}"
 
@@ -554,70 +612,94 @@ def cmd_send(args) -> int:
     for _ in submode.split("/"):
         agent_dir = agent_dir.parent
     atts = _stash_attachments(args.file or [], seat_dir, agent_dir)
+    state = "task" if args.wake else "update"
     cur = con.execute(
         "INSERT INTO messages (created_at, from_seat, to_agent, to_seat, subject, "
         "body, attachments, wake, reply_to, thread_id, state, origin_session) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?, 'unread', ?)",
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (now_iso(), frm, agent, seat, subject, body, json.dumps(atts),
-         1 if args.wake else 0, reply_to, thread_id,
+         1 if args.wake else 0, reply_to, thread_id, state,
          os.environ.get("CLAUDE_CODE_SESSION_ID") or None))
     mid = cur.lastrowid
     if not thread_id:
         con.execute("UPDATE messages SET thread_id = ? WHERE id = ?", (mid, mid))
     con.commit()
 
-    row = con.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
-    delivery = ""
-    if args.wake:
-        delivery = _deliver_live(seat, _wake_prompt(row)) or ""
-        if not delivery:
-            delivery = _book_wake(seat, seat_dir, row) or ""
-    if delivery:
-        con.execute("UPDATE messages SET delivery = ? WHERE id = ?", (delivery, mid))
-        con.commit()
+    if not args.wake:
+        print(f"#{mid} → {seat} — update, lands in their next session")
+        return 0
 
-    how = {
-        "": "will inject on that seat's next session",
-        "typed": "typed into a live session now",
-    }.get(delivery, "")
-    if not how:
-        if delivery.startswith("typed:"):
-            how = f"typed into live session {delivery.split(':', 1)[1]} now"
-        elif delivery.startswith("spawned:"):
-            how = f"wake booked for {delivery.split(':', 1)[1]} PT"
-    print(f"#{mid} → {seat} — {how}")
+    # A task has to reach a session NOW, and bind to exactly that one. Live
+    # first, then a spawn. A task that reaches nobody is not filed to be found
+    # later — it is reported failed, because the sender is the one waiting.
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
+    delivery = _deliver_live(seat, _wake_prompt(row)) or ""
+    bound = delivery.split(":", 1)[1] if delivery.startswith("typed:") else None
+    if not delivery:
+        delivery = _book_wake(seat, seat_dir, row) or ""
+        bound = f"wake:{mid}" if delivery else None
+    if not delivery:
+        con.execute("DELETE FROM messages WHERE id = ?", (mid,))
+        con.commit()
+        _fail(f"could not reach {seat} — nobody live and no wake could be booked. "
+              f"Nothing was filed: a task nobody is doing is not a message, and "
+              f"leaving it to be found later is the backlog this refuses to make.",
+              code=3)
+    con.execute("UPDATE messages SET delivery = ?, bound_session = ? WHERE id = ?",
+                (delivery, bound, mid))
+    con.commit()
+    if delivery.startswith("typed:"):
+        print(f"#{mid} → {seat} — handed to live session {bound}; "
+              f"their reply comes back to you")
+    else:
+        print(f"#{mid} → {seat} — session spawning at "
+              f"{delivery.split(':', 1)[1]} PT; their reply comes back to you")
     return 0
 
 
 def cmd_reply(args) -> int:
+    """Answer a task. The answer closes it — there is no separate close."""
     con = connect()
     parent = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
     if not parent:
         _fail(f"no message #{args.id}")
+    me = args.frm or sender_seat()
+    content = (args.content or "").strip()
+    if parent["state"] == "task":
+        con.execute(
+            "UPDATE messages SET state='answered', resolution=?, resolved_at=?, "
+            "resolved_by=? WHERE id = ?", (content, now_iso(), me or "?", args.id))
+        con.commit()
     args.to = "@" + parent["from_seat"].replace("/", "-")
     args.reply_to = args.id
-    args.frm = args.frm or sender_seat()
+    args.frm = me
     return cmd_send(args)
 
 
 def cmd_inbox(args) -> int:
+    """Recent traffic for a seat — a report, never a work queue.
+
+    Reading an inbox does not make anything yours. A task is yours only when
+    it was handed to your session; everything else here is news."""
     con = connect()
-    if args.all:
-        rows = con.execute(
-            f"SELECT * FROM messages WHERE {_due_clause()} ORDER BY created_at, id",
-            _due_args()).fetchall()
-    elif args.agent:
-        rows = con.execute(
-            f"SELECT * FROM messages WHERE to_agent = ? AND {_due_clause()} "
-            "ORDER BY created_at, id",
-            (args.agent.lstrip("@").lower(), *_due_args())).fetchall()
-    else:
+    cutoff = (datetime.now() - timedelta(days=UPDATE_TTL_DAYS)).isoformat(timespec="seconds")
+    where, params = "created_at >= ?", [cutoff]
+    if args.agent:
+        where += " AND to_agent = ?"
+        params.append(args.agent.lstrip("@").lower())
+    elif not args.all:
         seat = args.seat or sender_seat()
         if not seat:
             _fail("not in an agent seat — pass --seat agent/seat, --agent NAME, or --all")
-        rows = open_for_seat(con, seat)
+        where += " AND to_seat = ?"
+        params.append(seat)
+    rows = con.execute(f"SELECT * FROM messages WHERE {where} AND state <> 'answered' "
+                       f"ORDER BY created_at, id", params).fetchall()
     if not args.json and rows:
-        print(f"{len(rows)} open — close, defer, or act on each before other work.\n")
+        tasks = sum(1 for r in rows if r["state"] == "task")
+        note = f"{len(rows)} in the last {UPDATE_TTL_DAYS} days"
+        print(f"{note} — {tasks} unanswered task(s), the rest are notes.\n"
+              if tasks else f"{note}, all notes — nothing is waiting on anyone.\n")
     _dump(rows, args.json)
     return 0
 
@@ -661,86 +743,33 @@ def cmd_sent(args) -> int:
     return 0
 
 
-def cmd_done(args) -> int:
-    con = connect()
-    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
-    if not row:
-        _fail(f"no message #{args.id}")
-    note = (args.note or "").strip()
-    if not note:
-        _fail("--note is required: closing a message records what was done about it")
-    if row["state"] == "done":
-        print(f"#{args.id} already closed by {row['resolved_by'] or '?'} — "
-              f"{row['resolution']}")
-        return 0
-    con.execute(
-        "UPDATE messages SET state='done', resolution=?, resolved_at=?, resolved_by=? "
-        "WHERE id = ?",
-        (note, now_iso(), args.frm or sender_seat() or "?", args.id))
-    con.commit()
-    print(f"#{args.id} closed.")
-    return 0
-
-
-def cmd_defer(args) -> int:
-    con = connect()
-    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
-    if not row:
-        _fail(f"no message #{args.id}")
-    if row["state"] == "done":
-        _fail(f"#{args.id} is already closed")
-    raw = (args.until or "").strip()
-    note = (args.note or "").strip()
-    body = row["body"]
-    if note:
-        body = (body + "\n\n" if body else "") + f"[deferred {now_iso()}] {note}"
-
-    # No time — the default and the common case: not this session, next one.
-    if not raw:
-        con.execute("UPDATE messages SET state='deferred', deferred_until=NULL, "
-                    "deferred_session=?, body=? WHERE id=?",
-                    (session_id(), body, args.id))
-        con.commit()
-        print(f"#{args.id} deferred — it re-opens on this seat's next session.")
-        return 0
-
-    try:
-        when = datetime.strptime(raw, "%Y-%m-%d %H:%M")
-    except ValueError:
-        _fail("--until must be 'YYYY-MM-DD HH:MM'. Omit it to defer to the next "
-              "session — a named time books a wake, so it needs an hour to fire at.")
-    if when <= datetime.now():
-        _fail("--until is in the past — a defer must move the item forward")
-    con.execute("UPDATE messages SET state='deferred', deferred_until=?, "
-                "deferred_session=NULL, body=? WHERE id=?",
-                (when.isoformat(timespec="seconds"), body, args.id))
-    con.commit()
-
-    # A named time is a commitment to act then, so it books the wake. A defer
-    # that only re-opens in a mailbox nobody may open that day is the thing
-    # this branch exists to stop being.
-    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
-    seat_dir = seat_dir_for(row["to_seat"])
-    booked = _book_wake(row["to_seat"], seat_dir, row,
-                        at=when.strftime("%Y-%m-%d %H:%M")) if seat_dir else None
-    if booked:
-        con.execute("UPDATE messages SET delivery=? WHERE id=?", (booked, args.id))
-        con.commit()
-        print(f"#{args.id} deferred to {raw} — wake booked, it spawns then.")
-        return 0
-    print(f"#{args.id} deferred to {raw}, but THE WAKE WAS NOT BOOKED — it "
-          f"re-opens in the inbox at that time and nothing spawns to act on it. "
-          f"Defer without --until, or book the wake yourself.", file=sys.stderr)
-    return 1
-
-
 def cmd_pending(args) -> int:
-    """Hook helper: open items for a seat, as JSON. Exit 1 = none."""
+    """Hook helper: unanswered tasks handed to THIS session. Exit 1 = none.
+
+    Two ways a task is "handed to" a session: typed into a live one (which
+    records its id), or spawned for it (the run's prompt carries the id, and
+    `--woken` is how the hook passes that along). Nothing else qualifies."""
     con = connect()
-    if args.session:
-        os.environ["CLAUDE_CODE_SESSION_ID"] = args.session
-    rows = open_for_seat(con, args.seat)
+    rows = list(tasks_for_session(con, args.session or session_id()))
+    if args.woken and not any(str(r["id"]) == str(args.woken) for r in rows):
+        extra = con.execute("SELECT * FROM messages WHERE id = ? AND state = 'task'",
+                            (args.woken,)).fetchone()
+        if extra:
+            rows.append(extra)
     print(json.dumps([dict(r) for r in rows]))
+    return 0 if rows else 1
+
+
+def cmd_updates(args) -> int:
+    """Hook helper: this seat's unseen updates, then mark them seen.
+
+    Delivered exactly once. `--peek` reads without consuming, so a failed
+    injection does not silently eat the news."""
+    con = connect()
+    rows = unseen_updates(con, args.seat)
+    print(json.dumps([dict(r) for r in rows]))
+    if rows and not args.peek:
+        mark_seen(con, rows)
     return 0 if rows else 1
 
 
@@ -796,25 +825,18 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--json", action="store_true")
     st.set_defaults(func=cmd_sent)
 
-    d = sub.add_parser("done", help="close a message with what was done")
-    d.add_argument("id", type=int)
-    d.add_argument("--note", required=True)
-    d.add_argument("--from", dest="frm", metavar="SEAT")
-    d.set_defaults(func=cmd_done)
-
-    df = sub.add_parser("defer", help="push a message to the next session, or to a time")
-    df.add_argument("id", type=int)
-    df.add_argument("--until", metavar='"YYYY-MM-DD HH:MM"',
-                    help="a named time — books a wake that spawns then. "
-                         "Omit to defer to this seat's next session")
-    df.add_argument("--note")
-    df.set_defaults(func=cmd_defer)
-
-    pd = sub.add_parser("pending-for", help="hook helper: open items for a seat as JSON")
-    pd.add_argument("seat")
+    pd = sub.add_parser("pending-for", help="hook helper: this session's unanswered tasks")
+    pd.add_argument("seat", nargs="?", default="")
     pd.add_argument("--session", metavar="SID", default="",
-                    help="the asking session — a bare defer is hidden from it")
+                    help="the asking session — a task binds to one session only")
+    pd.add_argument("--woken", metavar="ID", default="",
+                    help="the task this session was spawned for")
     pd.set_defaults(func=cmd_pending)
+
+    up = sub.add_parser("updates-for", help="hook helper: a seat's unseen updates (consumes them)")
+    up.add_argument("seat")
+    up.add_argument("--peek", action="store_true", help="read without marking seen")
+    up.set_defaults(func=cmd_updates)
 
     return p
 

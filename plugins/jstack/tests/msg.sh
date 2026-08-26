@@ -52,11 +52,23 @@ cat > "$JSTACK_REVIEW_CONFIG" <<EOF
 {"agent_root": "$AR"}
 EOF
 
+SEEN() { python3 "$TMP/seen.py" "$DB" "$1"; }
+SEEN_ALL() { python3 "$TMP/seen.py" "$DB"; }
 SQL() { python3 -c "import sqlite3,sys; print(sqlite3.connect('$DB').execute(sys.argv[1]).fetchall())" "$1"; }
+cat > "$TMP/seen.py" <<'PYEOF'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+if len(sys.argv) > 2:
+    con.execute("UPDATE messages SET state='seen' WHERE id=?", (sys.argv[2],))
+else:
+    con.execute("UPDATE messages SET state='seen' WHERE state='update'")
+con.commit()
+PYEOF
+
 cd "$AR/Alice/chat" || exit 1
 
 # ------------------------------------------------------------- 1. addressing
-addr() { "$MSG" send "$1" "probe $1" 2>&1 | tail -1; }
+addr() { "$MSG" send "$1" "probe $1" 2>&1 | head -1; }
 
 [[ "$(addr @bob)"              == *"→ bob/chat"*              ]] && pass "@bob -> bob/chat"                     || fail "@bob -> bob/chat"
 [[ "$(addr @alice-social)"     == *"→ alice/social/chat"*     ]] && pass "@alice-social descends into chat/"    || fail "@alice-social descends into chat/"
@@ -77,13 +89,7 @@ out=$("$MSG" send @boss "x" 2>&1); rc=$?
 # --------------------------------------------------- 2. send/read/reply loop
 # The addressing probes above deliberately filed real messages. Close them so
 # the lifecycle assertions below read an inbox they alone control.
-python3 - "$DB" <<'PY'
-import sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
-con.execute("UPDATE messages SET state='done', resolution='addressing probe', "
-            "resolved_by='test'")
-con.commit()
-PY
+SEEN_ALL
 
 echo "payload" > "$TMP/att.txt"
 "$MSG" send @bob "Subject line here
@@ -120,14 +126,13 @@ ADID=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Agent-root drop'" | grep
   && pass "agent-tree attachment recorded in place" || fail "agent-tree attachment recorded in place"
 [[ "$(find "$AR/Bob" -name '*agentdrop.png' | wc -l | tr -d ' ')" == "1" ]] \
   && pass "agent-tree attachment not duplicated" || fail "agent-tree attachment not duplicated"
-JSTACK_MAIL_FROM=bob/chat "$MSG" done "$ADID" --note "drop test" >/dev/null
+SEEN "$ADID"
 
 [[ "$("$MSG" read "$DID")" == *"$DROP"* ]] && pass "in-pad attachment recorded in place" || fail "in-pad attachment recorded in place"
 [[ "$(SQL "SELECT from_seat FROM messages WHERE id=$DID")" == "[('boss',)]" ]] \
   && pass "--from boss recorded (share-sheet drop)" || fail "--from boss recorded"
-# close it — the inbox assertions below own bob's inbox and must read only
-# what they put there
-JSTACK_MAIL_FROM=bob/chat "$MSG" done "$DID" --note "drop test" >/dev/null
+# consume it — the assertions below own bob's inbox and read only their own
+SEEN "$DID"
 
 # reply routes back to the sender's own inbox and joins the thread
 JSTACK_MAIL_FROM=bob/chat "$MSG" reply "$MID" "Answered." >/dev/null || fail "reply exit"
@@ -139,91 +144,99 @@ RID=$(SQL "SELECT MAX(id) FROM messages WHERE to_seat='alice/chat' AND subject='
   && pass "reply joins the thread" || fail "reply joins the thread"
 [[ "$("$MSG" thread "$MID" | grep -c '^\[#')" == "2" ]] && pass "thread shows both" || fail "thread shows both"
 
-# ------------------------------------------------------------- 3. closing
-out=$("$MSG" done "$MID" --note "" 2>&1); rc=$?
-[[ $rc -ne 0 && "$out" == *"--note is required"* ]] && pass "close demands a record" || fail "close demands a record"
+# ---------------------------------------------- 3. an update obliges nobody
+SEEN_ALL
+"$MSG" send @bob "Just news" >/dev/null
+[[ "$(SQL "SELECT state FROM messages WHERE subject='Just news'")" == "[('update',)]" ]] \
+  && pass "no --wake files an update" || fail "no --wake files an update"
 
-JSTACK_MAIL_FROM=bob/chat "$MSG" done "$MID" --note "Read it and shipped the fix." >/dev/null
-[[ "$("$MSG" inbox --seat bob/chat)" == "(nothing)" ]] && pass "closed leaves the inbox" || fail "closed leaves the inbox"
-[[ "$(SQL "SELECT state, resolution, resolved_by FROM messages WHERE id=$MID")" \
-   == "[('done', 'Read it and shipped the fix.', 'bob/chat')]" ]] \
-  && pass "resolution + closer recorded" || fail "resolution + closer recorded"
+# delivered exactly once: the hook helper consumes it
+[[ "$("$MSG" updates-for bob/chat)" == *"Just news"* ]] && pass "update is delivered" || fail "update is delivered"
+"$MSG" updates-for bob/chat >/dev/null; [[ $? -eq 1 ]] \
+  && pass "update never delivered twice" || fail "update never delivered twice"
+[[ "$("$MSG" updates-for bob/chat)" == "[]" ]] && pass "nothing left after delivery" || fail "nothing left after delivery"
 
-out=$("$MSG" done "$MID" --note "again" 2>&1); rc=$?
-[[ $rc -eq 0 && "$out" == *"already closed"* ]] && pass "double close is a no-op" || fail "double close is a no-op"
+# --peek reads without consuming — a failed injection must not eat the news
+"$MSG" send @bob "Peekable" >/dev/null
+"$MSG" updates-for bob/chat --peek >/dev/null
+[[ "$("$MSG" updates-for bob/chat)" == *"Peekable"* ]] \
+  && pass "--peek does not consume" || fail "--peek does not consume"
 
-# -------------------------------------------------------------- 4. deferring
-"$MSG" send @bob "Later thing" >/dev/null
-LID=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Later thing'" | grep -oE '[0-9]+')
+# an update older than the TTL is never shown to anyone — the anti-backlog rule
+"$MSG" send @bob "Ancient news" >/dev/null
+OLD=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Ancient news'" | grep -oE '[0-9]+')
+python3 - "$DB" "$OLD" <<'PY'
+import sqlite3, sys
+from datetime import datetime, timedelta
+old = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+con = sqlite3.connect(sys.argv[1])
+con.execute("UPDATE messages SET created_at=? WHERE id=?", (old, sys.argv[2]))
+con.commit()
+PY
+[[ "$("$MSG" updates-for bob/chat)" != *"Ancient news"* ]] \
+  && pass "a stale update ages out silently" || fail "a stale update ages out silently"
+[[ "$("$MSG" inbox --seat bob/chat)" != *"Ancient news"* ]] \
+  && pass "a stale update is not in the inbox either" || fail "a stale update is not in the inbox either"
 
-# 4a. bare defer — "not this session". The default: costs nothing, books nothing.
-CLAUDE_CODE_SESSION_ID=sess-A "$MSG" defer "$LID" --note "blocked on X" >/dev/null
-[[ "$(CLAUDE_CODE_SESSION_ID=sess-A "$MSG" inbox --seat bob/chat)" == "(nothing)" ]] \
-  && pass "bare defer hides from the deferring session" || fail "bare defer hides from the deferring session"
-[[ "$(CLAUDE_CODE_SESSION_ID=sess-B "$MSG" inbox --seat bob/chat)" == *"Later thing"* ]] \
-  && pass "bare defer re-opens on the next session" || fail "bare defer re-opens on the next session"
-[[ "$(SQL "SELECT deferred_until, deferred_session FROM messages WHERE id=$LID")" == "[(None, 'sess-A')]" ]] \
-  && pass "bare defer names no time" || fail "bare defer names no time"
-[[ "$("$MSG" read "$LID")" == *"blocked on X"* ]] && pass "defer reason kept" || fail "defer reason kept"
-[[ "$("$MSG" read "$LID")" == *"next session"* ]] && pass "bare defer renders as next session" || fail "bare defer renders as next session"
+# an update NEVER binds a session — pending-for is tasks only
+"$MSG" send @bob "Not a task" >/dev/null
+CLAUDE_CODE_SESSION_ID=sess-1 "$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 1 ]] \
+  && pass "an update binds no session" || fail "an update binds no session"
 
-# 4b. a named time must be a real hour, and must be ahead
-out=$("$MSG" defer "$LID" --until "2020-01-01 09:00" 2>&1); rc=$?
-[[ $rc -ne 0 && "$out" == *"in the past"* ]] && pass "past defer refused" || fail "past defer refused"
-out=$("$MSG" defer "$LID" --until "2099-01-01" 2>&1); rc=$?
-[[ $rc -ne 0 && "$out" == *"HH:MM"* ]] && pass "date with no hour refused" || fail "date with no hour refused"
-
-# 4c. --until books a REAL wake — a stub scheduler records what it was asked
-export WAKE_ARGV="$TMP/wake-argv"
-cat > "$TMP/stub-python" <<'EOS'
+# ------------------------------------------------ 4. a task binds ONE session
+cat > "$TMP/live" <<'EOS'
 #!/bin/sh
-printf '%s\n' "$@" > "$WAKE_ARGV"
-exit 0
+echo live-sess-9
 EOS
-chmod +x "$TMP/stub-python"
-cat > "$JSTACK_REVIEW_CONFIG" <<EOF
-{"agent_root": "$AR", "mail": {"python": "$TMP/stub-python", "scheduler_home": "$TMP"}}
-EOF
-out=$("$MSG" defer "$LID" --until "2099-01-01 09:00" --note "needs a build" 2>&1); rc=$?
-[[ $rc -eq 0 && "$out" == *"wake booked"* ]] && pass "timed defer books a wake" || fail "timed defer books a wake (rc=$rc: $out)"
-[[ "$(cat "$WAKE_ARGV")" == *"add-once"* ]] && pass "wake reaches the scheduler" || fail "wake reaches the scheduler"
-grep -qx "2099-01-01 09:00" "$WAKE_ARGV" && pass "wake booked for the named hour" || fail "wake booked for the named hour"
-grep -qx "bob-chat" "$WAKE_ARGV" && pass "wake targets the receiving seat" || fail "wake targets the receiving seat"
-grep -q "\[inbox:$LID\]" "$WAKE_ARGV" && pass "wake carries the routing marker" || fail "wake carries the routing marker"
-[[ "$("$MSG" inbox --seat bob/chat)" == "(nothing)" ]] && pass "timed defer hides until due" || fail "timed defer hides until due"
+chmod +x "$TMP/live"
+cat > "$JSTACK_REVIEW_CONFIG" <<EOF2
+{"agent_root": "$AR", "mail": {"deliver_live": ["$TMP/live", "{seat}", "{text}"]}}
+EOF2
+out=$("$MSG" send @bob "Do this now" --wake 2>&1)
+TID=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Do this now'" | grep -oE '[0-9]+')
+[[ "$out" == *"live-sess-9"* ]] && pass "task is handed to the live session" || fail "task is handed to the live session"
+[[ "$(SQL "SELECT state, bound_session FROM messages WHERE id=$TID")" == "[('task', 'live-sess-9')]" ]] \
+  && pass "task records the session it bound to" || fail "task records the session it bound to"
 
-# 4d. a booking that fails is loud — a defer that silently does nothing is the bug
-cat > "$JSTACK_REVIEW_CONFIG" <<EOF
+# THE anti-ambush rule: only the session it was handed to can see it
+"$MSG" pending-for bob/chat --session live-sess-9 | grep -q "Do this now" \
+  && pass "the bound session sees its task" || fail "the bound session sees its task"
+"$MSG" pending-for bob/chat --session someone-else >/dev/null; [[ $? -eq 1 ]] \
+  && pass "another session cannot see it" || fail "another session cannot see it"
+"$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 1 ]] \
+  && pass "a session with no task sees nothing" || fail "a session with no task sees nothing"
+# nor does it leak through the update channel
+[[ "$("$MSG" updates-for bob/chat)" != *"Do this now"* ]] \
+  && pass "a task never arrives as an update" || fail "a task never arrives as an update"
+
+# a spawned task is reachable by the id its run was woken with, and only that id
+"$MSG" pending-for bob/chat --session nobody --woken "$TID" | grep -q "Do this now" \
+  && pass "a woken run reaches its own task" || fail "a woken run reaches its own task"
+
+# the reply IS the close, and it goes back to the sender
+JSTACK_MAIL_FROM=bob/chat "$MSG" reply "$TID" "Did it, here is the answer." >/dev/null
+[[ "$(SQL "SELECT state, resolved_by FROM messages WHERE id=$TID")" == "[('answered', 'bob/chat')]" ]] \
+  && pass "replying answers the task" || fail "replying answers the task"
+[[ "$("$MSG" read "$TID")" == *"Did it, here is the answer."* ]] \
+  && pass "the answer is recorded on the task" || fail "the answer is recorded on the task"
+[[ "$("$MSG" updates-for alice/chat)" == *"Did it, here is the answer."* ]] \
+  && pass "the answer reaches the sender as news" || fail "the answer reaches the sender as news"
+"$MSG" pending-for bob/chat --session live-sess-9 >/dev/null; [[ $? -eq 1 ]] \
+  && pass "an answered task binds nothing" || fail "an answered task binds nothing"
+
+# ------------------------------- 5. a task nobody can take is NOT filed
+cat > "$JSTACK_REVIEW_CONFIG" <<EOF3
 {"agent_root": "$AR", "mail": {"python": "/nonexistent/python", "scheduler_home": "/nonexistent"}}
-EOF
-out=$("$MSG" defer "$LID" --until "2099-02-01 09:00" 2>&1); rc=$?
-[[ $rc -ne 0 && "$out" == *"WAKE WAS NOT BOOKED"* ]] \
-  && pass "unbookable timed defer is loud" || fail "unbookable timed defer is loud (rc=$rc)"
-[[ "$(SQL "SELECT deferred_until FROM messages WHERE id=$LID")" == *"2099-02-01"* ]] \
-  && pass "unbookable defer still moved the item" || fail "unbookable defer still moved the item"
-cat > "$JSTACK_REVIEW_CONFIG" <<EOF
+EOF3
+BEFORE=$(SQL "SELECT COUNT(*) FROM messages" | grep -oE '[0-9]+')
+out=$("$MSG" send @bob "Unreachable task" --wake 2>&1); rc=$?
+[[ $rc -ne 0 ]] && pass "unreachable task fails loudly" || fail "unreachable task fails loudly (rc=$rc)"
+[[ "$out" == *"Nothing was filed"* ]] && pass "and says nothing was filed" || fail "and says nothing was filed"
+[[ "$(SQL "SELECT COUNT(*) FROM messages" | grep -oE '[0-9]+')" == "$BEFORE" ]] \
+  && pass "no orphan row is left behind" || fail "no orphan row is left behind"
+cat > "$JSTACK_REVIEW_CONFIG" <<EOF4
 {"agent_root": "$AR"}
-EOF
-
-python3 -c "import sqlite3; sqlite3.connect('$DB').execute(\"UPDATE messages SET deferred_until='2020-01-01T09:00:00' WHERE id=$LID\").connection.commit()"
-[[ "$("$MSG" inbox --seat bob/chat)" == *"Later thing"* ]] && pass "deferred re-opens when due" || fail "deferred re-opens when due"
-
-# ------------------------------------------------------- 5. hook helper + wake
-"$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 0 ]] && pass "pending-for exit 0 with items" || fail "pending-for exit 0 with items"
-"$MSG" pending-for alice/pm  >/dev/null; [[ $? -eq 1 ]] && pass "pending-for exit 1 when empty" || fail "pending-for exit 1 when empty"
-
-# a wake that cannot be booked must still file the message — never lose mail
-cat > "$JSTACK_REVIEW_CONFIG" <<EOF
-{"agent_root": "$AR", "mail": {"scheduler_home": "/nonexistent", "python": "/nonexistent/python"}}
-EOF
-out=$("$MSG" send @bob "Wake that cannot book" --wake 2>&1); rc=$?
-[[ $rc -eq 0 ]] && pass "broken wake still exits 0" || fail "broken wake still exits 0 (rc=$rc)"
-[[ "$out" == *"warning"* ]] && pass "broken wake warns" || fail "broken wake warns"
-[[ "$("$MSG" inbox --seat bob/chat)" == *"Wake that cannot book"* ]] \
-  && pass "broken wake still files the message" || fail "broken wake still files the message"
-cat > "$JSTACK_REVIEW_CONFIG" <<EOF
-{"agent_root": "$AR"}
-EOF
+EOF4
 
 # ------------------------------------------------- 6. coexistence with timeline
 "$LOG_EVENT" alice/chat --at 10:00 --date 2026-01-15 "A timeline entry" >/dev/null

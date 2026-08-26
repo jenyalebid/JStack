@@ -737,6 +737,8 @@ def cmd_defer(args) -> int:
 def cmd_pending(args) -> int:
     """Hook helper: open items for a seat, as JSON. Exit 1 = none."""
     con = connect()
+    if args.session:
+        os.environ["CLAUDE_CODE_SESSION_ID"] = args.session
     rows = open_for_seat(con, args.seat)
     print(json.dumps([dict(r) for r in rows]))
     return 0 if rows else 1
@@ -810,6 +812,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     pd = sub.add_parser("pending-for", help="hook helper: open items for a seat as JSON")
     pd.add_argument("seat")
+    pd.add_argument("--session", metavar="SID", default="",
+                    help="the asking session — a bare defer is hidden from it")
     pd.set_defaults(func=cmd_pending)
 
     return p

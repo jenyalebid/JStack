@@ -82,10 +82,17 @@ def resolve_seat(cwd: str) -> "str|None":
     return f"{rel.parts[0].lower()}/{submode}"
 
 
-def open_items(seat: str) -> list:
+def open_items(seat: str, session_id: str = "") -> list:
+    """Open items for the seat, as this session sees them.
+
+    The session id is passed rather than inherited: a bare defer means "not
+    this session", so a guard that could not name its own session would block
+    on the item the agent just deferred."""
+    argv = [str(PLUGIN_BIN / "msg"), "pending-for", seat]
+    if session_id:
+        argv += ["--session", session_id]
     try:
-        r = subprocess.run([str(PLUGIN_BIN / "msg"), "pending-for", seat],
-                           capture_output=True, text=True, timeout=8)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=8)
     except (OSError, subprocess.SubprocessError):
         return []
     if not r.stdout.strip():
@@ -217,7 +224,7 @@ def main() -> None:
     if not session_id or not seat:
         allow()
 
-    rows = open_items(seat)
+    rows = open_items(seat, session_id)
     if not rows:
         allow()
 

@@ -10,6 +10,8 @@
 #   - a headless session unrelated to the inbox is NOT hijacked — this is the
 #     whole reason messages are addressed to a seat
 #   - a headless wake carrying [inbox:N] IS bound, and only to item N
+#   - an item bare-deferred by a session does not block THAT session, and
+#     still blocks the next one
 #   - no mail / non-agent cwd / kill switch → allow, silently
 #
 # Exit 0 = all pass, exit 1 = any fail.
@@ -85,6 +87,19 @@ out=$(run s4 "$TMP/wake.jsonl" "$BOB")
 [[ "$(printf '%s' "$out" | decision)" == "block" ]] && pass "wake session is bound to its item" || fail "wake session is bound to its item"
 [[ "$out" == *"First item"* && "$out" != *"Second item"* ]] \
   && pass "wake bound to ONLY its own item" || fail "wake bound to ONLY its own item"
+
+# 6b. an item the session itself bare-deferred does not block that session,
+#     and still blocks a different one — the guard names its own session id
+#     rather than inheriting it, so "not this session" is a fact it can see
+"$MSG" send @bob "Deferred item" >/dev/null
+DID=$(python3 -c "import sqlite3;print(sqlite3.connect('$JSTACK_TIMELINE_DIR/timeline.db').execute(\"SELECT MAX(id) FROM messages WHERE subject='Deferred item'\").fetchone()[0])")
+CLAUDE_CODE_SESSION_ID=s9 "$MSG" defer "$DID" --note "next session" >/dev/null
+out=$(run s9 "$TMP/user.jsonl" "$BOB")
+[[ "$out" != *"Deferred item"* ]] \
+  && pass "bare defer does not block its own session" || fail "bare defer does not block its own session"
+out=$(run s10 "$TMP/user.jsonl" "$BOB")
+[[ "$out" == *"Deferred item"* ]] \
+  && pass "bare defer still blocks the next session" || fail "bare defer still blocks the next session"
 
 # 7. a seat with no mail -> allow
 [[ -z "$(run s5 "$TMP/user.jsonl" "$AR/Alice/chat")" ]] && pass "no mail, no block" || fail "no mail, no block"

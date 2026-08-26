@@ -229,6 +229,61 @@ def explain(seat: str) -> dict:
     return out
 
 
+def inbox_open(seat: str) -> list:
+    """Open inbox items for a seat (bin/msg is the only reader of that truth)."""
+    try:
+        r = subprocess.run([str(PLUGIN_BIN / "msg"), "pending-for", seat],
+                           capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if not r.stdout.strip():
+        return []
+    try:
+        rows = json.loads(r.stdout)
+        return rows if isinstance(rows, list) else []
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def build_inbox(seat: str, rows: list) -> str:
+    """The inbox block — injected ABOVE the timeline because it outranks it.
+
+    The timeline is history to build on; the inbox is work someone is waiting
+    on. A session that reads its history first and its mail second has the
+    priority backwards."""
+    lines = [
+        "<jstack-inbox>",
+        f"{len(rows)} open message{'s' if len(rows) != 1 else ''} addressed to "
+        f"{seat}. This is a priority channel, not background reading: each item "
+        "is acted on, closed, or deferred BEFORE other work — including whatever "
+        "you were about to be asked to do. Closing records what you did.",
+        "",
+    ]
+    for r in rows:
+        head = f"[#{r['id']}] from {r['from_seat']} · {str(r['created_at']).replace('T', ' ')}"
+        if r.get("wake"):
+            head += " · WAKE"
+        if r.get("reply_to"):
+            head += f" · reply to #{r['reply_to']}"
+        lines.append(head)
+        lines.append(f"  {r['subject']}")
+        if r.get("body"):
+            body = str(r["body"]).strip().splitlines()
+            lines.extend("  " + ln for ln in body[:4])
+            if len(body) > 4:
+                lines.append(f"  … msg read {r['id']}")
+        for att in json.loads(r.get("attachments") or "[]"):
+            lines.append(f"  attached: {att}")
+        lines.append("")
+    lines += [
+        f'  act, then:  msg done {rows[0]["id"]} --note "what you did"',
+        '  answer:     msg reply <id> "..." [--wake]',
+        '  genuinely later:  msg defer <id> --until "YYYY-MM-DD HH:MM" --note why',
+        "</jstack-inbox>",
+    ]
+    return "\n".join(lines)
+
+
 def build_context(agent: str, submode: str, entries: str, n: int) -> str:
     seat = f"{agent}/{submode}"
     return (
@@ -274,11 +329,29 @@ def main() -> int:
     if agent is None or submode == "review":
         return 0
 
-    n = inject_count(cfg, agent, submode)
-    if n <= 0 or not _is_interactive():
+    # Both halves are for a person sitting down in the seat. A headless spawn
+    # (cron, watcher, `claude --print`) gets neither: it was given its task,
+    # and the seat's mail is not it. The one exception is a wake spawned FOR a
+    # message — that carries the message inline in its own prompt, so it needs
+    # no injection to see it.
+    if not _is_interactive():
         return 0
-    entries = tail(f"{agent}/{submode}", n)
-    if not entries:
+
+    seat = f"{agent}/{submode}"
+    blocks = []
+
+    # Inbox first: mail someone is waiting on outranks history to build on.
+    rows = inbox_open(seat)
+    if rows and not os.environ.get("JSTACK_INBOX_INJECT_DISABLED"):
+        blocks.append(build_inbox(seat, rows))
+
+    n = inject_count(cfg, agent, submode)
+    if n > 0:
+        entries = tail(seat, n)
+        if entries:
+            blocks.append(build_context(agent, submode, entries, n))
+
+    if not blocks:
         return 0
 
     sys.stdout.write(
@@ -286,7 +359,7 @@ def main() -> int:
             {
                 "hookSpecificOutput": {
                     "hookEventName": "SessionStart",
-                    "additionalContext": build_context(agent, submode, entries, n),
+                    "additionalContext": "\n\n".join(blocks),
                 }
             }
         )

@@ -28,6 +28,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-inbox-guard.py",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-timeline-remind.py",
             "timeout": 10
           }

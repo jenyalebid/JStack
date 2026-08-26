@@ -1,0 +1,753 @@
+#!/usr/bin/env python3
+"""msg — addressed agent-to-agent messaging with a tracked outcome.
+
+Send:
+    msg send @seat "content" [--wake] [--file PATH]... [--reply-to ID]
+    msg reply <id> "content" [--wake] [--file PATH]...
+
+Read:
+    msg inbox [--seat S | --agent A | --all] [--json]
+    msg read <id> [--json]
+    msg thread <id> [--json]
+    msg sent [-n N] [--json]
+
+Close (an open item MUST reach one of these):
+    msg done <id> --note "what I did"
+    msg defer <id> --until "YYYY-MM-DD HH:MM" [--note "why"]
+
+Addressing — `@agent` is the agent's cockpit, hyphens walk down to a sub-seat:
+
+    @mario                 -> mario/chat
+    @lynda-social          -> lynda/social/chat   (descends into chat/)
+    @lynda-pm              -> lynda/pm            (no pm/chat dir)
+    @jarvis-service-call   -> jarvis/service-call
+    @self                  -> the sender's own seat
+
+The trailing descent into `chat/` is the rule that makes `@lynda-social` mean
+the social OPERATOR seat rather than the social container — the same
+`{base}-social-chat` convention the rest of the stack already uses.
+
+Store: the timeline db ({timeline_dir}/timeline.db), own `messages` table.
+One store, one backup, one WAL; the timeline's `entries` table is untouched.
+This binary is the only sanctioned writer of `messages` — a second writer
+would fork the source of truth (same law log_event holds).
+
+`@boss` is deliberately NOT a mailbox: the host's own Boss channel owns human
+contact and already has a reply path. Sending to it errors and says so.
+
+Self-contained python3 stdlib — no venv, no host imports. Safe to call from
+hooks, crons, spawned sessions, or interactively.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+_OPEN_STATES = ("unread", "deferred")
+_STATES = ("unread", "deferred", "done")
+
+def _is_seat(path: Path) -> bool:
+    """A seat is a directory holding a CLAUDE.md — the same evidence the
+    injector and review engine use to recognize one.
+
+    This is the gate, not a blocklist of storage dir names: `Junior/ideas`
+    is a real seat and `Mario/pad` is not, and only the file on disk knows
+    which is which. Addressing a dir no session ever boots in would file a
+    message that could never be read — so it must fail at send time."""
+    return (path / "CLAUDE.md").is_file()
+
+
+def _seats_under(root: Path) -> list:
+    try:
+        return sorted(c.name for c in root.iterdir()
+                      if c.is_dir() and not c.name.startswith(".") and _is_seat(c))
+    except OSError:
+        return []
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS messages (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at     TEXT NOT NULL,
+    from_seat      TEXT NOT NULL,
+    to_agent       TEXT NOT NULL,
+    to_seat        TEXT NOT NULL,
+    subject        TEXT NOT NULL,
+    body           TEXT NOT NULL DEFAULT '',
+    attachments    TEXT NOT NULL DEFAULT '[]',
+    wake           INTEGER NOT NULL DEFAULT 0,
+    reply_to       INTEGER,
+    thread_id      INTEGER NOT NULL DEFAULT 0,
+    state          TEXT NOT NULL DEFAULT 'unread',
+    deferred_until TEXT,
+    resolution     TEXT,
+    resolved_at    TEXT,
+    resolved_by    TEXT,
+    origin_session TEXT,
+    delivery       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_seat, state, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(to_agent, state, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
+"""
+
+
+# --------------------------------------------------------------- config/store
+
+
+def _config() -> dict:
+    """Host config — shared with the timeline/review engine."""
+    path = Path(os.environ.get(
+        "JSTACK_REVIEW_CONFIG",
+        str(Path.home() / ".claude" / "jstack" / "review.json"),
+    )).expanduser()
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _mail_config() -> dict:
+    cfg = _config().get("mail")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def timeline_dir() -> Path:
+    env = os.environ.get("JSTACK_TIMELINE_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / "Logs" / "Timeline"
+
+
+def db_path() -> Path:
+    root = timeline_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "timeline.db"
+
+
+def connect() -> sqlite3.Connection:
+    con = sqlite3.connect(db_path(), timeout=10)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
+    con.executescript(_SCHEMA)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def agent_root() -> Path:
+    return Path(_config().get("agent_root") or "~/Agents").expanduser()
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _fail(msg: str, code: int = 2) -> "None":
+    print(f"error: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+# ------------------------------------------------------------------ addressing
+
+
+def _agent_dirs() -> dict:
+    """lowercase agent name -> its workspace dir. Filesystem is the truth:
+    an agent is a directory under the agent root holding a CLAUDE.md — the
+    same gate the SessionStart injector and the review engine use."""
+    out = {}
+    try:
+        for child in sorted(agent_root().iterdir()):
+            if child.is_dir() and (child / "CLAUDE.md").is_file():
+                out[child.name.lower()] = child
+    except OSError:
+        pass
+    return out
+
+
+def _walk_segments(root: Path, segs: list) -> "str|None":
+    """Resolve hyphen segments as a directory path under root.
+
+    'service-call' resolves as the single dir `service-call` before it is
+    tried as `service/call`: a hyphen inside a real directory name is far
+    commoner than a nested pair, and trying the whole string first is what
+    makes @jarvis-service-call work without special-casing it."""
+    if not segs:
+        return ""
+    whole = "-".join(segs)
+    if _is_seat(root / whole):
+        return whole
+    for i in range(1, len(segs)):
+        head = "-".join(segs[:i])
+        sub = root / head
+        if not sub.is_dir():
+            continue
+        tail = _walk_segments(sub, segs[i:])
+        if tail is not None:
+            return f"{head}/{tail}" if tail else head
+    return None
+
+
+def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
+    """'@lynda-social' -> ('lynda', 'social/chat', Path(...)).
+
+    Raises SystemExit with a usable message when the seat is not a real dir —
+    a message addressed to nowhere must fail loudly at send time, never land
+    in a table nobody reads."""
+    spec = (spec or "").strip()
+    if spec.startswith("@"):
+        spec = spec[1:]
+    if not spec:
+        _fail("no recipient — use @agent, @agent-seat, or @self")
+    if spec.lower() in ("self", "me"):
+        if not sender:
+            _fail("@self: could not resolve the sending seat from cwd")
+        agent, _, submode = sender.partition("/")
+        return agent, (submode or "chat"), (agent_root() / agent) / (submode or "chat")
+    if spec.lower() == "boss":
+        _fail("@boss is not a mailbox — the host's Boss channel owns human "
+              "contact and has its own reply path. Use it instead.")
+
+    agents = _agent_dirs()
+    parts = [p for p in spec.lower().split("-") if p]
+    base = None
+    root = None
+    # Longest agent-name match first: an agent whose own name holds a hyphen
+    # must win over the same prefix read as agent + seat.
+    for i in range(len(parts), 0, -1):
+        cand = "-".join(parts[:i])
+        if cand in agents:
+            base, root, parts = cand, agents[cand], parts[i:]
+            break
+    if base is None:
+        known = ", ".join(sorted(agents)) or "(none found)"
+        _fail(f"unknown agent in {spec!r}. Known agents: {known}")
+
+    submode = _walk_segments(root, parts)
+    if submode is None:
+        _fail(f"{spec!r}: no seat {'-'.join(parts)!r} under {root}. "
+              f"Seats there: {', '.join(_seats_under(root)) or '(none)'}")
+
+    # The cockpit descent: a seat that itself holds a chat/ dir means the
+    # operator seat, not the container. @lynda-social -> lynda/social/chat.
+    if not submode:
+        submode = "chat" if _is_seat(root / "chat") else ""
+    elif _is_seat(root / submode / "chat"):
+        submode = f"{submode}/chat"
+
+    if not submode:
+        _fail(f"{spec!r}: {root} has no chat/ seat to address")
+    seat_dir = root / submode
+    if not _is_seat(seat_dir):
+        _fail(f"{spec!r}: {seat_dir} is not a seat (no CLAUDE.md) — no session "
+              f"boots there, so a message would never be read. "
+              f"Seats: {', '.join(_seats_under(root)) or '(none)'}")
+    return base, submode, seat_dir
+
+
+def sender_seat() -> "str|None":
+    """The calling session's seat from cwd — same resolution as the injector."""
+    env = os.environ.get("JSTACK_MAIL_FROM", "").strip()
+    if env:
+        return env
+    root = agent_root()
+    try:
+        rel = Path.cwd().resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return None
+    if not rel.parts:
+        return None
+    if not (root / rel.parts[0] / "CLAUDE.md").is_file():
+        return None
+    submode = "/".join(p.lower() for p in rel.parts[1:]) or "chat"
+    return f"{rel.parts[0].lower()}/{submode}"
+
+
+# ---------------------------------------------------------------- attachments
+
+
+def _stash_attachments(paths: list, seat_dir: Path, agent_dir: "Path|None" = None) -> list:
+    """Copy each file into the receiving seat's pad and return the new paths.
+
+    The receiver must be able to open an attachment after the sender's own
+    scratch is gone, so the bytes move to the receiver's side at send time.
+    Same landing convention the share-sheet drop already uses: a stamped
+    name in a pad the receiving agent owns.
+
+    A file already **anywhere under the receiving agent's own tree** is
+    recorded where it lies. The copy exists to make the file reachable by the
+    receiver; one that is already inside their tree is already reachable, and
+    copying it would leave two files and no fact about which is real. This is
+    the share-sheet path: a drop lands in the agent's pad before any message
+    is written."""
+    if not paths:
+        return []
+    pad = seat_dir / "pad"
+    try:
+        pad.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pad = seat_dir
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = []
+    for p in paths:
+        src = Path(p).expanduser()
+        if not src.is_file():
+            _fail(f"--file {p}: no such file")
+        try:
+            rs = src.resolve()
+            inside = rs.parent == pad.resolve()
+            if not inside and agent_dir is not None:
+                inside = agent_dir.resolve() in rs.parents
+            if inside:
+                out.append(str(rs))
+                continue
+        except OSError:
+            pass
+        dest = pad / f"{stamp}-{src.name}"
+        n = 1
+        while dest.exists():
+            n += 1
+            dest = pad / f"{stamp}-{n}-{src.name}"
+        try:
+            shutil.copy2(src, dest)
+        except OSError as e:
+            _fail(f"--file {p}: {e}")
+        out.append(str(dest))
+    return out
+
+
+# -------------------------------------------------------------------- display
+
+
+def _short(row, width: int = 78) -> str:
+    subj = row["subject"]
+    if len(subj) > width:
+        subj = subj[:width - 1] + "…"
+    return subj
+
+
+def _row_header(row) -> str:
+    bits = [f"[#{row['id']}]", f"from {row['from_seat']}", row["created_at"].replace("T", " ")]
+    if row["wake"]:
+        bits.append("WAKE")
+    if row["state"] == "deferred" and row["deferred_until"]:
+        bits.append(f"deferred → {row['deferred_until'].replace('T', ' ')}")
+    if row["reply_to"]:
+        bits.append(f"reply to #{row['reply_to']}")
+    return " · ".join(bits)
+
+
+def _render(row, full: bool = False) -> str:
+    lines = [_row_header(row), f"  {_short(row)}"]
+    if full:
+        if row["body"]:
+            lines.append("")
+            lines.extend("  " + ln for ln in row["body"].splitlines())
+        atts = json.loads(row["attachments"] or "[]")
+        if atts:
+            lines.append("")
+            lines.append("  Attachments:")
+            lines.extend(f"    {a}" for a in atts)
+        if row["state"] == "done":
+            lines.append("")
+            lines.append(f"  ✓ closed {(row['resolved_at'] or '').replace('T', ' ')}"
+                         f" by {row['resolved_by'] or '?'}")
+            if row["resolution"]:
+                lines.append(f"    {row['resolution']}")
+    return "\n".join(lines)
+
+
+def _dump(rows, as_json: bool, full: bool = False) -> None:
+    if as_json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+        return
+    if not rows:
+        print("(nothing)")
+        return
+    print("\n\n".join(_render(r, full=full) for r in rows))
+
+
+# ------------------------------------------------------------------- delivery
+
+
+def _due_clause() -> str:
+    """Open = unread, or deferred whose time has come."""
+    return ("(state = 'unread' OR (state = 'deferred' AND "
+            "(deferred_until IS NULL OR deferred_until <= ?)))")
+
+
+def open_for_seat(con, seat: str) -> list:
+    return con.execute(
+        f"SELECT * FROM messages WHERE to_seat = ? AND {_due_clause()} "
+        "ORDER BY created_at, id", (seat, now_iso())).fetchall()
+
+
+def _wake_prompt(row) -> str:
+    atts = json.loads(row["attachments"] or "[]")
+    parts = [
+        f"[inbox:{row['id']}] Message from {row['from_seat']} — handle it, then close it.",
+        "",
+        row["subject"],
+    ]
+    if row["body"]:
+        parts += ["", row["body"]]
+    if atts:
+        parts += ["", "Attachments:"] + [f"  {a}" for a in atts]
+    parts += [
+        "",
+        "This wake exists to act on the message and record what you did.",
+        f'  done:   msg done {row["id"]} --note "what you did"',
+        f'  answer: msg reply {row["id"]} "..."   (add --wake if they need it now)',
+        f'  wait:   msg defer {row["id"]} --until "YYYY-MM-DD HH:MM" --note why',
+    ]
+    return "\n".join(parts)
+
+
+def _deliver_live(seat: str, text: str) -> "str|None":
+    """Host hook — type into a live session of `seat` if one is reachable.
+
+    Configured as `mail.deliver_live` (argv list; `{seat}` / `{text}` are
+    substituted). The host owns knowing which sessions are drivable; JStack
+    only asks. Returns a delivery tag on success, None otherwise. Any failure
+    is silent and falls through to the wake — a message must never be lost to
+    a broken optional rung."""
+    spec = _mail_config().get("deliver_live")
+    if not isinstance(spec, list) or not spec:
+        return None
+    argv = [str(a).replace("{seat}", seat).replace("{text}", text) for a in spec]
+    argv[0] = str(Path(argv[0]).expanduser())
+    if not Path(argv[0]).exists():
+        return None
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    sid = (r.stdout or "").strip().splitlines()
+    return f"typed:{sid[-1]}" if sid else "typed"
+
+
+def _book_wake(seat: str, seat_dir: Path, row) -> "str|None":
+    """Book an immediate one-shot on the host scheduler — the wake.
+
+    Not a new spawn path: the scheduler already owns 'run claude in this
+    workspace with this context message, with a timeout, a model tier and a
+    journal entry', and the wake lands on the schedule page like any other."""
+    mail = _mail_config()
+    if mail.get("wake") is False:
+        return None
+    plugin_root = Path(__file__).resolve().parent.parent
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{plugin_root}:{env.get('PYTHONPATH', '')}".rstrip(":")
+    home = mail.get("scheduler_home")
+    if home:
+        env["SCHEDULER_HOME"] = str(Path(home).expanduser())
+    python = str(Path(mail.get("python") or sys.executable or "python3").expanduser())
+
+    at = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
+    agent_id = seat.replace("/", "-")
+    argv = [
+        python, "-m", "scheduler.cli", "add-once",
+        "--agent", agent_id,
+        "--at", at,
+        "--workspace", str(seat_dir),
+        "--message", _wake_prompt(row),
+        "--name", f"inbox #{row['id']} → {seat}",
+        "--category", mail.get("category") or "inbox",
+        "--delete-after-run",
+    ]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                           env=env, cwd=str(plugin_root))
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"warning: wake could not be booked ({e}) — message is filed, "
+              f"it will inject on the seat's next session", file=sys.stderr)
+        return None
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip().splitlines()
+        print(f"warning: wake could not be booked "
+              f"({detail[-1] if detail else 'scheduler refused'}) — message is "
+              f"filed, it will inject on the seat's next session", file=sys.stderr)
+        return None
+    return f"spawned:{at}"
+
+
+# ------------------------------------------------------------------- commands
+
+
+def cmd_send(args) -> int:
+    con = connect()
+    frm = args.frm or sender_seat()
+    if not frm:
+        _fail("could not resolve the sending seat from cwd — pass --from agent/seat")
+    agent, submode, seat_dir = resolve_seat(args.to, sender=frm)
+    seat = f"{agent}/{submode}"
+
+    content = (args.content or "").strip()
+    if not content:
+        _fail("empty message")
+    subject, _, body = content.partition("\n")
+    subject = subject.strip()[:200] or content[:200]
+    body = body.strip()
+
+    reply_to = args.reply_to
+    thread_id = 0
+    if reply_to:
+        parent = con.execute("SELECT * FROM messages WHERE id = ?", (reply_to,)).fetchone()
+        if not parent:
+            _fail(f"--reply-to {reply_to}: no such message")
+        thread_id = parent["thread_id"] or parent["id"]
+
+    # The agent's own root — seat_dir climbed back up past every submode part.
+    agent_dir = seat_dir
+    for _ in submode.split("/"):
+        agent_dir = agent_dir.parent
+    atts = _stash_attachments(args.file or [], seat_dir, agent_dir)
+    cur = con.execute(
+        "INSERT INTO messages (created_at, from_seat, to_agent, to_seat, subject, "
+        "body, attachments, wake, reply_to, thread_id, state, origin_session) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?, 'unread', ?)",
+        (now_iso(), frm, agent, seat, subject, body, json.dumps(atts),
+         1 if args.wake else 0, reply_to, thread_id,
+         os.environ.get("CLAUDE_CODE_SESSION_ID") or None))
+    mid = cur.lastrowid
+    if not thread_id:
+        con.execute("UPDATE messages SET thread_id = ? WHERE id = ?", (mid, mid))
+    con.commit()
+
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
+    delivery = ""
+    if args.wake:
+        delivery = _deliver_live(seat, _wake_prompt(row)) or ""
+        if not delivery:
+            delivery = _book_wake(seat, seat_dir, row) or ""
+    if delivery:
+        con.execute("UPDATE messages SET delivery = ? WHERE id = ?", (delivery, mid))
+        con.commit()
+
+    how = {
+        "": "will inject on that seat's next session",
+        "typed": "typed into a live session now",
+    }.get(delivery, "")
+    if not how:
+        if delivery.startswith("typed:"):
+            how = f"typed into live session {delivery.split(':', 1)[1]} now"
+        elif delivery.startswith("spawned:"):
+            how = f"wake booked for {delivery.split(':', 1)[1]} PT"
+    print(f"#{mid} → {seat} — {how}")
+    return 0
+
+
+def cmd_reply(args) -> int:
+    con = connect()
+    parent = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
+    if not parent:
+        _fail(f"no message #{args.id}")
+    args.to = "@" + parent["from_seat"].replace("/", "-")
+    args.reply_to = args.id
+    args.frm = args.frm or sender_seat()
+    return cmd_send(args)
+
+
+def cmd_inbox(args) -> int:
+    con = connect()
+    if args.all:
+        rows = con.execute(
+            f"SELECT * FROM messages WHERE {_due_clause()} ORDER BY created_at, id",
+            (now_iso(),)).fetchall()
+    elif args.agent:
+        rows = con.execute(
+            f"SELECT * FROM messages WHERE to_agent = ? AND {_due_clause()} "
+            "ORDER BY created_at, id", (args.agent.lstrip("@").lower(), now_iso())).fetchall()
+    else:
+        seat = args.seat or sender_seat()
+        if not seat:
+            _fail("not in an agent seat — pass --seat agent/seat, --agent NAME, or --all")
+        rows = open_for_seat(con, seat)
+    if not args.json and rows:
+        print(f"{len(rows)} open — close, defer, or act on each before other work.\n")
+    _dump(rows, args.json)
+    return 0
+
+
+def cmd_read(args) -> int:
+    con = connect()
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        _fail(f"no message #{args.id}")
+    if args.json:
+        print(json.dumps(dict(row), indent=2))
+        return 0
+    print(_render(row, full=True))
+    sibs = con.execute(
+        "SELECT COUNT(*) c FROM messages WHERE thread_id = ?", (row["thread_id"],)).fetchone()
+    if sibs and sibs["c"] > 1:
+        print(f"\n  ({sibs['c']} in this thread — msg thread {row['thread_id']})")
+    return 0
+
+
+def cmd_thread(args) -> int:
+    con = connect()
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        _fail(f"no message #{args.id}")
+    rows = con.execute("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at, id",
+                       (row["thread_id"],)).fetchall()
+    _dump(rows, args.json, full=True)
+    return 0
+
+
+def cmd_sent(args) -> int:
+    con = connect()
+    frm = args.frm or sender_seat()
+    if not frm:
+        _fail("not in an agent seat — pass --from agent/seat")
+    rows = con.execute(
+        "SELECT * FROM messages WHERE from_seat = ? ORDER BY created_at DESC, id DESC "
+        "LIMIT ?", (frm, args.n)).fetchall()
+    _dump(list(reversed(rows)), args.json, full=True)
+    return 0
+
+
+def cmd_done(args) -> int:
+    con = connect()
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        _fail(f"no message #{args.id}")
+    note = (args.note or "").strip()
+    if not note:
+        _fail("--note is required: closing a message records what was done about it")
+    if row["state"] == "done":
+        print(f"#{args.id} already closed by {row['resolved_by'] or '?'} — "
+              f"{row['resolution']}")
+        return 0
+    con.execute(
+        "UPDATE messages SET state='done', resolution=?, resolved_at=?, resolved_by=? "
+        "WHERE id = ?",
+        (note, now_iso(), args.frm or sender_seat() or "?", args.id))
+    con.commit()
+    print(f"#{args.id} closed.")
+    return 0
+
+
+def cmd_defer(args) -> int:
+    con = connect()
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        _fail(f"no message #{args.id}")
+    if row["state"] == "done":
+        _fail(f"#{args.id} is already closed")
+    raw = (args.until or "").strip()
+    try:
+        when = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+    except ValueError:
+        try:
+            when = datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            _fail("--until must be 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'")
+    if when <= datetime.now():
+        _fail("--until is in the past — a defer must move the item forward")
+    note = (args.note or "").strip()
+    body = row["body"]
+    if note:
+        body = (body + "\n\n" if body else "") + f"[deferred {now_iso()}] {note}"
+    con.execute("UPDATE messages SET state='deferred', deferred_until=?, body=? WHERE id=?",
+                (when.isoformat(timespec="seconds"), body, args.id))
+    con.commit()
+    print(f"#{args.id} deferred to {raw} — it re-opens then.")
+    return 0
+
+
+def cmd_pending(args) -> int:
+    """Hook helper: open items for a seat, as JSON. Exit 1 = none."""
+    con = connect()
+    rows = open_for_seat(con, args.seat)
+    print(json.dumps([dict(r) for r in rows]))
+    return 0 if rows else 1
+
+
+# ---------------------------------------------------------------------- parse
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="msg", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def _send_flags(sp):
+        sp.add_argument("--wake", action="store_true",
+                        help="the receiver acts now: type into a live session, else spawn one")
+        sp.add_argument("--file", action="append", metavar="PATH",
+                        help="attach a file (copied into the receiver's pad)")
+        sp.add_argument("--from", dest="frm", metavar="SEAT",
+                        help="sending seat (default: inferred from cwd)")
+
+    s = sub.add_parser("send", help="send a message to a seat")
+    s.add_argument("to", metavar="@agent[-seat]")
+    s.add_argument("content")
+    s.add_argument("--reply-to", type=int, metavar="ID")
+    _send_flags(s)
+    s.set_defaults(func=cmd_send)
+
+    r = sub.add_parser("reply", help="answer a message in its thread")
+    r.add_argument("id", type=int)
+    r.add_argument("content")
+    _send_flags(r)
+    r.set_defaults(func=cmd_reply)
+
+    i = sub.add_parser("inbox", help="open items for this seat")
+    i.add_argument("--seat", metavar="agent/seat")
+    i.add_argument("--agent", metavar="NAME", help="every seat of one agent")
+    i.add_argument("--all", action="store_true", help="every seat, every agent")
+    i.add_argument("--json", action="store_true")
+    i.set_defaults(func=cmd_inbox)
+
+    rd = sub.add_parser("read", help="one message in full")
+    rd.add_argument("id", type=int)
+    rd.add_argument("--json", action="store_true")
+    rd.set_defaults(func=cmd_read)
+
+    t = sub.add_parser("thread", help="the whole conversation")
+    t.add_argument("id", type=int)
+    t.add_argument("--json", action="store_true")
+    t.set_defaults(func=cmd_thread)
+
+    st = sub.add_parser("sent", help="what this seat sent, and what came of it")
+    st.add_argument("-n", type=int, default=10)
+    st.add_argument("--from", dest="frm", metavar="SEAT")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(func=cmd_sent)
+
+    d = sub.add_parser("done", help="close a message with what was done")
+    d.add_argument("id", type=int)
+    d.add_argument("--note", required=True)
+    d.add_argument("--from", dest="frm", metavar="SEAT")
+    d.set_defaults(func=cmd_done)
+
+    df = sub.add_parser("defer", help="push a message to a later time")
+    df.add_argument("id", type=int)
+    df.add_argument("--until", required=True, metavar='"YYYY-MM-DD HH:MM"')
+    df.add_argument("--note")
+    df.set_defaults(func=cmd_defer)
+
+    pd = sub.add_parser("pending-for", help="hook helper: open items for a seat as JSON")
+    pd.add_argument("seat")
+    pd.set_defaults(func=cmd_pending)
+
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

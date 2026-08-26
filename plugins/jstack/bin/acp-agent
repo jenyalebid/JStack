@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""acp-agent — run the stack's own Claude Code as an IDE's ACP agent.
+
+An IDE that ships its own Claude integration downloads a private copy of the
+CLI and runs a sign-in of its own, so the session it gives you is a stranger:
+not your login, not your version, not your plugins, hooks, skills or seats.
+ACP is the way out. Xcode (Settings > Intelligence > Add an ACP Agent) and Zed
+both speak it, and both launch the agent as a plain subprocess with the open
+project as its working directory — which is exactly the handle repo seats need.
+
+This is that subprocess. It is a launcher, not an agent: it finds the pieces,
+fixes the environment an IDE hands it, and execs the ACP adapter.
+
+  acp-agent            speak ACP on stdio (what the IDE runs)
+  acp-agent --check    resolve everything and report, launching nothing
+
+Two things have to be right or the session is a stranger anyway:
+
+  * The adapter (@zed-industries/claude-code-acp) bundles its own copy of the
+    CLI inside the Agent SDK, and that copy loads no plugins — no hooks, so no
+    seat, no timeline, no identity. Pointing CLAUDE_CODE_EXECUTABLE at the CLI
+    you actually installed is what makes the session yours; it is also how it
+    picks up your model and settings rather than the SDK's defaults.
+  * An IDE launches subprocesses with a login-less PATH — usually just
+    /usr/bin:/bin:/usr/sbin:/sbin — so node, claude and the adapter are all
+    invisible to it. The PATH is rebuilt below before anything is resolved.
+
+Auth needs no work: with CLAUDE_CONFIG_DIR left alone the CLI reads the login
+keychain, so an IDE session is signed in because your terminal is. Setting that
+variable — to any path, the default included — moves it to a file credential
+store and signs you out, which is why nothing here sets it.
+
+Overrides, each winning over the discovery below it: JSTACK_CLAUDE_EXECUTABLE
+and JSTACK_ACP_ADAPTER in the environment, then `claude_executable` and
+`acp_adapter` in $JSTACK_REVIEW_CONFIG (~/.claude/jstack/review.json).
+"""
+# Annotations stay strings: an IDE's bare PATH resolves python3 to the
+# system 3.9, which cannot evaluate `X | None` at import time.
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+# Where a login shell would have found things, in the order a login shell
+# looks. An IDE gives us none of this.
+PATH_DIRS = [
+    Path.home() / ".local" / "bin",
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+    Path.home() / ".bun" / "bin",
+    Path.home() / ".volta" / "bin",
+]
+
+
+def _config() -> dict:
+    p = Path(os.environ.get(
+        "JSTACK_REVIEW_CONFIG",
+        str(Path.home() / ".claude" / "jstack" / "review.json"),
+    )).expanduser()
+    try:
+        data = json.loads(p.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def build_path() -> str:
+    """Put the login shell's directories back in front of whatever the IDE
+    handed us, without dropping what it did hand us or duplicating entries."""
+    seen, out = set(), []
+    for d in [str(p) for p in PATH_DIRS] + os.environ.get("PATH", "").split(os.pathsep):
+        if d and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return os.pathsep.join(out)
+
+
+def _override(cfg: dict, env_key: str, cfg_key: str) -> Path | None:
+    for raw in (os.environ.get(env_key), cfg.get(cfg_key)):
+        if raw:
+            p = Path(raw).expanduser()
+            if p.exists():
+                return p
+    return None
+
+
+def find_claude(cfg: dict) -> tuple[Path | None, str]:
+    """The CLI this machine actually runs — the one holding your login, your
+    version and your plugins."""
+    p = _override(cfg, "JSTACK_CLAUDE_EXECUTABLE", "claude_executable")
+    if p:
+        return p, "configured"
+    found = shutil.which("claude")
+    if found:
+        return Path(found), "found on PATH"
+    p = Path.home() / ".local" / "bin" / "claude"
+    if p.exists():
+        return p, "found at the default install path"
+    return None, "NOT FOUND — install Claude Code, or set claude_executable"
+
+
+def find_adapter(cfg: dict) -> tuple[Path | None, str]:
+    """The ACP adapter. It is the protocol translator and nothing more; the
+    session it starts is the CLI resolved above."""
+    p = _override(cfg, "JSTACK_ACP_ADAPTER", "acp_adapter")
+    if p:
+        return p, "configured"
+    found = shutil.which("claude-code-acp")
+    if found:
+        return Path(found), "found on PATH"
+    return None, ("NOT FOUND — install with "
+                  "`npm install -g @zed-industries/claude-code-acp`")
+
+
+def main(argv: list[str]) -> int:
+    os.environ["PATH"] = build_path()
+    cfg = _config()
+    claude, claude_note = find_claude(cfg)
+    adapter, adapter_note = find_adapter(cfg)
+    check = "--check" in argv
+
+    if check:
+        print(f"claude : {claude or ''} ({claude_note})")
+        print(f"adapter: {adapter or ''} ({adapter_note})")
+        print(f"config : {'default (keychain login)' if not os.environ.get('CLAUDE_CONFIG_DIR') else 'CLAUDE_CONFIG_DIR=' + os.environ['CLAUDE_CONFIG_DIR'] + ' — this signs the session out of the keychain'}")
+        print(f"cwd    : {Path.cwd()} — the seat resolves from here")
+        return 0 if (claude and adapter) else 1
+
+    if not adapter:
+        print(f"acp-agent: {adapter_note}", file=sys.stderr)
+        return 4
+    if not claude:
+        print(f"acp-agent: {claude_note}", file=sys.stderr)
+        return 4
+
+    env = dict(os.environ)
+    env["CLAUDE_CODE_EXECUTABLE"] = str(claude)
+    # The keychain read needs to know whose login it is. An IDE can launch a
+    # subprocess without USER set, and the session then starts signed out with
+    # nothing on screen to say why.
+    env.setdefault("USER", Path.home().name)
+    env.setdefault("LOGNAME", env["USER"])
+    # An IDE launched from a Claude Code session inherits its session markers,
+    # and the CLI refuses to nest. The IDE's agent is not that session.
+    for k in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
+        env.pop(k, None)
+
+    os.execve(str(adapter), [str(adapter)] + [a for a in argv if a != "--check"], env)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        raise SystemExit(130)

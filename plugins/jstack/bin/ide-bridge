@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""ide-bridge — make an IDE's agent panel run the stack, not a stranger.
+
+An IDE that embeds Claude Code starts it two steps outside the stack:
+
+  1. It downloads a private copy of the CLI and runs a sign-in of its own, so
+     the session has none of your login, version, plugins, hooks or skills.
+  2. It fixes cwd to the checked-out repo, so the session lands outside
+     {agent_root} and has no seat.
+
+(2) is answered by repo seats (repo_seat.py) — the registry already knows which
+agent owns which repo, and the SessionStart hook resolves the session into that
+agent's cockpit seat from its working directory alone.
+
+(1) is answered by ACP. The IDE will run *any* Agent Client Protocol agent as a
+subprocess with the open project as its working directory, which is both halves
+at once: our own CLI, and the cwd the seat resolves from. `bin/acp-agent` is
+that subprocess. Registering it is a one-time step in the IDE's own UI — the
+fields are printed by `install`.
+
+  ide-bridge status      what is wired, what isn't, and which repos resolve
+  ide-bridge install     link repo memories to seats; print the ACP fields
+  ide-bridge uninstall   undo the legacy home-directory override
+
+There was an earlier approach here: point the IDE's *built-in* Claude agent at
+the host config directory with IDEChatOverrideAgenticHomeDirectory. It does not
+work and cannot be made to. The built-in agent authenticates through a sign-in
+of the IDE's own, held in the IDE's keychain services and handed to the CLI as
+CLAUDE_CODE_OAUTH_REFRESH_TOKEN; no config directory satisfies it. Worse,
+setting CLAUDE_CONFIG_DIR at all — to any path, the host's own included — moves
+Claude Code off the login keychain onto a file credential store, so the
+override signs the session out rather than in. `status` flags the key if it is
+still set and `uninstall` removes it.
+
+Memory is never overwritten. A repo that already holds real memories of its own
+is reported as a split brain with the merge left to a human: two directories of
+remembered facts are not something a tool should silently pick a winner for.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import repo_seat  # noqa: E402
+
+XCODE_DOMAIN = "com.apple.dt.Xcode"
+LEGACY_KEY = "IDEChatOverrideAgenticHomeDirectory"
+
+def _stable_agent_path() -> Path:
+    """The path to register with the IDE. A plugin cache directory carries its
+    version, so registering from one would break silently at the next bump —
+    prefer the marketplace checkout, which keeps the same path across updates
+    and is what the update pulls into."""
+    here = Path(__file__).resolve().parent / "acp-agent"
+    parts = here.parts
+    try:
+        i = parts.index("cache")
+        market, plugin = parts[i + 1], parts[i + 2]
+    except (ValueError, IndexError):
+        return here
+    src = Path(*parts[:i]) / "marketplaces" / market / "plugins" / plugin / "bin" / "acp-agent"
+    return src if src.exists() else here
+
+
+ACP_AGENT = _stable_agent_path()
+
+
+def _config() -> dict:
+    p = Path(os.environ.get(
+        "JSTACK_REVIEW_CONFIG",
+        str(Path.home() / ".claude" / "jstack" / "review.json"),
+    )).expanduser()
+    try:
+        data = json.loads(p.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def host_config_dir() -> Path:
+    """Where the host's real Claude Code config lives — what the terminal uses.
+    The ACP agent inherits it by leaving CLAUDE_CONFIG_DIR alone."""
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(env).expanduser() if env else Path.home() / ".claude"
+
+
+def _encode(path: Path) -> str:
+    """Claude Code's project-dir encoding of an absolute path."""
+    return str(path).replace("/", "-").replace(".", "-")
+
+
+def _defaults_read(key: str) -> str | None:
+    try:
+        out = subprocess.run(["defaults", "read", XCODE_DOMAIN, key],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _defaults_delete(key: str) -> bool:
+    try:
+        return subprocess.run(["defaults", "delete", XCODE_DOMAIN, key],
+                              capture_output=True, text=True,
+                              timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def xcode_installed() -> bool:
+    return Path("/Applications/Xcode.app").exists()
+
+
+def agent_state() -> tuple[bool, list[str]]:
+    """Can the ACP agent actually start? It resolves the CLI and the protocol
+    adapter itself, so ask it rather than duplicating the search here."""
+    if not ACP_AGENT.exists():
+        return False, [f"missing: {ACP_AGENT}"]
+    try:
+        out = subprocess.run([str(ACP_AGENT), "--check"], capture_output=True,
+                             text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, [f"could not run {ACP_AGENT}: {e}"]
+    lines = [l for l in out.stdout.strip().splitlines() if not l.startswith("cwd")]
+    return out.returncode == 0, lines
+
+
+def registered() -> bool:
+    """Whether the IDE already has our agent. Registration is stored inside the
+    IDE's own preferences with no documented key, so look for the path itself
+    rather than guessing at the schema around it."""
+    try:
+        out = subprocess.run(["defaults", "read", XCODE_DOMAIN],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and str(ACP_AGENT) in out.stdout
+
+
+def print_registration() -> None:
+    print("         Xcode ▸ Settings ▸ Intelligence ▸ Agents ▸ + ▸ Add an ACP Agent")
+    print(f"           Name       Alpine")
+    print(f"           Executable {ACP_AGENT}")
+    print(f"           Interpreter, Arguments, Environment Variables — all empty")
+    print("         One registration covers every repo: the IDE launches it in")
+    print("         the open project, and the seat resolves from there.")
+
+
+def owned_repos(root: Path, registry_path: Path) -> list[tuple[Path, str, str]]:
+    """(repo dir, agent, seat) for every directory beside the agent tree that a
+    registry entry owns. The code lives next to the workspaces, so the repo root
+    is the parent of {agent_root} unless the host says otherwise."""
+    cfg = _config()
+    repo_root = Path(cfg.get("repo_root") or root.parent).expanduser()
+    registry = repo_seat.load_registry(registry_path)
+    out = []
+    if not registry or not repo_root.is_dir():
+        return out
+    for d in sorted(repo_root.iterdir()):
+        if not d.is_dir() or d == root:
+            continue
+        agent, _repo, _via = repo_seat.owner_of(d, registry)
+        if agent is None:
+            continue
+        a, submode = repo_seat._seat_of(registry[agent], agent, root)
+        out.append((d, a, f"{a}/{submode}"))
+    return out
+
+
+def memory_link(repo: Path, seat_workspace: Path, config_dir: Path,
+                apply: bool) -> str:
+    """Point a repo's auto-memory at its agent's — one agent, one memory."""
+    target = config_dir / "projects" / _encode(seat_workspace) / "memory"
+    link = config_dir / "projects" / _encode(repo) / "memory"
+    if not target.is_dir():
+        return f"seat has no memory yet ({target.parent.name})"
+    if link.is_symlink():
+        return ("linked" if link.resolve() == target.resolve()
+                else f"points elsewhere: {os.readlink(link)}")
+    if link.exists():
+        n = len([p for p in link.iterdir() if p.name != ".DS_Store"])
+        if n:
+            return (f"SPLIT BRAIN: {n} memories of its own in "
+                    f"{link.parent.name}/memory — merge into the seat by hand")
+        if apply:
+            link.rmdir()
+        else:
+            return "would link (empty dir replaced)"
+    if not apply:
+        return "would link"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+    return "linked"
+
+
+def main(argv: list[str]) -> int:
+    cmd = next((a for a in argv if not a.startswith("-")), "status")
+    if cmd not in ("status", "install", "uninstall"):
+        print(__doc__.strip().splitlines()[0], file=sys.stderr)
+        print(f"unknown command: {cmd}", file=sys.stderr)
+        return 2
+
+    cfg = _config()
+    root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
+    registry_path = repo_seat.registry_path_for(cfg, root)
+    config_dir = host_config_dir()
+    if "--config-dir" in argv:
+        config_dir = Path(argv[argv.index("--config-dir") + 1]).expanduser()
+
+    if not xcode_installed():
+        print("no supported IDE found (Xcode is the only adapter)", file=sys.stderr)
+        return 4
+    if shutil.which("defaults") is None:
+        print("`defaults` not on PATH — not a macOS host?", file=sys.stderr)
+        return 4
+
+    legacy = _defaults_read(LEGACY_KEY)
+    if cmd == "uninstall":
+        ok = _defaults_delete(LEGACY_KEY) if legacy else True
+        print(f"legacy : {'override removed' if legacy else 'not set'}")
+        print("         unregister the ACP agent in Xcode ▸ Settings ▸ Intelligence")
+        return 0 if ok else 1
+
+    if legacy and cmd == "install":
+        _defaults_delete(LEGACY_KEY)
+        legacy = _defaults_read(LEGACY_KEY)
+
+    ok, lines = agent_state()
+    print(f"agent  : {'ready' if ok else 'NOT ready'} — {ACP_AGENT}")
+    for l in lines:
+        print(f"         {l}")
+
+    if registered():
+        print("xcode  : registered")
+    else:
+        print("xcode  : NOT registered — add it once:")
+        print_registration()
+
+    if legacy:
+        print(f"legacy : {LEGACY_KEY} is still set to {legacy}")
+        print("         it points the IDE's built-in agent at a config directory,")
+        print("         which signs it out of the keychain and never satisfies the")
+        print("         IDE's own sign-in — run `ide-bridge uninstall` to drop it")
+
+    repos = owned_repos(root, registry_path)
+    if not repos:
+        print(f"repos  : none owned — registry {registry_path} "
+              f"{'is unreadable' if not registry_path.exists() else 'claims no repo here'}")
+        return 0
+
+    registry = repo_seat.load_registry(registry_path)
+    print(f"repos  : {len(repos)} owned, resolved from {registry_path}")
+    for repo, agent, seat in repos:
+        ws = Path(registry[agent].get("workspace") or (root / agent))
+        note = memory_link(repo, ws, config_dir, apply=(cmd == "install"))
+        print(f"  {repo.name:<26} → {seat:<16} memory: {note}")
+
+    repo_root = Path(cfg.get("repo_root") or root.parent).expanduser()
+    unowned = [d.name for d in sorted(repo_root.iterdir())
+               if d.is_dir() and (d / ".git").exists()
+               and repo_seat.owner_of(d, registry)[0] is None]
+    if unowned:
+        print(f"unowned: {', '.join(unowned)}")
+        print("         these open in the IDE as no agent — add them to a "
+              "registry entry's `repos` to give them one")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        raise SystemExit(130)

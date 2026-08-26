@@ -120,6 +120,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import repo_seat  # noqa: E402
+
 PLUGIN_BIN = Path(__file__).resolve().parent
 
 
@@ -561,19 +564,23 @@ def review_config() -> dict:
         return {}
 
 
-def resolve_seat(directory: Path, root: Path) -> tuple[str | None, str | None]:
-    """Same contract as session-start-inject.py resolve()."""
+def resolve_seat(directory: Path, root: Path,
+                 cfg: dict | None = None) -> tuple[str | None, str | None]:
+    """Same contract as session-start-inject.py resolve(), repo-seat fallback
+    included — pict has to show what the session would really receive, and in a
+    repo the agent owns that is the owning agent's seat, not nothing."""
     try:
         rel = directory.resolve().relative_to(root.resolve())
     except (ValueError, OSError):
-        return None, None
-    if not rel.parts:
-        return None, None
-    agent_dir = root / rel.parts[0]
-    if not (agent_dir / "CLAUDE.md").is_file():
-        return None, None
-    submode = "/".join(x.lower() for x in rel.parts[1:]) or "chat"
-    return agent_dir.name.lower(), submode
+        rel = None
+    if rel is not None and rel.parts:
+        agent_dir = root / rel.parts[0]
+        if (agent_dir / "CLAUDE.md").is_file():
+            submode = "/".join(x.lower() for x in rel.parts[1:]) or "chat"
+            return agent_dir.name.lower(), submode
+    cfg = review_config() if cfg is None else cfg
+    return repo_seat.seat_for(directory, root,
+                              repo_seat.registry_path_for(cfg, root))
 
 
 def timeline_count(cfg: dict, agent: str, submode: str) -> tuple[int, str]:
@@ -604,11 +611,12 @@ def timeline_count(cfg: dict, agent: str, submode: str) -> tuple[int, str]:
 def gather_timeline(directory: Path, sources: list[Source]) -> None:
     cfg = review_config()
     root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
-    agent, submode = resolve_seat(directory, root)
+    agent, submode = resolve_seat(directory, root, cfg)
     mech = "SessionStart hook — jstack session-start-inject.py (emulated read-only)"
     if agent is None or submode == "review":
         add(sources, "start", "(no timeline injection)",
-            mech + " — dir is not an agent seat", None)
+            mech + " — dir is not an agent seat, and no registry entry owns it",
+            None)
         return
     n, why = timeline_count(cfg, agent, submode)
     seat = f"{agent}/{submode}"

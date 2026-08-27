@@ -14,7 +14,7 @@
 #   (e) verdict stamps ride the injection
 #   (f) review submode → no output
 #   (g) non-workspace cwd → no output
-#   (h) seat not in timeline_inject → no output
+#   (h) a newly-added seat inherits the fleet default
 #   (i) kill switch env → no output
 #   (j) live-session-only: headless spawns never inject, any seat, any config
 #       form; liveness is read off the process ancestry (hooks run detached
@@ -43,7 +43,7 @@ printf '# Loner — no CLAUDE.md dir\n' > "$ROOT/Loner/notes.md"
 
 export JSTACK_TIMELINE_DIR="$TMP/Timeline"
 CFG="$TMP/review.json"
-printf '{ "agent_root": "%s", "timeline_inject": {"gamma/chat": 3, "*/pm": 5} }' "$ROOT" > "$CFG"
+printf '{ "agent_root": "%s", "timeline_inject": {"*/*": 2, "gamma/chat": 3, "*/pm": 5} }' "$ROOT" > "$CFG"
 
 DAY="2026-01-15"
 "$LOG_EVENT" gamma/chat --at 09:00 --date "$DAY" "Chat entry one" >/dev/null
@@ -123,11 +123,11 @@ echo "$pm_out" | grep -q "↳ verdict: blocked — waiting on a decision" \
 [[ -z "$(ctx "$TMP")" ]] \
   && pass "non-workspace silent" || fail "non-workspace silent"
 
-# (h) unlisted seat → nothing (gamma/social has entries? none — but also no config)
+# (h) unlisted/new seat → fleet default, with no seat registration edit
 "$LOG_EVENT" gamma/social --at 14:00 --date "$DAY" "Social entry" >/dev/null
 mkdir -p "$ROOT/Gamma/social"
-[[ -z "$(ctx "$ROOT/Gamma/social")" ]] \
-  && pass "unlisted seat gets nothing" || fail "unlisted seat gets nothing"
+echo "$(ctx "$ROOT/Gamma/social")" | grep -q "Social entry" \
+  && pass "new seat inherits fleet default" || fail "new seat inherits fleet default"
 
 # (i) kill switch
 out_killed=$(printf '{"cwd":"%s"}' "$ROOT/Gamma" \
@@ -268,10 +268,10 @@ else
   fail "--explain names the rows the injection carries ($m_ids)"
 fi
 
-# unconfigured seat and the review seat both answer sessions=0 — never a guess
-[[ "$(explain gamma/social | field sessions)" == "0" ]] \
-  && pass "--explain: unconfigured seat answers sessions=0" \
-  || fail "--explain: unconfigured seat answers sessions=0"
+# a new seat reports the fleet default; review remains an explicit exclusion
+[[ "$(explain gamma/social | field sessions)" == "2" ]] \
+  && pass "--explain: new seat answers with fleet default" \
+  || fail "--explain: new seat answers with fleet default"
 [[ "$(explain gamma/review "$CFG2" | field sessions)" == "0" ]] \
   && pass "--explain: review seat answers sessions=0" \
   || fail "--explain: review seat answers sessions=0"

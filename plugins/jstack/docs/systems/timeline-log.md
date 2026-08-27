@@ -68,7 +68,7 @@ hooks/session-start-inject.py --explain <agent[/submode]>
 |------|---------|---------|
 | `JSTACK_TIMELINE_DIR` | `~/Logs/Timeline` | Directory holding `timeline.db` |
 | `JSTACK_TIMELINE_ORIGIN` | unset (→ direct) | Default origin for writes in this process tree — spawn plumbing sets `indirect` on unattended sessions |
-| `timeline_inject` (review config) | none | `{"agent/submode": N, "*/submode": N}` — seats injected on SessionStart, N = **sessions** deep |
+| `timeline_inject` (review config) | none | `{"*/*": N, "agent/submode": N, "*/submode": N}` — fleet default plus optional exact/family overrides; nearest match wins. A new seat inherits `*/*` automatically. N = **sessions** deep |
 
 Self-contained python3 stdlib — no venv, no host imports. Safe to call from hooks, crons, spawned reviews, or interactively.
 

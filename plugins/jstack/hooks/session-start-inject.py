@@ -25,7 +25,7 @@ neither receive injections nor appear in them.
 Which seats get injected, and how many SESSIONS deep, is host config — the
 `timeline_inject` map in $JSTACK_REVIEW_CONFIG (~/.claude/jstack/review.json):
 
-    "timeline_inject": {"alpha/chat": 10, "*/pm": 10, "*/social": 10}
+    "timeline_inject": {"*/*": 10, "alpha/chat": 20, "*/pm": 5}
 
 Values are an int session count, or a dict carrying it as {"sessions": N} (or
 legacy {"n": N}; extra keys ignored — pre-session-window configs read as
@@ -33,8 +33,9 @@ session counts, which is the same number for the common one-entry session and
 strictly more history otherwise, never less). Match
 is per-dir, nearest wins: at each depth exact "agent/seat" beats wildcard
 "*/seat", then the seat's parent dir is tried ("alpha/social/chat" falls back
-to "*/social"). Seats with no match anywhere up get nothing. No config key →
-no injection anywhere (opt-in).
+to "*/social"). Finally `*/*` is the fleet default, so a newly-created seat
+inherits injection without another registration edit. With no default, seats
+with no match get nothing. No config key → no injection anywhere (opt-in).
 
 Seat resolution (MUST match the engine's resolve_submode and the Stop hook):
 the session dir's full path under {agent_root}/{Name}, "/"-joined — seats are
@@ -162,7 +163,13 @@ def inject_count(cfg: dict, agent: str, submode: str) -> int:
             except (TypeError, ValueError):
                 return 0
         if "/" not in seat:
-            return 0
+            try:
+                val = inject.get("*/*", 0)
+                if isinstance(val, dict):
+                    return int(val.get("sessions", val.get("n", 0)))
+                return int(val)
+            except (TypeError, ValueError):
+                return 0
         seat = seat.rsplit("/", 1)[0]
 
 

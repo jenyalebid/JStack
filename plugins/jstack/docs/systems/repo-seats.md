@@ -85,8 +85,9 @@ ide-bridge uninstall   drop the legacy home-directory override
 
 Registration is one manual step, because the IDE stores it in its own
 preferences with no documented key. In **Xcode**: Settings ▸ Intelligence ▸
-Agents ▸ + ▸ *Add an ACP Agent*, with `bin/acp-agent` as the Executable and
-every other field empty. `install` prints the exact values and `status` reports
+*Add an Agent…* ▸ *Add an ACP Agent*, with `bin/acp-agent` as the Executable and
+every other field empty — not the *Get* buttons above it, which are the IDE's
+own download-and-sign-in path. `install` prints the exact values and `status` reports
 whether it has been done. **One registration covers every repo** — the seat is
 resolved per launch from the project the IDE opened.
 

@@ -8,17 +8,16 @@
 #     chat/ dir descends into it (@alice-social -> alice/social/chat)
 #   - a directory that is not a seat (no CLAUDE.md) is refused at send time
 #   - @boss is refused; an unknown agent is refused
-#   - send -> inbox -> read -> reply roundtrip, reply lands in the sender's own
-#     inbox and joins the thread
-#   - done requires a note, records it, and removes the item from the inbox
-#   - defer with no time means "not this session": hidden from the deferring
-#     session, open to the next one, and it books nothing
-#   - defer --until books a REAL wake at that hour (argv captured from a stub
-#     scheduler); a booking that fails is loud and exits non-zero
-#   - a past --until is refused, and so is a date with no hour
+#   - send -> inbox -> read -> reply roundtrip, reply joins the thread
 #   - attachments are copied into the RECEIVER's pad
-#   - a wake that cannot be booked still files the message (exit 0)
-#   - the timeline's own `entries` table is untouched
+#   - a task books a REAL wake (argv captured from a stub scheduler) and one
+#     that cannot be booked files nothing at all
+#   - THE CHANNEL: a task ties the spawned session to the sender's, the reply
+#     goes back to the SESSION that asked rather than to its seat, the resume
+#     wake is booked against that session's own workspace, delivery consumes
+#     the reply and cancels the wake, and a channel that will not end stops
+#     waking anyone
+#   - a finished exchange writes itself into BOTH seats' timelines, once
 #
 # Exit 0 = all pass, exit 1 = any fail.
 
@@ -32,6 +31,22 @@ TMP=$(mktemp -d /tmp/jstack-msg-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 export JSTACK_TIMELINE_DIR="$TMP/timeline"
 DB="$TMP/timeline/timeline.db"
+
+# A session id is now load-bearing — it is the far end of a channel — so the
+# test pins its own instead of inheriting whatever session runs it, and owns a
+# HOME so it can place (or withhold) the transcripts that make a session
+# resumable.
+export HOME="$TMP/home"; mkdir -p "$HOME"
+ALICE_S=aaaaaaaa-1111-1111-1111-111111111111
+BOB_S=bbbbbbbb-2222-2222-2222-222222222222
+export CLAUDE_CODE_SESSION_ID="$ALICE_S"
+# Belt and braces: no path through this test may reach the real registry, even
+# one that runs an unstubbed scheduler.cli.
+export SCHEDULER_HOME="$TMP/sched"
+transcript() {   # $1 = session id, $2 = the cwd it started in
+  local d="$HOME/.claude/projects/proj-$1"; mkdir -p "$d"
+  printf '{"cwd":"%s","type":"user"}\n' "$2" > "$d/$1.jsonl"
+}
 
 fails=0
 fail() { echo "FAIL: $1" >&2; fails=$((fails+1)); }
@@ -134,10 +149,17 @@ SEEN "$ADID"
 # consume it — the assertions below own bob's inbox and read only their own
 SEEN "$DID"
 
-# reply routes back to the sender's own inbox and joins the thread
-JSTACK_MAIL_FROM=bob/chat "$MSG" reply "$MID" "Answered." >/dev/null || fail "reply exit"
+# A reply aims at the session that asked. This one cannot reach it — no
+# transcript exists for ALICE_S yet, so that session is not resumable — and the
+# honest fallback is news for the seat rather than a channel that pretends.
+JSTACK_MAIL_FROM=bob/chat out=$("$MSG" reply "$MID" "Answered." 2>&1) || fail "reply exit"
 RID=$(SQL "SELECT MAX(id) FROM messages WHERE to_seat='alice/chat' AND subject='Answered.'" | grep -oE '[0-9]+')
 [[ -n "$RID" ]] && pass "reply lands in sender's inbox" || fail "reply lands in sender's inbox"
+[[ "$out" == *"no transcript left"* ]] \
+  && pass "an unreachable session degrades to news, and says so" \
+  || fail "an unreachable session degrades to news, and says so ($out)"
+[[ "$(SQL "SELECT state, bound_session FROM messages WHERE id=$RID")" == "[('update', None)]" ]] \
+  && pass "the degraded reply binds no session" || fail "the degraded reply binds no session"
 [[ "$(SQL "SELECT reply_to FROM messages WHERE id=$RID")" == "[($MID,)]" ]] \
   && pass "reply links to its parent" || fail "reply links to its parent"
 [[ "$(SQL "SELECT thread_id FROM messages WHERE id=$RID")" == "[($MID,)]" ]] \
@@ -183,19 +205,27 @@ PY
 CLAUDE_CODE_SESSION_ID=sess-1 "$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 1 ]] \
   && pass "an update binds no session" || fail "an update binds no session"
 
-# ------------------------------------------------ 4. a task binds ONE session
-# A task books a wake and binds to it — it is NEVER typed into a session that
-# is already running. A stub interpreter stands in for the scheduler so the
-# booking is hermetic; its argv is kept so the call itself can be asserted.
-cat > "$TMP/fakepy" <<EOS
-#!/bin/sh
-echo "\$@" >> "$TMP/wake.argv"
-exit 0
+# ------------------------------------------------ 4. a task opens a CHANNEL
+# A task books a wake and ties the session it spawns to the session that sent
+# it — it is NEVER typed into a session that is already running. A stub
+# interpreter stands in for the scheduler so the booking is hermetic; its argv
+# is kept so the call itself can be asserted, and it answers add-once with a
+# job id the way the real CLI does under --json.
+export WAKE_ARGV="$TMP/wake.argv"
+cat > "$TMP/fakepy" <<'EOS'
+#!/usr/bin/env python3
+import hashlib, json, os, sys
+argv = sys.argv[1:]
+with open(os.environ["WAKE_ARGV"], "a") as f:
+    f.write(" ".join(a.replace("\n", " ") for a in argv) + "\n")
+if "add-once" in argv:
+    print(json.dumps({"id": hashlib.md5(" ".join(argv).encode()).hexdigest()}))
 EOS
 chmod +x "$TMP/fakepy"
 cat > "$JSTACK_REVIEW_CONFIG" <<EOF2
 {"agent_root": "$AR", "mail": {"python": "$TMP/fakepy", "scheduler_home": "$TMP"}}
 EOF2
+transcript "$ALICE_S" "$AR/Alice/chat"       # Alice's session is now resumable
 out=$("$MSG" send @bob "Do this now" --wake 2>&1)
 TID=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Do this now'" | grep -oE '[0-9]+')
 [[ "$out" == *"session spawning at"* ]] \
@@ -204,32 +234,100 @@ grep -q "add-once" "$TMP/wake.argv" \
   && pass "the wake is a real scheduler booking" || fail "the wake is a real scheduler booking"
 grep -q "\[inbox:$TID\]" "$TMP/wake.argv" \
   && pass "the wake carries the task as its prompt" || fail "the wake carries the task as its prompt"
-[[ "$(SQL "SELECT state, bound_session FROM messages WHERE id=$TID")" == "[('task', 'wake:$TID')]" ]] \
-  && pass "task records the wake it bound to" || fail "task records the wake it bound to"
+# The tie: the sender's own session is on the row, the wake it booked is on the
+# row, and the receiving session is NOT — it does not exist yet, and claiming
+# one before it boots is the guess this column must never carry.
+[[ "$(SQL "SELECT state, origin_session, bound_session FROM messages WHERE id=$TID")" \
+   == "[('task', '$ALICE_S', None)]" ]] \
+  && pass "a task records the session that sent it, and no receiver yet" \
+  || fail "a task records the session that sent it, and no receiver yet"
+[[ "$(SQL "SELECT wake_job <> '' FROM messages WHERE id=$TID")" == "[(1,)]" ]] \
+  && pass "the booked wake is recorded on the task" || fail "the booked wake is recorded on the task"
+
+# a wake runs in the seat's real DIRECTORY, cased as it is on disk. A seat
+# string is lowercase and the workspace string is what the CLI hashes into a
+# session's project dir, so a path rebuilt out of the lowercase name files the
+# spawned session's transcript where the seat's own history never looks.
+: > "$TMP/wake.argv"
+"$MSG" send @self "self task" --wake >/dev/null 2>&1
+grep -q -- "--workspace $AR/Alice/chat " "$TMP/wake.argv" \
+  && pass "@self books the real cased workspace" || fail "@self books the real cased workspace"
+python3 -c "import sqlite3;c=sqlite3.connect('$DB');c.execute(\"DELETE FROM messages WHERE subject='self task'\");c.commit()"
 
 # THE anti-ambush rule: only the run woken for it can see it
 "$MSG" pending-for bob/chat --session someone-else >/dev/null; [[ $? -eq 1 ]] \
   && pass "another session cannot see it" || fail "another session cannot see it"
-"$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 1 ]] \
+CLAUDE_CODE_SESSION_ID=an-idle-session "$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 1 ]] \
   && pass "a session with no task sees nothing" || fail "a session with no task sees nothing"
 # nor does it leak through the update channel
 [[ "$("$MSG" updates-for bob/chat)" != *"Do this now"* ]] \
   && pass "a task never arrives as an update" || fail "a task never arrives as an update"
 
-# a spawned task is reachable by the id its run was woken with, and only that id
-"$MSG" pending-for bob/chat --session nobody --woken "$TID" | grep -q "Do this now" \
+# a spawned task is reachable by the id its run was woken with, and only that
+# id — and the session that turns up for it is STAMPED, which is what closes
+# the tie the sender is holding the other end of
+"$MSG" pending-for bob/chat --session "$BOB_S" --woken "$TID" | grep -q "Do this now" \
   && pass "a woken run reaches its own task" || fail "a woken run reaches its own task"
+[[ "$(SQL "SELECT bound_session FROM messages WHERE id=$TID")" == "[('$BOB_S',)]" ]] \
+  && pass "the session that took it is stamped on the task" \
+  || fail "the session that took it is stamped on the task"
+[[ "$("$MSG" check "$TID")" == *"${BOB_S:0:8}"* ]] \
+  && pass "check names the session doing the work" || fail "check names the session doing the work"
 
-# the reply IS the close, and it goes back to the sender
-JSTACK_MAIL_FROM=bob/chat "$MSG" reply "$TID" "Did it, here is the answer." >/dev/null
+# ------------------------- the return leg: back to the SESSION, not the seat
+: > "$TMP/wake.argv"
+CLAUDE_CODE_SESSION_ID="$BOB_S" JSTACK_MAIL_FROM=bob/chat \
+  "$MSG" reply "$TID" "Did it, here is the answer." >/dev/null
+AID=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Did it, here is the answer.'" | grep -oE '[0-9]+')
 [[ "$(SQL "SELECT state, resolved_by FROM messages WHERE id=$TID")" == "[('answered', 'bob/chat')]" ]] \
   && pass "replying answers the task" || fail "replying answers the task"
 [[ "$("$MSG" read "$TID")" == *"Did it, here is the answer."* ]] \
   && pass "the answer is recorded on the task" || fail "the answer is recorded on the task"
-[[ "$("$MSG" updates-for alice/chat)" == *"Did it, here is the answer."* ]] \
-  && pass "the answer reaches the sender as news" || fail "the answer reaches the sender as news"
-"$MSG" pending-for bob/chat --session nobody --woken "$TID" >/dev/null; [[ $? -eq 1 ]] \
+[[ "$(SQL "SELECT state, bound_session FROM messages WHERE id=$AID")" == "[('reply', '$ALICE_S')]" ]] \
+  && pass "the answer binds to the session that asked" || fail "the answer binds to the session that asked"
+# and therefore NOT to the seat: whoever sits down in alice/chat next did not
+# ask anything and is not handed someone else's answer
+[[ "$("$MSG" updates-for alice/chat)" != *"Did it, here is the answer."* ]] \
+  && pass "the answer is not news for the seat" || fail "the answer is not news for the seat"
+grep -q -- "--resume-session $ALICE_S" "$TMP/wake.argv" \
+  && pass "the return wake resumes the asking session" || fail "the return wake resumes the asking session"
+grep -q -- "--workspace $AR/Alice/chat" "$TMP/wake.argv" \
+  && pass "the return wake runs where that session started" || fail "the return wake runs where that session started"
+"$MSG" pending-for bob/chat --session "$BOB_S" --woken "$TID" >/dev/null; [[ $? -eq 1 ]] \
   && pass "an answered task binds nothing" || fail "an answered task binds nothing"
+
+# the asking session picks it up at its own stop — and doing so consumes it
+# and drops the wake that was booked as the slower half of the race
+"$MSG" pending-for alice/chat --session "$ALICE_S" | grep -q "Did it, here is the answer." \
+  && pass "the asking session finds its answer" || fail "the asking session finds its answer"
+: > "$TMP/wake.argv"
+"$MSG" deliver "$AID" >/dev/null
+[[ "$(SQL "SELECT state, consumed_at <> '' FROM messages WHERE id=$AID")" == "[('seen', 1)]" ]] \
+  && pass "delivery consumes the answer" || fail "delivery consumes the answer"
+JOB=$(SQL "SELECT wake_job FROM messages WHERE id=$AID" | grep -oE "'[a-f0-9]+'" | tr -d "'")
+grep -q "scheduler.cli rm $JOB" "$TMP/wake.argv" \
+  && pass "delivery cancels the wake it beat" || fail "delivery cancels the wake it beat"
+"$MSG" pending-for alice/chat --session "$ALICE_S" >/dev/null; [[ $? -eq 1 ]] \
+  && pass "an answer is delivered exactly once" || fail "an answer is delivered exactly once"
+
+# a channel that will not end stops waking anyone. The messages still file and
+# still read; nobody is spawned for them.
+transcript "$BOB_S" "$AR/Bob/chat"
+LAST=$AID
+for i in 1 2 3 4 5 6 7 8; do
+  if (( i % 2 )); then S="$ALICE_S"; F=alice/chat; else S="$BOB_S"; F=bob/chat; fi
+  CLAUDE_CODE_SESSION_ID="$S" JSTACK_MAIL_FROM="$F" \
+    "$MSG" reply "$LAST" "turn $i" >/dev/null 2>&1
+  LAST=$(SQL "SELECT MAX(id) FROM messages WHERE subject='turn $i'" | grep -oE '[0-9]+')
+done
+: > "$TMP/wake.argv"
+CLAUDE_CODE_SESSION_ID="$BOB_S" JSTACK_MAIL_FROM=bob/chat \
+  out=$("$MSG" reply "$LAST" "one more thing" 2>&1)
+[[ "$out" == *"turns deep"* ]] && pass "a runaway channel says it stopped waking" \
+  || fail "a runaway channel says it stopped waking ($out)"
+[[ ! -s "$TMP/wake.argv" ]] && pass "a runaway channel books nothing" || fail "a runaway channel books nothing"
+[[ "$("$MSG" thread "$TID")" == *"one more thing"* ]] \
+  && pass "but the message is still filed and readable" || fail "but the message is still filed and readable"
 
 # ------------------------------- 5. a task nobody can take is NOT filed
 cat > "$JSTACK_REVIEW_CONFIG" <<EOF3
@@ -245,10 +343,28 @@ cat > "$JSTACK_REVIEW_CONFIG" <<EOF4
 {"agent_root": "$AR"}
 EOF4
 
-# ------------------------------------------------- 6. coexistence with timeline
+# --------------------------------------- 6. a finished exchange is on record
+# `messages` is the channel; the timeline is what a seat did. An exchange worth
+# waking a session for belongs in both seats' history — otherwise the only
+# trace that one agent asked another for something lives in a table neither of
+# them reads by habit. Exactly one entry per seat, written once, no matter how
+# many turns the channel ran afterwards.
+[[ "$(SQL "SELECT COUNT(*) FROM entries")" == "[(2,)]" ]] \
+  && pass "a closed exchange writes one entry per seat" || fail "a closed exchange writes one entry per seat"
+[[ "$("$LOG_EVENT" tail alice/chat -n 5)" == *"Asked bob/chat — Do this now"* ]] \
+  && pass "the asking seat's history says it asked" || fail "the asking seat's history says it asked"
+[[ "$("$LOG_EVENT" tail bob/chat -n 5)" == *"Answered alice/chat — Do this now"* ]] \
+  && pass "the doing seat's history says it answered" || fail "the doing seat's history says it answered"
+[[ "$("$LOG_EVENT" tail alice/chat -n 5)" == *"Did it, here is the answer."* ]] \
+  && pass "the entry carries what came back" || fail "the entry carries what came back"
+[[ "$(SQL "SELECT logged_at <> '' FROM messages WHERE id=$TID")" == "[(1,)]" ]] \
+  && pass "the exchange is stamped as recorded" || fail "the exchange is stamped as recorded"
+
 "$LOG_EVENT" alice/chat --at 10:00 --date 2026-01-15 "A timeline entry" >/dev/null
-[[ "$(SQL "SELECT COUNT(*) FROM entries")" == "[(1,)]" ]] && pass "timeline entries unaffected" || fail "timeline entries unaffected"
-[[ "$("$LOG_EVENT" tail alice/chat -n 5)" == *"A timeline entry"* ]] && pass "log_event still reads its own table" || fail "log_event still reads its own table"
+[[ "$(SQL "SELECT COUNT(*) FROM entries")" == "[(3,)]" ]] \
+  && pass "log_event still writes its own table" || fail "log_event still writes its own table"
+[[ "$("$LOG_EVENT" tail alice/chat -n 5)" == *"A timeline entry"* ]] \
+  && pass "log_event still reads its own table" || fail "log_event still reads its own table"
 
 echo
 if [[ $fails -eq 0 ]]; then echo "ALL PASS"; exit 0; else echo "$fails FAILED"; exit 1; fi

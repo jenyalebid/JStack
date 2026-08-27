@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""JStack Stop hook — a task handed to THIS session gets its answer.
+"""JStack Stop hook — what was addressed to THIS session reaches it.
 
-A task is another agent's blocking request: they sent it with `--wake`, it was
-delivered into this session, and they are waiting on the reply. Ending the
-turn without answering leaves them waiting on something that will never come.
-This hook is what makes the answer happen.
+A channel has two ends and this hook serves both:
 
-It binds one thing and one thing only: **tasks handed to this exact session** —
-either typed into it live (the task records this session id) or the task this
-session was spawned for (its first prompt carries `[inbox:N]`).
+  - A **task** is another agent's blocking request: they sent it with `--wake`,
+    a session was spawned here for it, and they are waiting on the reply.
+    Ending the turn without answering leaves them waiting on something that
+    will never come.
+  - A **reply** is the return leg: this session asked another seat for
+    something, and the answer has come back. It is delivered here because this
+    is the conversation that asked — a stop is the one moment a running session
+    can be handed something without touching what a person is typing.
+
+It binds one thing and one thing only: **messages addressed to this exact
+session** — the task this session was spawned for (its first prompt carries
+`[inbox:N]`), or a row bound to this session id, which is how an answer finds
+the session that asked for it.
 
 What it will never do is surface something that was merely sitting around.
-Updates are not tasks and are never blocked on. A task belonging to another
-session — one that was never delivered here — is invisible to this hook. So
-opening a chat cannot make an agent go off doing whatever accumulated in a
-mailbox: nothing accumulates, and nothing undelivered is discoverable.
+Updates are addressed to a seat, not a session, and are never blocked on. A
+message belonging to another session is invisible to this hook. So opening a
+chat cannot make an agent go off doing whatever accumulated in a mailbox:
+nothing accumulates, and nothing undelivered is discoverable.
 
 Loop guards (all three):
   - `stop_hook_active` — the harness sets it while the model is continuing
@@ -79,12 +86,13 @@ def resolve_seat(cwd: str) -> "str|None":
 
 
 def open_items(seat: str, session_id: str = "", woken: str = "") -> list:
-    """Tasks handed to THIS session and still unanswered.
+    """Messages addressed to THIS session and not yet taken.
 
     Both handles are passed explicitly rather than inherited: `woken` matches
     the task this run was spawned for — the wake, which is how every task
-    arrives — and the session id matches one bound to a session directly.
-    A task matching neither was never delivered here and is not ours."""
+    arrives — and the session id matches a row bound to this session directly,
+    which is how a reply finds the session that asked for it. A message
+    matching neither was never addressed here and is not ours."""
     argv = [str(PLUGIN_BIN / "msg"), "pending-for", seat]
     if session_id:
         argv += ["--session", session_id]
@@ -144,36 +152,88 @@ def record_blocked(session_id: str, ids: set) -> bool:
         return False
 
 
+def _body_lines(r: dict) -> list:
+    out = [f"  {r['subject']}"]
+    if r.get("body"):
+        body = r["body"].strip().splitlines()
+        out.extend("  " + ln for ln in body[:6])
+        if len(body) > 6:
+            out.append(f"  … ({len(body) - 6} more lines — msg read {r['id']})")
+    for att in json.loads(r.get("attachments") or "[]"):
+        out.append(f"  attached: {att}")
+    return out
+
+
 def build_reason(rows: list, seat: str) -> str:
-    n = len(rows)
-    lines = [
-        f"{n} task{'s' if n != 1 else ''} {'were' if n != 1 else 'was'} handed to "
-        f"this session and {'have' if n != 1 else 'has'} no answer yet. The sender "
-        f"is blocked waiting on it — answer before the turn ends.",
-        "",
-    ]
-    for r in rows:
-        lines.append(f"[#{r['id']}] from {r['from_seat']}")
-        lines.append(f"  {r['subject']}")
-        if r.get("body"):
-            body = r["body"].strip().splitlines()
-            lines.extend("  " + ln for ln in body[:6])
-            if len(body) > 6:
-                lines.append(f"  … ({len(body) - 6} more lines — msg read {r['id']})")
-        for att in json.loads(r.get("attachments") or "[]"):
-            lines.append(f"  attached: {att}")
-        lines.append("")
-    lines += [
-        "Do it, then answer — the reply IS the close, there is nothing else:",
-        f'  {PLUGIN_BIN}/msg reply <id> "what you did, or the answer they wanted"',
-        "",
-        "If you cannot do it, say that in the reply and why. An answer that "
-        "reports a refusal or a blocker is a real answer; silence is not.",
-        "",
-        "Then stop. This is the only thing you owe anyone here — do not go "
-        "looking for other mail and do not start unrelated work.",
-    ]
+    """Both ends of the channel, in one block. Answers first — they are what
+    this session was already waiting on — then what it owes."""
+    replies = [r for r in rows if r.get("state") == "reply"]
+    tasks = [r for r in rows if r.get("state") != "reply"]
+    lines = []
+
+    if replies:
+        n = len(replies)
+        lines += [
+            f"{n} answer{'s' if n != 1 else ''} to what this session sent "
+            f"{'have' if n != 1 else 'has'} come back. This is the reply you "
+            f"asked for — use it before the turn ends.",
+            "",
+        ]
+        for r in replies:
+            head = f"[#{r['id']}] from {r['from_seat']}"
+            if r.get("reply_to"):
+                head += f" · answering your #{r['reply_to']}"
+            lines.append(head)
+            lines += _body_lines(r)
+            lines.append("")
+        lines += [
+            "Carry on with whatever you sent it for. If it answers the question, "
+            "the exchange is over — say nothing back; a message acknowledging a "
+            "message is traffic, not work. If it does not, the follow-up goes "
+            "into the same conversation on their side:",
+            f'  {PLUGIN_BIN}/msg reply <id> "the one thing that was missing"',
+            "",
+        ]
+
+    if tasks:
+        n = len(tasks)
+        lines += [
+            f"{n} task{'s' if n != 1 else ''} {'were' if n != 1 else 'was'} handed "
+            f"to this session and {'have' if n != 1 else 'has'} no answer yet. The "
+            f"sender is blocked waiting on it — answer before the turn ends.",
+            "",
+        ]
+        for r in tasks:
+            lines.append(f"[#{r['id']}] from {r['from_seat']}")
+            lines += _body_lines(r)
+            lines.append("")
+        lines += [
+            "Do it, then answer — the reply IS the close, there is nothing else:",
+            f'  {PLUGIN_BIN}/msg reply <id> "what you did, or the answer they wanted"',
+            "",
+            "If you cannot do it, say that in the reply and why. An answer that "
+            "reports a refusal or a blocker is a real answer; silence is not. If "
+            "the ask is unclear, reply with the question — it reaches the session "
+            "that sent it and they can answer you.",
+            "",
+        ]
+
+    lines.append("Then stop. This is the only thing you owe anyone here — do not "
+                 "go looking for other mail and do not start unrelated work.")
     return "\n".join(lines)
+
+
+def mark_delivered(ids: set) -> None:
+    """Record that this session was shown them — and drop the resume wake that
+    was booked as the slower half of the race, now that this half has won.
+
+    Best effort: a failure here costs a duplicate delivery from the wake, never
+    a lost one, so it must not stand between the session and its block."""
+    try:
+        subprocess.run([str(PLUGIN_BIN / "msg"), "deliver"] + sorted(ids),
+                       capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def main() -> None:
@@ -209,6 +269,7 @@ def main() -> None:
     if not record_blocked(session_id, fresh):
         allow()   # can't guarantee once-only → never risk a loop
 
+    mark_delivered(fresh)
     print(json.dumps({"decision": "block", "reason": build_reason(rows, seat)}))
     sys.exit(0)
 

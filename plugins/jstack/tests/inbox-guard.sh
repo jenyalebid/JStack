@@ -24,6 +24,14 @@ TMP=$(mktemp -d /tmp/jstack-inbox-guard-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 export JSTACK_TIMELINE_DIR="$TMP/timeline"
 export JSTACK_REVIEW_STATE="$TMP/state"
+# A session is resumable only if it has a transcript, so the test owns a HOME
+# and places them itself rather than reading (or writing) the real one.
+export HOME="$TMP/home"; mkdir -p "$HOME"
+export SCHEDULER_HOME="$TMP/sched"
+transcript() {   # $1 = session id, $2 = the cwd it started in
+  local d="$HOME/.claude/projects/proj-$1"; mkdir -p "$d"
+  printf '{"cwd":"%s","type":"user"}\n' "$2" > "$d/$1.jsonl"
+}
 
 fails=0
 fail() { echo "FAIL: $1" >&2; fails=$((fails+1)); }
@@ -116,6 +124,39 @@ printf '%s\n' "{\"type\":\"user\",\"message\":{\"content\":\"[inbox:$MID2] Messa
 [[ -z "$(JSTACK_INBOX_GUARD_DISABLED=1 run w6b "$TMP/wake2.jsonl" "$BOB")" ]] && pass "kill switch honored" || fail "kill switch honored"
 [[ -z "$(SKIP_SESSION_HOOK=1 run w6c "$TMP/wake2.jsonl" "$BOB")" ]] && pass "SKIP_SESSION_HOOK honored" || fail "SKIP_SESSION_HOOK honored"
 [[ -z "$(echo 'not json' | "$HOOK")" ]] && pass "malformed input allowed" || fail "malformed input allowed"
+
+# 7. THE RETURN LEG — the guard serves both ends of a channel. It makes a
+#    receiver answer; it also hands a sender what came back, because the
+#    session that asked is the only one the answer means anything to. A stop is
+#    the one moment a running session can be given something without touching
+#    what a person is part-way through typing.
+A1=aaaa1111-aaaa-1111-aaaa-111111111111
+B1=bbbb2222-bbbb-2222-bbbb-222222222222
+ALICE="$AR/Alice/chat"
+transcript "$A1" "$ALICE"
+cd "$ALICE" || exit 1
+CLAUDE_CODE_SESSION_ID="$A1" "$MSG" send @bob "Need the device log" --wake >/dev/null
+TID=$(python3 -c "import sqlite3;print(sqlite3.connect('$TMP/timeline/timeline.db').execute(\"SELECT MAX(id) FROM messages\").fetchone()[0])")
+CLAUDE_CODE_SESSION_ID="$B1" JSTACK_MAIL_FROM=bob/chat \
+  "$MSG" reply "$TID" "Here it is: the crash is OOM" >/dev/null
+
+# nobody else in that seat is handed it — an answer is not seat news
+[[ -z "$(run a-different-alice-session "$TMP/user.jsonl" "$ALICE")" ]] \
+  && pass "another session in the seat is not handed the answer" \
+  || fail "another session in the seat is not handed the answer"
+
+out=$(run "$A1" "$TMP/user.jsonl" "$ALICE")
+[[ "$(printf '%s' "$out" | decision)" == "block" ]] \
+  && pass "the session that asked is handed its answer" || fail "the session that asked is handed its answer"
+[[ "$out" == *"the crash is OOM"* ]] && pass "the answer itself is in the block" || fail "the answer itself is in the block"
+[[ "$out" == *"answer"* && "$out" == *"asked for"* ]] \
+  && pass "the block reads as an answer, not a demand" || fail "the block reads as an answer, not a demand"
+[[ "$out" != *"no answer yet"* ]] \
+  && pass "and does not tell the asker to answer itself" || fail "and does not tell the asker to answer itself"
+
+# being shown IS its lifecycle — nothing is owed back, so it is consumed here
+"$MSG" pending-for alice/chat --session "$A1" >/dev/null; [[ $? -eq 1 ]] \
+  && pass "an answer is consumed by being shown" || fail "an answer is consumed by being shown"
 
 echo
 if [[ $fails -eq 0 ]]; then echo "ALL PASS"; exit 0; else echo "$fails FAILED"; exit 1; fi

@@ -2,24 +2,36 @@
 """msg — agent-to-agent messaging in exactly two forms.
 
     msg send @seat "content"           an UPDATE: news, no reply expected
-    msg send @seat "content" --wake    a TASK: they act now and answer
-    msg reply <id> "content"           the answer to a task
+    msg send @seat "content" --wake    a TASK: opens a channel, they answer
+    msg reply <id> "content"           the next turn in that channel
 
+    msg check <id>                     what became of something you sent
     msg inbox / read <id> / thread <id> / sent      reading
 
-An **update** is a note. It shows up once in the receiver's next session as
-context and is done — it obliges nobody, closes itself, and never comes back.
+An **update** is a note addressed to a SEAT. It shows up once in that seat's
+next session as context and is done — it obliges nobody, closes itself, and
+never comes back. This is the append: whatever you write lands in front of
+whoever next sits down there.
 
-A **task** is a request you cannot do yourself, and `--wake` is what makes it
-one: the receiver is reached now — typed into their live session, or a session
-is spawned for it — they do it, and they reply. The answer comes back to you.
-It is a subagent call to another agent, and it lives and dies inside that one
-exchange.
+A **task** is addressed to a SESSION, and `--wake` is what makes it one. It
+spawns a session in the receiving seat, ties that session to yours, and opens
+a **channel** between the two: they do the work and reply, and the reply comes
+back to the session that asked — not to its seat, and not to whoever happens
+to sit down there next. If that session has already exited, the reply
+fork-resumes it, so the answer always lands in the conversation that wanted
+it. It is a subagent call to another agent, and like a subagent call the
+answer is the point.
+
+A channel is a thread and it runs both ways. Either end can `msg reply` again
+— to clarify, to push back, to ask the one thing that was missing — and each
+turn reaches the other end's session the same way. It ends when someone
+answers and nobody answers back, and the exchange is written to both seats'
+timelines when the task it opened with is answered.
 
 Nothing accumulates. A task binds ONLY the session it was delivered to, so
 opening a chat can never make an agent go off doing something that has been
 sitting around; an unanswered task is the sender's problem to notice, visible
-in `msg sent`, and it is invisible to every other session.
+in `msg sent` and `msg check`, and it is invisible to every other session.
 
 The bar for a task is that it genuinely needs them — their access, their
 device, context you cannot get. Work you could do yourself is not a task
@@ -92,15 +104,27 @@ CREATE TABLE IF NOT EXISTS messages (
     wake           INTEGER NOT NULL DEFAULT 0,
     reply_to       INTEGER,
     thread_id      INTEGER NOT NULL DEFAULT 0,
-    -- update | seen | task | answered
+    -- Addressed to a seat:    update -> seen
+    -- Addressed to a session: task   -> answered   (a request; the reply closes it)
+    --                         reply  -> seen       (the return leg; nothing is owed back)
     state          TEXT NOT NULL DEFAULT 'update',
     resolution     TEXT,
     resolved_at    TEXT,
     resolved_by    TEXT,
+    -- The session that wrote this. On a task it is the far end of the channel:
+    -- where the answer has to come back to.
     origin_session TEXT,
-    -- The session a task was handed to. A task binds to this one session and
-    -- no other, which is what makes a stale item impossible.
+    -- The session this message is FOR. A session-addressed message binds to
+    -- this one session and no other, which is what makes a stale item
+    -- impossible. NULL on a task whose session has not booted yet — the wake
+    -- is booked, the session does not exist, and claiming one would be a lie.
     bound_session  TEXT,
+    -- The scheduler one-shot booked to carry this message to its session.
+    -- Held so the sender can ask what became of it, and so a delivery that
+    -- arrives another way can cancel the spawn it no longer needs.
+    wake_job       TEXT,
+    consumed_at    TEXT,
+    logged_at      TEXT,
     delivery       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_seat, state, created_at);
@@ -149,9 +173,10 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA busy_timeout=5000")
     con.executescript(_SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(messages)")}
-    if "bound_session" not in cols:
-        con.execute("ALTER TABLE messages ADD COLUMN bound_session TEXT")
-        con.commit()
+    for col in ("bound_session", "wake_job", "consumed_at", "logged_at"):
+        if col not in cols:
+            con.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
+            con.commit()
     for dead in ("deferred_until", "deferred_session"):
         if dead in cols:
             try:
@@ -236,7 +261,16 @@ def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
         if not sender:
             _fail("@self: could not resolve the sending seat from cwd")
         agent, _, submode = sender.partition("/")
-        return agent, (submode or "chat"), (agent_root() / agent) / (submode or "chat")
+        agent, submode = agent.lower(), (submode or "chat")
+        # A seat STRING is lowercase; the directory it names is not. Resolve
+        # through the real dir instead of rebuilding a path out of the
+        # lowercase name — the workspace string is what the CLI hashes into a
+        # session's project dir, so `~/Agents/jarvis/chat` files a spawned
+        # session's transcript somewhere the seat's own history never looks.
+        root = _agent_dirs().get(agent)
+        if root is None:
+            _fail(f"@self: {agent!r} is not an agent under {agent_root()}")
+        return agent, submode, root / submode
     if spec.lower() == "boss":
         _fail("@boss is not a mailbox — the host's Boss channel owns human "
               "contact and has its own reply path. Use it instead.")
@@ -293,14 +327,20 @@ def _seat_of(path: "Path|None") -> "str|None":
     return f"{rel.parts[0].lower()}/{submode}"
 
 
-def _session_cwd() -> "Path|None":
-    """The calling session's own workspace, read from its transcript.
+def _cwd_of_session(sid: str) -> "Path|None":
+    """The workspace a session was STARTED in, read from its own transcript.
 
     cwd is where the agent last `cd`'d to, which is routinely somewhere else —
     a repo, an infra dir. The transcript records the workspace the session was
     started in, so a message sent or closed from anywhere still carries the
-    seat that did it, rather than an anonymous '?'."""
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    seat that did it, rather than an anonymous '?'.
+
+    It is also the only correct answer for resuming that session: the CLI finds
+    a transcript by hashing the cwd into a project dir, so a resume spawned
+    from the seat dir cannot see a session that started at the agent root. None
+    here means no transcript exists — the session is not resumable, whatever
+    the row remembers."""
+    sid = (sid or "").strip()
     if not sid:
         return None
     try:
@@ -320,6 +360,11 @@ def _session_cwd() -> "Path|None":
         except (OSError, json.JSONDecodeError, ValueError, AttributeError):
             continue
     return None
+
+
+def _session_cwd() -> "Path|None":
+    """The calling session's own workspace."""
+    return _cwd_of_session(os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
 
 
 def sender_seat() -> "str|None":
@@ -395,8 +440,8 @@ def _short(row, width: int = 78) -> str:
 
 def _row_header(row) -> str:
     bits = [f"[#{row['id']}]", f"from {row['from_seat']}", row["created_at"].replace("T", " ")]
-    bits.append({"task": "TASK — unanswered", "answered": "task, answered"}
-                .get(row["state"], "update"))
+    bits.append({"task": "TASK — unanswered", "answered": "task, answered",
+                 "reply": "reply — not shown yet"}.get(row["state"], "update"))
     if row["reply_to"]:
         bits.append(f"reply to #{row['reply_to']}")
     return " · ".join(bits)
@@ -463,17 +508,20 @@ def mark_seen(con, rows) -> None:
     con.commit()
 
 
-def tasks_for_session(con, sid: str) -> list:
-    """Unanswered tasks handed to THIS session — never any other.
+def for_session(con, sid: str) -> list:
+    """Session-addressed messages waiting on THIS session — never any other.
 
-    The whole no-backlog guarantee is this one clause: a task nobody delivered
-    to you is not yours to discover, so no session can ever be ambushed by
-    something that has been sitting around."""
+    Two kinds, both ends of one channel: a `task` this session must answer, and
+    a `reply` it asked for and has not been shown yet.
+
+    The whole no-backlog guarantee is this one clause: a message nobody
+    addressed to your session is not yours to discover, so no session can ever
+    be ambushed by something that has been sitting around."""
     if not sid:
         return []
     return con.execute(
-        "SELECT * FROM messages WHERE state = 'task' AND bound_session = ? "
-        "ORDER BY created_at, id", (sid,)).fetchall()
+        "SELECT * FROM messages WHERE state IN ('task', 'reply') "
+        "AND bound_session = ? ORDER BY created_at, id", (sid,)).fetchall()
 
 
 def _wake_prompt(row) -> str:
@@ -492,9 +540,12 @@ def _wake_prompt(row) -> str:
         "",
         f'  msg reply {row["id"]} "what you did, or the answer they asked for"',
         "",
-        "That reply is the whole point of this task and it goes straight back "
-        "to them. Nothing else is expected of you: this is the only thing in "
-        "your inbox, and when you have answered it there is nothing left.",
+        "That reply is the whole point of this task and it goes back into the "
+        "session that asked — not to a mailbox, to the conversation itself. So "
+        "if the ask is unclear or you need one thing to do it, reply with that "
+        "question: it reaches them the same way and they can answer it. "
+        "Nothing else is expected of you: this is the only thing in your inbox, "
+        "and when you have answered it there is nothing left.",
     ]
     return "\n".join(parts)
 
@@ -533,47 +584,197 @@ def seat_dir_for(seat: str) -> "Path|None":
     return d if _is_seat(d) else None
 
 
-def _book_wake(seat: str, seat_dir: Path, row, at: "str|None" = None) -> "str|None":
-    """Book a one-shot on the host scheduler — the wake. Default: one minute out.
+def _reply_prompt(row, parent) -> str:
+    """The return leg, as a fork-resume of the session that asked.
 
-    Not a new spawn path: the scheduler already owns 'run claude in this
-    workspace with this context message, with a timeout, a model tier and a
-    journal entry', and the wake lands on the schedule page like any other."""
+    Only the wake path uses this — when the asking session takes the reply at
+    its own stop, the hook writes that text instead. So this addresses a fork:
+    a session holding the whole context of having asked, brought back for the
+    one purpose of receiving the answer. It does not re-explain the errand.
+
+    It has to say plainly that it IS a fork. The conversation it came from may
+    still be open in front of a person, and a fork that assumes it is the only
+    copy will redo work that is already done or answer someone who never asked
+    it anything."""
+    parts = [
+        f"[inbox:{row['id']}] {row['from_seat']} answered the task you sent them "
+        f"(#{parent['id']}). This is the reply you were waiting on.",
+        "",
+        f"You asked: {parent['subject']}",
+        "",
+        "They said:",
+        row["subject"],
+    ]
+    if row["body"]:
+        parts += ["", row["body"]]
+    for att in json.loads(row["attachments"] or "[]"):
+        parts.append(f"  attached: {att}")
+    parts += [
+        "",
+        "You are a continuation of the conversation that sent that task, woken "
+        "to receive the answer — not a fresh session, and not necessarily the "
+        "only copy: the conversation you came from may still be open in front "
+        "of somebody. So do the thing this answer unblocks and nothing else. "
+        "Do not redo what is already above you, and do not re-report to a "
+        "person who is sitting in the other copy watching you do it.",
+        "",
+        "If the answer settles it, the exchange is over — say nothing back; a "
+        "message acknowledging a message is traffic, not work. If it does not, "
+        f'`msg reply {row["id"]} "the one thing that was missing"` puts the '
+        "follow-up into the same conversation on their side. This is a channel, "
+        "not a one-shot.",
+    ]
+    return "\n".join(parts)
+
+
+#: How many turns a channel may run before it stops waking anyone. Two agents
+#: can always find one more thing to say, and each turn is a spawned session on
+#: a machine that runs unattended. Past this the messages still file and still
+#: read — nothing is lost — but nobody is woken for them, which is the point at
+#: which a conversation has to become work or stop.
+MAX_CHANNEL_TURNS = 8
+
+#: How long a reply waits for the asking session to come and take it before a
+#: fork is woken to receive it. Long enough that a session still working its
+#: turn wins the race; short enough that an idle one is not left holding an
+#: answer nobody reads.
+REPLY_WAKE_MINUTES = 3
+
+
+def _scheduler_home() -> "Path|None":
+    home = _mail_config().get("scheduler_home")
+    return Path(home).expanduser() if home else None
+
+
+def _sched_argv(sub: list) -> "tuple|None":
+    """(argv, env, cwd) for a scheduler.cli call, or None if wakes are off."""
     mail = _mail_config()
     if mail.get("wake") is False:
         return None
     plugin_root = Path(__file__).resolve().parent.parent
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{plugin_root}:{env.get('PYTHONPATH', '')}".rstrip(":")
-    home = mail.get("scheduler_home")
+    home = _scheduler_home()
     if home:
-        env["SCHEDULER_HOME"] = str(Path(home).expanduser())
+        env["SCHEDULER_HOME"] = str(home)
     python = str(Path(mail.get("python") or sys.executable or "python3").expanduser())
+    return [python, "-m", "scheduler.cli"] + sub, env, str(plugin_root)
 
+
+def _book_wake(seat: str, workspace: Path, prompt: str, name: str,
+               at: "str|None" = None, resume: "str|None" = None) -> tuple:
+    """Book a one-shot on the host scheduler — the wake. Default: one minute out.
+
+    Returns (delivery, job_id); ('', '') if none could be booked.
+
+    Not a new spawn path: the scheduler already owns 'run claude in this
+    workspace with this context message, with a timeout, a model tier and a
+    journal entry', and the wake lands on the schedule page like any other.
+
+    `resume` fork-resumes that session instead of starting fresh — how a reply
+    reaches the conversation that asked for it rather than a stranger who
+    inherits the seat. The workspace must be where that session STARTED, since
+    that is what names its transcript.
+
+    The job is booked `--delete-after-run`: a spent one-shot is scheduler
+    litter, not the record of the exchange. The record is the `messages` row,
+    which nothing here deletes, and the timeline entry written at close."""
+    built = _sched_argv([])
+    if built is None:
+        return "", ""
+    _, env, cwd = built
     at = at or (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
-    agent_id = seat.replace("/", "-")
-    argv = [
-        python, "-m", "scheduler.cli", "add-once",
-        "--agent", agent_id,
+    sub = [
+        "add-once",
+        "--agent", seat.replace("/", "-"),
         "--at", at,
-        "--workspace", str(seat_dir),
-        "--message", _wake_prompt(row),
-        "--name", f"inbox #{row['id']} → {seat}",
-        "--category", mail.get("category") or "inbox",
+        "--workspace", str(workspace),
+        "--message", prompt,
+        "--name", name,
+        "--category", _mail_config().get("category") or "inbox",
         "--delete-after-run",
+        "--json",
     ]
+    if resume:
+        sub += ["--resume-session", resume]
+    argv = _sched_argv(sub)[0]
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=30,
-                           env=env, cwd=str(plugin_root))
+                           env=env, cwd=cwd)
     except (OSError, subprocess.SubprocessError) as e:
         print(f"warning: wake could not be booked ({e})", file=sys.stderr)
-        return None
+        return "", ""
     if r.returncode != 0:
         detail = (r.stderr or r.stdout or "").strip().splitlines()
         print(f"warning: wake could not be booked "
               f"({detail[-1] if detail else 'scheduler refused'})", file=sys.stderr)
-        return None
-    return f"spawned:{at}"
+        return "", ""
+    try:
+        job_id = (json.loads(r.stdout) or {}).get("id") or ""
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        job_id = ""
+    return f"spawned:{at}", job_id
+
+
+def _cancel_wake(job_id: str) -> bool:
+    """Drop a booked wake that is no longer needed — the reply got there first.
+
+    Best effort by design: the job may already have fired and deleted itself,
+    which is the same outcome from here."""
+    built = _sched_argv(["rm", job_id])
+    if not job_id or built is None:
+        return False
+    argv, env, cwd = built
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                           env=env, cwd=cwd)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _run_state(job_id: str) -> dict:
+    """What the scheduler knows about a booked wake, read straight off its state.
+
+    {"known": bool, "running": bool, "session": str, "status": str}
+
+    `known` false is genuinely "no record" — a wake not yet fired leaves no
+    entry, and one that finished under `delete_after_run` has its entry removed
+    with the job. It is never rendered as "nothing happened": the run journal
+    outlives both, and is read here when the live state has let go."""
+    out = {"known": False, "running": False, "session": "", "status": ""}
+    home = _scheduler_home()
+    if not job_id or home is None:
+        return out
+    try:
+        st = json.loads((home / "state" / "scheduler" / "state.json").read_text())
+        entry = st.get(job_id) or {}
+    except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+        entry = {}
+    if entry:
+        out["known"] = True
+        active = [r for r in entry.get("active_runs") or [] if r.get("session_id")]
+        if active:
+            out.update(running=True, session=active[-1]["session_id"], status="running")
+            return out
+        out["session"] = entry.get("last_session_id") or ""
+        out["status"] = entry.get("last_status") or ""
+        return out
+    try:
+        lines = (home / "state" / "scheduler" / "runs" / f"{job_id}.jsonl"
+                 ).read_text().splitlines()
+    except OSError:
+        return out
+    for line in reversed(lines):
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if rec.get("session_id"):
+            out.update(known=True, session=rec["session_id"],
+                       status=rec.get("status") or "")
+            return out
+    return out
 
 
 # ------------------------------------------------------------------- commands
@@ -620,18 +821,27 @@ def cmd_send(args) -> int:
         con.execute("UPDATE messages SET thread_id = ? WHERE id = ?", (mid, mid))
     con.commit()
 
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
+
+    # A reply is the return leg of an open channel and goes back to the session
+    # that asked — a different delivery from a fresh message to a seat.
+    parent = getattr(args, "channel_parent", None)
+    if parent is not None:
+        return _return_leg(con, row, seat, parent)
+
     if not args.wake:
         print(f"#{mid} → {seat} — update, lands in their next session")
         return 0
 
-    # A task gets its own session — a headless wake, about a minute out — and
-    # binds to it. It is never typed into a session someone is already in: see
-    # the note above `seat_dir_for`. A task that reaches nobody is not filed to
-    # be found later; it is reported failed, because the sender is the one
-    # waiting.
-    row = con.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
-    delivery = _book_wake(seat, seat_dir, row) or ""
-    bound = f"wake:{mid}" if delivery else None
+    # A task gets its own session — a headless wake, about a minute out. It is
+    # never typed into a session someone is already in: see the note above
+    # `seat_dir_for`. `bound_session` stays NULL until that session exists and
+    # claims it; naming one before it has booted would be a guess, and this
+    # column is what the whole no-ambush rule reads. A task that reaches nobody
+    # is not filed to be found later; it is reported failed, because the sender
+    # is the one waiting.
+    delivery, job = _book_wake(seat, seat_dir, _wake_prompt(row),
+                               f"inbox #{mid} → {seat}")
     if not delivery:
         con.execute("DELETE FROM messages WHERE id = ?", (mid,))
         con.commit()
@@ -639,22 +849,137 @@ def cmd_send(args) -> int:
               f"Nothing was filed: a task nobody is doing is not a message, and "
               f"leaving it to be found later is the backlog this refuses to make.",
               code=3)
-    con.execute("UPDATE messages SET delivery = ?, bound_session = ? WHERE id = ?",
-                (delivery, bound, mid))
+    con.execute("UPDATE messages SET delivery = ?, wake_job = ? WHERE id = ?",
+                (delivery, job, mid))
     con.commit()
     print(f"#{mid} → {seat} — session spawning at "
-          f"{delivery.split(':', 1)[1]} PT; their reply comes back to you")
+          f"{delivery.split(':', 1)[1]} PT, tied to this one. Their reply comes "
+          f"back here; `msg check {mid}` says where it has got to.")
     return 0
 
 
+def _return_leg(con, row, seat: str, parent) -> int:
+    """Deliver a reply to the SESSION that asked, not merely to its seat.
+
+    A seat's next session is a different conversation: handing it an answer to
+    a question it never asked is how a channel turns into a stranger's note. So
+    the reply binds to `origin_session` and is delivered one of two ways —
+    whichever gets there first, both correct:
+
+      - that session is still running, and takes it at its next stop;
+      - it has already exited, and the wake below fork-resumes it, so the
+        answer arrives inside the conversation that wanted it.
+
+    The race needs no liveness guess anywhere, which is the point: guessing
+    which session is live is what broke this system once already."""
+    mid = row["id"]
+    target = (parent["origin_session"] or "").strip()
+    work = _cwd_of_session(target) if target else None
+
+    if work is None:
+        # Either the asking side recorded no session (a host filing on a
+        # human's behalf, a pre-channel row), or its transcript is gone. There
+        # is no conversation left to answer into, so this degrades honestly to
+        # news for the seat rather than pretending at a channel.
+        why = ("no session was recorded on it" if not target
+               else f"session {target[:8]} has no transcript left")
+        print(f"#{mid} → {seat} — #{parent['id']}: {why}. Filed as an update; it "
+              f"lands in their next session.")
+        _log_exchange(con, parent, row)
+        return 0
+
+    con.execute("UPDATE messages SET state = 'reply', bound_session = ? WHERE id = ?",
+                (target, mid))
+    con.commit()
+    turns = con.execute("SELECT COUNT(*) c FROM messages WHERE thread_id = ?",
+                        (row["thread_id"],)).fetchone()["c"]
+    if turns > MAX_CHANNEL_TURNS:
+        print(f"#{mid} → {seat} — filed for session {target[:8]}, but this channel "
+              f"is {turns} turns deep, so no wake was booked. They will see it if "
+              f"that session stops again. {MAX_CHANNEL_TURNS} turns is where an "
+              f"exchange has to become work or stop.")
+        _log_exchange(con, parent, row)
+        return 0
+
+    # Further out than a task's wake, deliberately. The two paths are racing and
+    # the live one is cheaper — it costs a hook call rather than a spawned
+    # session — so the wake gives the asking session a few minutes to finish its
+    # turn and take the answer itself before a fork is made to hand it over.
+    at = (datetime.now() + timedelta(minutes=REPLY_WAKE_MINUTES)).strftime("%Y-%m-%d %H:%M")
+    delivery, job = _book_wake(seat, work, _reply_prompt(row, parent),
+                              f"reply #{mid} → {seat}", at=at, resume=target)
+    con.execute("UPDATE messages SET delivery = ?, wake_job = ? WHERE id = ?",
+                (delivery, job, mid))
+    con.commit()
+    if delivery:
+        print(f"#{mid} → {seat} — answer bound to session {target[:8]}. It reaches "
+              f"them at their next stop, or resumes that conversation at "
+              f"{delivery.split(':', 1)[1]} PT, whichever comes first.")
+    else:
+        # Not fatal the way a task's failed wake is: the message is an answer,
+        # it is already bound to the right session, and that session picks it
+        # up at its next stop. Only the resume fallback is lost.
+        print(f"#{mid} → {seat} — answer bound to session {target[:8]}; no resume "
+              f"wake could be booked, so it lands only if that session stops "
+              f"again. Check with them if it matters.", file=sys.stderr)
+    _log_exchange(con, parent, row)
+    return 0
+
+
+def _log_exchange(con, parent, reply) -> None:
+    """Write the finished exchange into both seats' timelines, once.
+
+    `messages` is the channel; the timeline is what a seat did. An exchange
+    that was worth waking a session for is part of both seats' history, and
+    without this the only trace that one agent asked another for something
+    lives in a table neither of them reads by habit.
+
+    Guarded by `logged_at` on the parent, and stamped only after the write
+    lands — a failed write leaves the row unstamped so a later turn can still
+    carry it, rather than silently swallowing the record."""
+    fresh = con.execute("SELECT * FROM messages WHERE id = ?", (parent["id"],)).fetchone()
+    if not fresh or fresh["logged_at"] or fresh["state"] != "answered":
+        return
+    asked, did = fresh["from_seat"], fresh["to_seat"]
+    answer = (fresh["resolution"] or reply["subject"] or "").strip()
+    pairs = [
+        (asked, f"Asked {did} — {fresh['subject']}", fresh["origin_session"] or ""),
+        (did, f"Answered {asked} — {fresh['subject']}", reply["origin_session"] or ""),
+    ]
+    log = str(Path(__file__).resolve().parent / "log_event")
+    for seat, headline, sid in pairs:
+        argv = [log, seat, headline[:300],
+                "--detail", f"they got: {answer[:600]}" if seat == asked
+                else f"answered: {answer[:600]}",
+                "--detail", f"channel #{fresh['thread_id']} — msg thread {fresh['thread_id']}"]
+        if sid:
+            argv += ["--session", sid]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"warning: timeline write for {seat} failed ({e})", file=sys.stderr)
+            return
+        if r.returncode != 0:
+            print(f"warning: timeline write for {seat} failed "
+                  f"({(r.stderr or '').strip()[:160]})", file=sys.stderr)
+            return
+    con.execute("UPDATE messages SET logged_at = ? WHERE id = ?", (now_iso(), fresh["id"]))
+    con.commit()
+
+
 def cmd_reply(args) -> int:
-    """Answer a task. The answer closes it — there is no separate close."""
+    """The next turn in a channel. Answering a task also closes it.
+
+    There is no separate close verb and no `--wake` here: every reply reaches
+    the other end's session, because that is what a channel is."""
     con = connect()
     parent = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
     if not parent:
         _fail(f"no message #{args.id}")
     me = args.frm or sender_seat()
     content = (args.content or "").strip()
+    if not content:
+        _fail("empty reply")
     if parent["state"] == "task":
         con.execute(
             "UPDATE messages SET state='answered', resolution=?, resolved_at=?, "
@@ -663,6 +988,8 @@ def cmd_reply(args) -> int:
     args.to = "@" + parent["from_seat"].replace("/", "-")
     args.reply_to = args.id
     args.frm = me
+    args.wake = False
+    args.channel_parent = parent
     return cmd_send(args)
 
 
@@ -734,13 +1061,25 @@ def cmd_sent(args) -> int:
 
 
 def cmd_pending(args) -> int:
-    """Hook helper: unanswered tasks handed to THIS session. Exit 1 = none.
+    """Hook helper: what this session must take before it stops. Exit 1 = none.
 
-    Two ways a task is "handed to" a session: typed into a live one (which
-    records its id), or spawned for it (the run's prompt carries the id, and
-    `--woken` is how the hook passes that along). Nothing else qualifies."""
+    Two ways something is addressed to a session: it was spawned for it (the
+    run's prompt carries the id, and `--woken` is how the hook passes that
+    along), or it is bound to the session id directly — a reply to what this
+    session sent. Nothing else qualifies.
+
+    A woken task is STAMPED here with the session that actually turned up for
+    it, which is the tie between the two ends of a channel. Until it lands the
+    sender knows only which wake it booked; after it lands they know the
+    session, and `msg check` can say where the work went. A retried wake
+    restamps: the answer to "who is doing this" is the session doing it now."""
     con = connect()
-    rows = list(tasks_for_session(con, args.session or session_id()))
+    sid = args.session or session_id()
+    if sid and args.woken:
+        con.execute("UPDATE messages SET bound_session = ? WHERE id = ? "
+                    "AND state = 'task'", (sid, args.woken))
+        con.commit()
+    rows = list(for_session(con, sid))
     if args.woken and not any(str(r["id"]) == str(args.woken) for r in rows):
         extra = con.execute("SELECT * FROM messages WHERE id = ? AND state = 'task'",
                             (args.woken,)).fetchone()
@@ -748,6 +1087,89 @@ def cmd_pending(args) -> int:
             rows.append(extra)
     print(json.dumps([dict(r) for r in rows]))
     return 0 if rows else 1
+
+
+def cmd_deliver(args) -> int:
+    """Hook helper: record that a session was shown what was addressed to it.
+
+    A `reply` is consumed by being shown — nothing is owed back, so being shown
+    is its whole lifecycle, and the resume wake booked as its fallback is
+    cancelled here because the faster path won the race.
+
+    A `task` is NOT consumed. Only its answer closes it; this just stamps that
+    it reached the session, so an unanswered task cannot be mistaken for an
+    undelivered one."""
+    con = connect()
+    ids = [int(i) for i in args.ids]
+    if not ids:
+        return 1
+    rows = con.execute(
+        f"SELECT * FROM messages WHERE id IN ({','.join('?' * len(ids))})", ids).fetchall()
+    for r in rows:
+        con.execute("UPDATE messages SET consumed_at = ? WHERE id = ?",
+                    (now_iso(), r["id"]))
+        if r["state"] == "reply":
+            con.execute("UPDATE messages SET state = 'seen' WHERE id = ?", (r["id"],))
+            if r["wake_job"]:
+                _cancel_wake(r["wake_job"])
+    con.commit()
+    return 0 if rows else 1
+
+
+def cmd_check(args) -> int:
+    """Where something you sent has got to — the sender's end of the channel.
+
+    Answers three things a sender cannot otherwise see: which session took the
+    task, whether it is still running, and whether the answer is back. It reads
+    the scheduler's own state rather than inferring from the message row, so
+    "their session finished and never answered" is a state it can actually
+    report instead of showing an open task forever."""
+    con = connect()
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (args.id,)).fetchone()
+    if not row:
+        _fail(f"no message #{args.id}")
+    run = _run_state(row["wake_job"] or "")
+    theirs = row["bound_session"] or run.get("session") or ""
+    replies = con.execute(
+        "SELECT * FROM messages WHERE reply_to = ? ORDER BY created_at, id",
+        (row["id"],)).fetchall()
+
+    if args.json:
+        print(json.dumps({
+            "id": row["id"], "to": row["to_seat"], "from": row["from_seat"],
+            "state": row["state"], "subject": row["subject"],
+            "your_session": row["origin_session"] or "",
+            "their_session": theirs, "wake_job": row["wake_job"] or "",
+            "wake": row["delivery"] or "", "run": run,
+            "answer": row["resolution"] or "",
+            "replies": [{"id": r["id"], "at": r["created_at"], "subject": r["subject"],
+                         "delivered": bool(r["consumed_at"])} for r in replies],
+        }, indent=2))
+        return 0
+
+    print(_render(row, full=True))
+    print()
+    print(f"  your session   {(row['origin_session'] or '(none recorded)')[:8]}")
+    print(f"  their session  {theirs[:8] if theirs else '(not booted yet)'}"
+          f"{'  — running now' if run.get('running') else ''}")
+    if row["wake_job"]:
+        when = (row["delivery"] or "").split(":", 1)[-1]
+        print(f"  wake           job {row['wake_job'][:8]}"
+              f"{f', booked {when} PT' if when else ''}")
+    if row["state"] == "task":
+        if not run.get("known"):
+            print("  → not started yet. Nothing has run for it; the wake is still ahead.")
+        elif run.get("running"):
+            print("  → running now. The answer comes back to your session when it lands.")
+        else:
+            print(f"  → their session finished ({run.get('status') or 'unknown'}) and "
+                  f"no answer came back. That is a real gap, not a slow reply — "
+                  f"`msg read {row['id']}` and chase it or drop it.")
+    elif row["state"] == "answered":
+        got = [r for r in replies if r["state"] in ("reply", "seen")]
+        shown = "delivered" if got and got[-1]["consumed_at"] else "on its way to you"
+        print(f"  → answered. The reply is {shown} — msg thread {row['thread_id']}")
+    return 0
 
 
 def cmd_updates(args) -> int:
@@ -772,8 +1194,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def _send_flags(sp):
-        sp.add_argument("--wake", action="store_true",
-                        help="the receiver acts now: type into a live session, else spawn one")
         sp.add_argument("--file", action="append", metavar="PATH",
                         help="attach a file (copied into the receiver's pad)")
         sp.add_argument("--from", dest="frm", metavar="SEAT",
@@ -783,14 +1203,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("to", metavar="@agent[-seat]")
     s.add_argument("content")
     s.add_argument("--reply-to", type=int, metavar="ID")
+    s.add_argument("--wake", action="store_true",
+                   help="a task: spawn them a session, tied to this one, and open a channel")
     _send_flags(s)
     s.set_defaults(func=cmd_send)
 
-    r = sub.add_parser("reply", help="answer a message in its thread")
+    # No --wake on a reply: every reply reaches the other end's session. That
+    # is what a channel is, and a flag would imply it could be opted out of.
+    r = sub.add_parser("reply", help="the next turn in a channel (and the close of a task)")
     r.add_argument("id", type=int)
     r.add_argument("content")
     _send_flags(r)
-    r.set_defaults(func=cmd_reply)
+    r.set_defaults(func=cmd_reply, wake=False)
 
     i = sub.add_parser("inbox", help="open items for this seat")
     i.add_argument("--seat", metavar="agent/seat")
@@ -815,13 +1239,23 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--json", action="store_true")
     st.set_defaults(func=cmd_sent)
 
-    pd = sub.add_parser("pending-for", help="hook helper: this session's unanswered tasks")
+    ck = sub.add_parser("check", help="where something you sent has got to")
+    ck.add_argument("id", type=int)
+    ck.add_argument("--json", action="store_true")
+    ck.set_defaults(func=cmd_check)
+
+    pd = sub.add_parser("pending-for",
+                        help="hook helper: what this session must take before it stops")
     pd.add_argument("seat", nargs="?", default="")
     pd.add_argument("--session", metavar="SID", default="",
-                    help="the asking session — a task binds to one session only")
+                    help="the asking session — a message binds to one session only")
     pd.add_argument("--woken", metavar="ID", default="",
                     help="the task this session was spawned for")
     pd.set_defaults(func=cmd_pending)
+
+    dl = sub.add_parser("deliver", help="hook helper: mark ids as shown to a session")
+    dl.add_argument("ids", nargs="+", metavar="ID")
+    dl.set_defaults(func=cmd_deliver)
 
     up = sub.add_parser("updates-for", help="hook helper: a seat's unseen updates (consumes them)")
     up.add_argument("seat")

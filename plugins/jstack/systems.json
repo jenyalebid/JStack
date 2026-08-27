@@ -297,7 +297,7 @@
       "kind": "system",
       "name": "Agent Inbox",
       "status": "live",
-      "description": "Addressed seat-to-seat messaging with a tracked outcome \u2014 bin/msg writes a `messages` table alongside the timeline; open items inject at SessionStart and are enforced at Stop, optionally waking or typing into the receiver.",
+      "description": "Addressed messaging in two forms \u2014 an UPDATE to a seat, delivered once at its next SessionStart; a TASK to a session, which spawns one, ties it to the sender's, and opens a two-way channel enforced at Stop. bin/msg writes a `messages` table alongside the timeline and is its only sanctioned writer.",
       "code": [
         "bin/msg",
         "hooks/stop-inbox-guard.py",
@@ -310,14 +310,14 @@
       "test": {
         "type": "script",
         "path": "tests/msg.sh",
-        "description": "Runs the real bin/msg against a temp timeline dir + temp agent tree: seat addressing (cockpit descent, hyphenated seat dirs, @self), refusal of non-seat dirs / unknown agents / @boss, send-read-reply-thread roundtrip, attachments copied into the receiver's pad (and recorded in place when already there), close-requires-a-note, defer and re-open, and a wake that cannot be booked still filing the message."
+        "description": "Runs the real bin/msg against a temp timeline dir, temp agent tree and its own HOME: seat addressing (cockpit descent, hyphenated seat dirs, @self), refusal of non-seat dirs / unknown agents / @boss, send-read-reply-thread roundtrip, attachments copied into the receiver's pad (and recorded in place when already there), a task that cannot be delivered filing nothing at all, and THE CHANNEL \u2014 the sender's session on the row with no receiver until one claims it, the stamp a woken run leaves, the reply binding to the session that asked rather than to its seat, the resume wake booked against that session's own workspace, delivery consuming the answer and cancelling the wake it beat, a runaway channel that stops waking anyone, and one timeline entry per seat at close."
       },
       "subsystems": [
         {
           "id": "inbox-guard",
           "kind": "subsystem",
           "name": "Inbox Stop Guard",
-          "description": "Blocks the first stop that would leave an open item \u2014 once per (session, message). User sessions are bound to every item in the seat; a headless run only to the item it was woken for.",
+          "description": "Serves both ends of a channel, once per (session, message) \u2014 blocks a session that owes an answer, and hands a session the answer it asked for. Binds only what is addressed to that exact session: the [inbox:N] its own first prompt was woken with, or a row bound to its session id.",
           "code": [
             "hooks/stop-inbox-guard.py"
           ],
@@ -326,13 +326,13 @@
           "test": {
             "type": "script",
             "path": "tests/inbox-guard.sh",
-            "description": "Drives the real hook with synthetic Stop payloads: blocks a user session with mail, never twice for the same item, re-blocks on mail that arrives later, never blocks under stop_hook_active, leaves an unrelated headless worker untouched, binds a wake session to only its own item, and allows on no-mail / non-agent cwd / kill switches / malformed input."
+            "description": "Drives the real hook with synthetic Stop payloads: blocks the run woken for a task, never twice for the same item, never under stop_hook_active, leaves an unrelated headless worker and any other session in the seat untouched, hands the session that ASKED its answer and nobody else in that seat, consumes it by showing it, and allows on no-mail / non-agent cwd / kill switches / malformed input. Every switch is checked against a transcript proved to block without it."
           },
           "subsystems": [],
           "notes": "Marker dir: {JSTACK_REVIEW_STATE}/inbox-guarded/<session_id>, holding the message ids already blocked on."
         }
       ],
-      "notes": "Self-contained python3 stdlib. Store is the `messages` table in {timeline_dir}/timeline.db \u2014 bin/msg is its only sanctioned writer, same law log_event holds for `entries`. Delivery: an update rides SessionStart injection; a TASK books a scheduler one-shot and is enforced at Stop. A task is NEVER typed into a session already running. A rung that did that (mail.deliver_live, a host command) was removed 2026-08-27: mail addresses a seat and a seat is a chat dir, so every session it could resolve was a conversation, and it picked the most recently active one, which is the one a person is typing in. The scheduler rung is optional; with no `mail` config the inbox still files, injects and enforces, but a task cannot be delivered. Hosts adding entrances (share-sheet drops, dashboard forms) shell out to bin/msg rather than writing the table."
+      "notes": "Self-contained python3 stdlib. Store is the `messages` table in {timeline_dir}/timeline.db \u2014 bin/msg is its only sanctioned writer, same law log_event holds for `entries`; the one crossing is at close, where an answered task writes one timeline entry per seat. An UPDATE is addressed to a seat and rides SessionStart injection. A TASK is addressed to a session: origin_session is the far end, bound_session is NULL until the spawned session claims it (naming one before it boots is a guess, in the column the whole anti-ambush rule reads), wake_job is the one-shot booked to carry it. A reply goes back to origin_session by whichever of two racing paths gets there first \u2014 that session's next Stop, or a fork-resume wake booked against the workspace it started in \u2014 so no liveness guess is needed anywhere. A task is NEVER typed into a session already running: a rung that did that (mail.deliver_live) was removed 2026-08-27 because mail addresses a seat and a seat is a chat dir, so every session it could resolve was a conversation, and it picked the most recently active one, which is by construction the one a person is typing in. A stop stays safe \u2014 it is the harness's own continuation channel and touches no composer. The scheduler rung is optional; with no `mail` config the inbox still files, injects and enforces, but a task cannot be delivered. Hosts adding entrances (share-sheet drops, dashboard forms) shell out to bin/msg rather than writing the table."
     }
   ]
 }

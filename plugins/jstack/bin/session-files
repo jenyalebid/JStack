@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""session-files — the paths a session wrote, read from its own transcript.
+
+    session-files                    what THIS session wrote and git still sees
+    session-files --all              every path it wrote, git state ignored
+    session-files --json             committable / clean / outside_repo, split
+    session-files --session <id>     another session — including a dead one
+
+Exists to delete a judgment call. A session that has finished a unit of work
+has to answer "which of these files are mine" against a working tree several
+other sessions are writing to at the same time, and the honest answer from
+inside `git status` is that it cannot tell. Faced with that, an agent hesitates
+or drops files it is unsure about, and finished work stays uncommitted.
+
+It never had to be a judgment. Every Edit/Write/MultiEdit/NotebookEdit call is
+already recorded in the session's own transcript with its full path, written as
+it happens. That list is authoritative, it costs nothing to read, and it does
+not care how dirty the tree is. So the stage list comes from the transcript,
+never from the tree, and a dirty tree stops being something to hesitate over.
+
+Default output is the stage list and nothing else: absolute paths, one per
+line, first-write order, ready to hand to `git add`. A path is in it only if
+git currently sees a change there — modified, deleted, or untracked-and-not-
+ignored. So empty output means there is nothing to commit, not "look harder".
+
+What it cannot see: writes made through Bash — `mv`, `sed -i`, a script that
+emits files. Those never become tool calls, so no transcript records them, and
+whoever is committing still has to add them by hand. Subagent writes DO count
+(no isSidechain filter): a subagent's write is the session's work.
+
+It raises rather than returning empty when it cannot read the transcript at all
+— no session id, no matching file, an id matching two files. An empty list from
+a tool that could not look reads exactly like "nothing to commit", which is the
+one lie that would cost the work this exists to save.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from collections import OrderedDict
+from glob import glob
+from pathlib import Path
+
+WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+PATH_KEYS = ("file_path", "notebook_path")
+GIT_TIMEOUT = 30
+
+
+def die(msg, code=2):
+    print(f"session-files: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def resolve_transcript(sid):
+    """Locate a session's transcript. Same rule as the `print` skill: the id is
+    authoritative and the project dir is globbed, because computing the dir
+    encoding by hand gets symlinked cwds wrong (/tmp -> -private-tmp).
+
+    Never falls back to "newest .jsonl here" — concurrent sessions share a
+    project dir, so mtime-guessing hands back another session's file, and the
+    caller would stage work that is not theirs.
+    """
+    matches = sorted(glob(str(Path.home() / ".claude" / "projects" / "*" / f"{sid}.jsonl")))
+    if not matches:
+        die(f"no transcript for session {sid} under ~/.claude/projects/*/")
+    if len(matches) > 1:
+        die("session id matches multiple transcripts: " + ", ".join(matches))
+    return Path(matches[0])
+
+
+def written_paths(transcript):
+    """Every path written, in first-write order, deduped."""
+    seen = OrderedDict()
+    try:
+        fh = transcript.open(errors="ignore")
+    except OSError as e:
+        die(f"cannot read {transcript}: {e}")
+    with fh:
+        for line in fh:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue          # a partially flushed tail line — skip it
+            if entry.get("type") != "assistant":
+                continue
+            for block in entry.get("message", {}).get("content", []) or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") not in WRITE_TOOLS:
+                    continue
+                params = block.get("input") or {}
+                for key in PATH_KEYS:
+                    raw = params.get(key)
+                    if raw:
+                        seen.setdefault(os.path.abspath(os.path.expanduser(raw)), None)
+                        break
+    return list(seen)
+
+
+def git(repo, *args):
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        die(f"git {' '.join(args)} in {repo} failed: {e}")
+    return proc
+
+
+def repo_root(path, cache):
+    directory = os.path.dirname(path)
+    if directory not in cache:
+        proc = git(directory, "rev-parse", "--show-toplevel")
+        cache[directory] = proc.stdout.strip() if proc.returncode == 0 else None
+    return cache[directory]
+
+
+def changed_paths(repo, paths):
+    """Which of `paths` git currently sees a change at, as absolute paths.
+
+    Two plain-path queries rather than parsing `status --porcelain`: status
+    quotes unusual names and emits two records for a rename, and misreading
+    either one silently drops a file from the stage list.
+
+      diff --name-only HEAD  → tracked modifications and deletions
+      ls-files --others      → untracked, --exclude-standard drops ignored
+
+    A repo with no commits yet has no HEAD to diff against; everything in it is
+    untracked, which the second query already covers.
+    """
+    found = set()
+    queries = [["ls-files", "--others", "--exclude-standard", "-z", "--", *paths]]
+    if git(repo, "rev-parse", "--verify", "-q", "HEAD").returncode == 0:
+        queries.insert(0, ["diff", "--name-only", "-z", "HEAD", "--", *paths])
+    for query in queries:
+        proc = git(repo, *query)
+        if proc.returncode != 0:
+            continue
+        for rel in proc.stdout.split("\0"):
+            if rel:
+                found.add(os.path.join(repo, rel))
+    return found
+
+
+def classify(paths):
+    """Split written paths into committable / clean / outside_repo."""
+    cache = {}
+    by_repo = OrderedDict()
+    outside = []
+    for path in paths:
+        root = repo_root(path, cache)
+        if root is None:
+            outside.append(path)
+        else:
+            by_repo.setdefault(root, []).append(path)
+
+    changed = set()
+    for root, group in by_repo.items():
+        changed |= changed_paths(root, group)
+
+    committable = [p for p in paths if p in changed]
+    clean = [p for p in paths if p not in changed and p not in outside]
+    return committable, clean, outside
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="session-files",
+        description="The paths a session wrote, from its own transcript.",
+    )
+    ap.add_argument("--session", metavar="ID",
+                    help="another session's id (default: this session)")
+    ap.add_argument("--all", action="store_true",
+                    help="every written path, regardless of git state")
+    ap.add_argument("--json", action="store_true",
+                    help="committable / clean / outside_repo, as JSON")
+    args = ap.parse_args()
+
+    sid = args.session or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    if not sid:
+        die("no session id — $CLAUDE_CODE_SESSION_ID is unset; pass --session <id>")
+
+    transcript = resolve_transcript(sid)
+    written = written_paths(transcript)
+
+    if args.all and not args.json:
+        print("\n".join(written))
+        return
+
+    committable, clean, outside = classify(written)
+
+    if args.json:
+        print(json.dumps({
+            "session": sid,
+            "transcript": str(transcript),
+            "written": written,
+            "committable": committable,
+            "clean": clean,
+            "outside_repo": outside,
+        }, indent=2))
+        return
+
+    print("\n".join(committable))
+
+
+if __name__ == "__main__":
+    main()

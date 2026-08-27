@@ -35,7 +35,15 @@ Order doesn't matter. Anything else = error, ask the user to clarify.
 
 Build the touched-file list, then resolve each file to its repo. Do NOT assume the current directory is a repo.
 
-1. **Build the file list.** From your own Edit/Write/Bash tool calls in this session, list every absolute path you modified, created, or deleted. Include files affected by `mv`, `sed -i`, scripts you ran, or any other write you performed. If you're uncertain a file is yours, leave it out — a tight commit plus a follow-up beats scooping unrelated work.
+1. **Get the file list — do not reconstruct it.** Run `session-files`. It reads this session's own transcript and prints one absolute path per line: every file you wrote that git still sees a change at, ready to stage.
+
+   That list is authoritative and you stage all of it. It is built from your own tool calls, never from the working tree, so another session's pending changes cannot appear in it no matter how dirty the tree is — and "I'm not sure this one is mine" is not a question you have to answer. Empty output from a clean run means there is genuinely nothing to commit.
+
+   Two things it cannot see, and they are the only paths you add by hand:
+   - **Writes made through Bash** — `mv`, `sed -i`, a script that emits files. Those never became tool calls, so no transcript records them.
+   - **Files you wrote before a `/compact`** are still in the transcript and still listed — trust the list over your own recollection, which is the part that got summarized away.
+
+   If `session-files` exits non-zero it could not read your transcript (no session id, no matching file). Say so in your report and fall back to listing paths from your own tool calls — never treat a failed run as "nothing to commit".
 
 2. **Resolve each file to its repo root.** For every touched path `F`:
 
@@ -71,7 +79,7 @@ For **each repo** `R` from Step 1, in turn:
    git -C "$R" rev-parse --abbrev-ref HEAD
    ```
 
-2. **Cross-check.** Every file you're about to stage for `R` must appear as modified/added/deleted in `git -C "$R" status`. Files in status but NOT on your list = other sessions' work — exclude them silently and carry on.
+2. **Do not cross-check the list against `git status`.** `session-files` already restricted it to paths git sees a change at, so re-testing them against the tree only hands back the judgment call it exists to remove. Check only the paths you added by hand in Step 1. Anything in `status` that is on nobody's list is another session's work — leave it, silently.
 
 3. **Stage explicitly** (absolute paths are fine with `-C`):
 

@@ -196,7 +196,8 @@
       "status": "live",
       "description": "Commits and pushes the work touched in the current session to whatever repo(s) those files live in \u2014 supports session-scoped (default) or all-pending (`all`) modes, and `0` to commit without pushing.",
       "code": [
-        "skills/push/SKILL.md"
+        "skills/push/SKILL.md",
+        "bin/session-files"
       ],
       "config": [],
       "docs": [],
@@ -205,7 +206,26 @@
         "path": "tests/skills.sh",
         "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
       },
-      "subsystems": [],
+      "subsystems": [
+        {
+          "id": "session-files",
+          "kind": "subsystem",
+          "name": "Session File List",
+          "description": "Prints the paths a session wrote, read from its own transcript — the stage list for /push, so which files are mine is never inferred from a shared working tree.",
+          "code": [
+            "bin/session-files"
+          ],
+          "config": [],
+          "docs": [],
+          "test": {
+            "type": "script",
+            "path": "tests/session-files.sh",
+            "description": "Drives the real binary against a fixture HOME, a synthetic transcript and a throwaway repo: the stage list is written-paths intersected with what git still sees a change at, in first-write order, deduped; subagent (sidechain) writes are included and Read/Bash calls are not; unchanged, gitignored and non-repo paths stay out of the stage list while remaining in --all and --json; a tracked file deleted on disk still stages; a torn final transcript line is skipped rather than fatal; a file another session left dirty is structurally unlistable. Every blind case — no session id, no transcript, one id matching two transcripts — exits nonzero instead of returning an empty list."
+          },
+          "subsystems": [],
+          "notes": "The list comes from the transcript and never from `git status` — that is what stops a dirty shared tree from being a judgment call, and why an agent can stage all of it without deciding anything. Blind spot by design: writes made through Bash (mv, sed -i, a script emitting files) never become tool calls, so /push still adds those by hand. Transcript resolution matches the print skill — id-globbed across project dirs, never newest-by-mtime, which under concurrent sessions hands back another session's file. Also answers for a dead session (--session <id>), which is how orphaned work gets attributed to whoever actually wrote it."
+        }
+      ],
       "notes": "Authorization gate: only runs if the user explicitly said push/commit/ship/land in this session. Resolves repos from the touched-file list (works from a non-repo cockpit). Hard rules: no --no-verify, no --amend, no Co-Authored-By, no `git add -A`, sensitive paths skipped, never force-push main/master. `all` mode groups pending changes into per-unit-of-work commits with a one-line plan up front. /jstack:push."
     },
     {

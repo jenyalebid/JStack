@@ -332,7 +332,7 @@
           "notes": "Marker dir: {JSTACK_REVIEW_STATE}/inbox-guarded/<session_id>, holding the message ids already blocked on."
         }
       ],
-      "notes": "Self-contained python3 stdlib. Store is the `messages` table in {timeline_dir}/timeline.db \u2014 bin/msg is its only sanctioned writer, same law log_event holds for `entries`. Delivery ladder: SessionStart injection -> Stop hook -> mail.deliver_live (host command) -> scheduler one-shot. Both host rungs are optional; with no `mail` config the inbox still files, injects and enforces. Hosts adding entrances (share-sheet drops, dashboard forms) shell out to bin/msg rather than writing the table."
+      "notes": "Self-contained python3 stdlib. Store is the `messages` table in {timeline_dir}/timeline.db \u2014 bin/msg is its only sanctioned writer, same law log_event holds for `entries`. Delivery: an update rides SessionStart injection; a TASK books a scheduler one-shot and is enforced at Stop. A task is NEVER typed into a session already running. A rung that did that (mail.deliver_live, a host command) was removed 2026-08-27: mail addresses a seat and a seat is a chat dir, so every session it could resolve was a conversation, and it picked the most recently active one, which is the one a person is typing in. The scheduler rung is optional; with no `mail` config the inbox still files, injects and enforces, but a task cannot be delivered. Hosts adding entrances (share-sheet drops, dashboard forms) shell out to bin/msg rather than writing the table."
     }
   ]
 }

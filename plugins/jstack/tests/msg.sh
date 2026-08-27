@@ -184,23 +184,30 @@ CLAUDE_CODE_SESSION_ID=sess-1 "$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 
   && pass "an update binds no session" || fail "an update binds no session"
 
 # ------------------------------------------------ 4. a task binds ONE session
-cat > "$TMP/live" <<'EOS'
+# A task books a wake and binds to it — it is NEVER typed into a session that
+# is already running. A stub interpreter stands in for the scheduler so the
+# booking is hermetic; its argv is kept so the call itself can be asserted.
+cat > "$TMP/fakepy" <<EOS
 #!/bin/sh
-echo live-sess-9
+echo "\$@" >> "$TMP/wake.argv"
+exit 0
 EOS
-chmod +x "$TMP/live"
+chmod +x "$TMP/fakepy"
 cat > "$JSTACK_REVIEW_CONFIG" <<EOF2
-{"agent_root": "$AR", "mail": {"deliver_live": ["$TMP/live", "{seat}", "{text}"]}}
+{"agent_root": "$AR", "mail": {"python": "$TMP/fakepy", "scheduler_home": "$TMP"}}
 EOF2
 out=$("$MSG" send @bob "Do this now" --wake 2>&1)
 TID=$(SQL "SELECT MAX(id) FROM messages WHERE subject='Do this now'" | grep -oE '[0-9]+')
-[[ "$out" == *"live-sess-9"* ]] && pass "task is handed to the live session" || fail "task is handed to the live session"
-[[ "$(SQL "SELECT state, bound_session FROM messages WHERE id=$TID")" == "[('task', 'live-sess-9')]" ]] \
-  && pass "task records the session it bound to" || fail "task records the session it bound to"
+[[ "$out" == *"session spawning at"* ]] \
+  && pass "a task books its own session" || fail "a task books its own session"
+grep -q "add-once" "$TMP/wake.argv" \
+  && pass "the wake is a real scheduler booking" || fail "the wake is a real scheduler booking"
+grep -q "\[inbox:$TID\]" "$TMP/wake.argv" \
+  && pass "the wake carries the task as its prompt" || fail "the wake carries the task as its prompt"
+[[ "$(SQL "SELECT state, bound_session FROM messages WHERE id=$TID")" == "[('task', 'wake:$TID')]" ]] \
+  && pass "task records the wake it bound to" || fail "task records the wake it bound to"
 
-# THE anti-ambush rule: only the session it was handed to can see it
-"$MSG" pending-for bob/chat --session live-sess-9 | grep -q "Do this now" \
-  && pass "the bound session sees its task" || fail "the bound session sees its task"
+# THE anti-ambush rule: only the run woken for it can see it
 "$MSG" pending-for bob/chat --session someone-else >/dev/null; [[ $? -eq 1 ]] \
   && pass "another session cannot see it" || fail "another session cannot see it"
 "$MSG" pending-for bob/chat >/dev/null; [[ $? -eq 1 ]] \
@@ -221,7 +228,7 @@ JSTACK_MAIL_FROM=bob/chat "$MSG" reply "$TID" "Did it, here is the answer." >/de
   && pass "the answer is recorded on the task" || fail "the answer is recorded on the task"
 [[ "$("$MSG" updates-for alice/chat)" == *"Did it, here is the answer."* ]] \
   && pass "the answer reaches the sender as news" || fail "the answer reaches the sender as news"
-"$MSG" pending-for bob/chat --session live-sess-9 >/dev/null; [[ $? -eq 1 ]] \
+"$MSG" pending-for bob/chat --session nobody --woken "$TID" >/dev/null; [[ $? -eq 1 ]] \
   && pass "an answered task binds nothing" || fail "an answered task binds nothing"
 
 # ------------------------------- 5. a task nobody can take is NOT filed

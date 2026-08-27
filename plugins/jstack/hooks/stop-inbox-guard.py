@@ -81,8 +81,9 @@ def resolve_seat(cwd: str) -> "str|None":
 def open_items(seat: str, session_id: str = "", woken: str = "") -> list:
     """Tasks handed to THIS session and still unanswered.
 
-    Both handles are passed explicitly rather than inherited: the session id
-    matches a task typed in live, `woken` the task this run was spawned for.
+    Both handles are passed explicitly rather than inherited: `woken` matches
+    the task this run was spawned for — the wake, which is how every task
+    arrives — and the session id matches one bound to a session directly.
     A task matching neither was never delivered here and is not ours."""
     argv = [str(PLUGIN_BIN / "msg"), "pending-for", seat]
     if session_id:

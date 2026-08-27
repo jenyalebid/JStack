@@ -34,8 +34,7 @@ There is no state in which mail is waiting to be found.
 | Writer/query CLI | `bin/msg` | The only sanctioned writer; also serves reads |
 | Update delivery | `hooks/session-start-inject.py` | Injects unseen updates once, then consumes them |
 | Task enforcement | `hooks/stop-inbox-guard.py` | Blocks a session that holds an unanswered task |
-| Live rung | host command (`mail.deliver_live`) | Types a task into a running session |
-| Spawn rung | `scheduler/` `add-once` | Spawns a session for the task when nobody is live |
+| Task delivery | `scheduler/` `add-once` | Books a headless wake — the task's own session |
 | Tests | `tests/msg.sh`, `tests/inbox-guard.sh` | Hermetic CLI- and hook-contract verification |
 
 ## Writer contract
@@ -106,19 +105,25 @@ retraction: the reply is the close, and nothing else can be pending.
 
 **An update** waits for the receiver's next session. That is its only rung.
 
-**A task** tries two, in order, and fails if neither takes it:
+**A task** gets a **scheduler one-shot** — a wake about a minute out — and
+fails if one cannot be booked. The task rides inline as the run's prompt behind
+an `[inbox:<id>]` marker, so the spawned session needs no injection to see what
+it was woken for. Wakes are headless `claude --print`: one turn, then exit.
 
-1. **`mail.deliver_live`** — a host command that types into a running session.
-   Returns the session id, which the task binds to.
-2. **Scheduler one-shot** — the task rides inline as the run's prompt behind an
-   `[inbox:<id>]` marker, so the spawned session needs no injection to see what
-   it was woken for. Wakes are headless `claude --print`: one turn, then exit.
+A task is never typed into a session that is already running. There was a rung
+that did exactly that — find the seat's most recently active session and type
+the task into its input box — and it is gone. Mail addresses a seat, and a seat
+is a chat dir, so every session that rung could ever resolve was a
+conversation, and "most recently active" is by construction the one a person is
+typing in. It appended a task to a half-written question of the user's and
+submitted both as one message. A minute of latency is cheaper than that.
 
 ## Enforcement
 
-The Stop hook binds tasks handed to **this exact session** — matched by
-session id (typed in live) or by the `[inbox:N]` in its own first prompt
-(spawned for it). One block per (session, task); `stop_hook_active` and a
+The Stop hook binds tasks handed to **this exact session** — matched by the
+`[inbox:N]` in its own first prompt (the wake it was spawned for), or by
+session id for a task bound to one directly. One block per (session, task);
+`stop_hook_active` and a
 marker written *before* the block make a loop impossible; an unwritable marker
 means allow.
 
@@ -138,7 +143,6 @@ neither.
 | Knob | Default | Meaning |
 |------|---------|---------|
 | `agent_root` (review config) | `~/Agents` | Where seats live |
-| `mail.deliver_live` | unset | argv list; `{seat}`/`{text}` substituted. Exit 0 + sid on stdout = delivered |
 | `mail.scheduler_home` | package default | Where the scheduler's `schedule.json` lives |
 | `mail.category` | `inbox` | Run-category for a spawn |
 | `mail.python` | `sys.executable` | Interpreter for the scheduler call |

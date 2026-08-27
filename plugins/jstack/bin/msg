@@ -499,29 +499,24 @@ def _wake_prompt(row) -> str:
     return "\n".join(parts)
 
 
-def _deliver_live(seat: str, text: str) -> "str|None":
-    """Host hook — type into a live session of `seat` if one is reachable.
-
-    Configured as `mail.deliver_live` (argv list; `{seat}` / `{text}` are
-    substituted). The host owns knowing which sessions are drivable; JStack
-    only asks. Returns a delivery tag on success, None otherwise. Any failure
-    is silent and falls through to the wake — a message must never be lost to
-    a broken optional rung."""
-    spec = _mail_config().get("deliver_live")
-    if not isinstance(spec, list) or not spec:
-        return None
-    argv = [str(a).replace("{seat}", seat).replace("{text}", text) for a in spec]
-    argv[0] = str(Path(argv[0]).expanduser())
-    if not Path(argv[0]).exists():
-        return None
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0:
-        return None
-    sid = (r.stdout or "").strip().splitlines()
-    return f"typed:{sid[-1]}" if sid else "typed"
+# There was a rung above the wake once: a host hook (`mail.deliver_live`) that
+# found a live session of the seat and typed the task into it, to save the
+# minute the wake costs and reuse a session whose context was already warm.
+# It is gone, and the reason is worth keeping.
+#
+# Mail addresses a SEAT, and a seat is a chat dir — that is the rule that stops
+# mail to a cockpit from hijacking cron workers. So every target the live rung
+# could ever resolve was a conversation, and the session it picked was the
+# most recently active one, which is by construction the one a person is
+# typing in. It was not a delivery path that occasionally hit a human; it was
+# aimed at them. On 2026-08-27 it appended a task to a half-written question of
+# Boss's, submitted the two as one message, and sent the session off to answer
+# the sender instead of him. Across its whole life it delivered exactly once,
+# and that was the once.
+#
+# A task now books the wake and nothing else. The wake is headless by design —
+# a fresh `claude --print` in the seat's workspace — so it disturbs no live
+# session, and costs about a minute.
 
 
 def seat_dir_for(seat: str) -> "Path|None":
@@ -629,31 +624,26 @@ def cmd_send(args) -> int:
         print(f"#{mid} → {seat} — update, lands in their next session")
         return 0
 
-    # A task has to reach a session NOW, and bind to exactly that one. Live
-    # first, then a spawn. A task that reaches nobody is not filed to be found
-    # later — it is reported failed, because the sender is the one waiting.
+    # A task gets its own session — a headless wake, about a minute out — and
+    # binds to it. It is never typed into a session someone is already in: see
+    # the note above `seat_dir_for`. A task that reaches nobody is not filed to
+    # be found later; it is reported failed, because the sender is the one
+    # waiting.
     row = con.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
-    delivery = _deliver_live(seat, _wake_prompt(row)) or ""
-    bound = delivery.split(":", 1)[1] if delivery.startswith("typed:") else None
-    if not delivery:
-        delivery = _book_wake(seat, seat_dir, row) or ""
-        bound = f"wake:{mid}" if delivery else None
+    delivery = _book_wake(seat, seat_dir, row) or ""
+    bound = f"wake:{mid}" if delivery else None
     if not delivery:
         con.execute("DELETE FROM messages WHERE id = ?", (mid,))
         con.commit()
-        _fail(f"could not reach {seat} — nobody live and no wake could be booked. "
+        _fail(f"could not reach {seat} — no wake could be booked. "
               f"Nothing was filed: a task nobody is doing is not a message, and "
               f"leaving it to be found later is the backlog this refuses to make.",
               code=3)
     con.execute("UPDATE messages SET delivery = ?, bound_session = ? WHERE id = ?",
                 (delivery, bound, mid))
     con.commit()
-    if delivery.startswith("typed:"):
-        print(f"#{mid} → {seat} — handed to live session {bound}; "
-              f"their reply comes back to you")
-    else:
-        print(f"#{mid} → {seat} — session spawning at "
-              f"{delivery.split(':', 1)[1]} PT; their reply comes back to you")
+    print(f"#{mid} → {seat} — session spawning at "
+          f"{delivery.split(':', 1)[1]} PT; their reply comes back to you")
     return 0
 
 

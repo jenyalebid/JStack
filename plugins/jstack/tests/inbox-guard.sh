@@ -42,14 +42,15 @@ echo "{\"agent_root\": \"$AR\"}" > "$JSTACK_REVIEW_CONFIG"
 printf '%s\n' '{"type":"user","promptSource":"typed","message":{"content":"hi"}}' > "$TMP/user.jsonl"
 printf '%s\n' '{"type":"user","message":{"content":"/social_compose account=x"}}' > "$TMP/cron.jsonl"
 
-# a stub live-delivery rung so a task binds to a session we can name
-cat > "$TMP/live" <<'EOS'
+# a stub interpreter so the task's wake books hermetically — a task always
+# gets its own spawned session, never a running one
+cat > "$TMP/fakepy" <<EOS
 #!/bin/sh
-echo sess-owner
+exit 0
 EOS
-chmod +x "$TMP/live"
+chmod +x "$TMP/fakepy"
 cat > "$JSTACK_REVIEW_CONFIG" <<EOF2
-{"agent_root": "$AR", "mail": {"deliver_live": ["$TMP/live", "{seat}", "{text}"]}}
+{"agent_root": "$AR", "mail": {"python": "$TMP/fakepy", "scheduler_home": "$TMP"}}
 EOF2
 
 cd "$AR/Alice/chat" || exit 1
@@ -67,13 +68,15 @@ decision() { python3 -c "import json,sys; raw=sys.stdin.read().strip(); print(js
 
 BOB="$AR/Bob/chat"
 
-# 1. the session the task was handed to is blocked, once
-out=$(run sess-owner "$TMP/user.jsonl" "$BOB")
-[[ "$(printf '%s' "$out" | decision)" == "block" ]] && pass "session holding a task is blocked" || fail "session holding a task is blocked"
+# 1. the run woken FOR the task is blocked, once. A task arrives one way — a
+#    wake carrying [inbox:N] in its own first prompt — so that marker, not a
+#    session id handed out by a delivery rung, is what holds a run to its work.
+out=$(run woken-run "$TMP/wake.jsonl" "$BOB")
+[[ "$(printf '%s' "$out" | decision)" == "block" ]] && pass "the run woken for a task is blocked" || fail "the run woken for a task is blocked"
 [[ "$out" == *"First item"* ]] && pass "block names the task" || fail "block names the task"
 [[ "$out" == *"msg reply"* ]] && pass "block carries the reply command" || fail "block carries the reply command"
 [[ "$out" == *"waiting"* ]] && pass "block says the sender is waiting" || fail "block says the sender is waiting"
-[[ -z "$(run sess-owner "$TMP/user.jsonl" "$BOB")" ]] && pass "same session not blocked twice" || fail "same session not blocked twice"
+[[ -z "$(run woken-run "$TMP/wake.jsonl" "$BOB")" ]] && pass "same session not blocked twice" || fail "same session not blocked twice"
 
 # 2. THE anti-ambush rule — nobody else can be dragged into it
 [[ -z "$(run some-other-session "$TMP/user.jsonl" "$BOB")" ]] \
@@ -87,28 +90,31 @@ out=$(run sess-owner "$TMP/user.jsonl" "$BOB")
 [[ -z "$(run fresh-session "$TMP/user.jsonl" "$BOB")" ]] \
   && pass "updates never block a session" || fail "updates never block a session"
 
-# 4. a spawned run is bound by the id in its own prompt — and only that
-out=$(run spawned-run "$TMP/wake.jsonl" "$BOB")
-[[ "$(printf '%s' "$out" | decision)" == "block" ]] && pass "a woken run is bound to its task" || fail "a woken run is bound to its task"
-[[ "$out" == *"First item"* ]] && pass "bound to the right task" || fail "bound to the right task"
+# 4. and only the id in its own prompt — a marker naming no live task is inert
 printf '%s\n' '{"type":"user","message":{"content":"[inbox:99999] nothing"}}' > "$TMP/badwake.jsonl"
 [[ -z "$(run bad-wake "$TMP/badwake.jsonl" "$BOB")" ]] \
   && pass "a marker naming no live task allows" || fail "a marker naming no live task allows"
 
 # 5. answering releases the session
 JSTACK_MAIL_FROM=bob/chat "$MSG" reply "$MID" "Done, here it is." >/dev/null
-[[ -z "$(run sess-owner-2 "$TMP/user.jsonl" "$BOB")" ]] \
+[[ -z "$(run plain-session-2 "$TMP/user.jsonl" "$BOB")" ]] \
   && pass "an answered task blocks nobody" || fail "an answered task blocks nobody"
-[[ -z "$(run spawned-run-2 "$TMP/wake.jsonl" "$BOB")" ]] \
+[[ -z "$(run woken-run-2 "$TMP/wake.jsonl" "$BOB")" ]] \
   && pass "an answered task releases its wake too" || fail "an answered task releases its wake too"
 
-# 6. loop guards and switches
+# 6. loop guards and switches. Each runs against a transcript that provably
+#    DOES block without it (the control below), so a switch that quietly
+#    stopped working could not pass this section by allowing everything.
 "$MSG" send @bob "Second task" --wake >/dev/null
-[[ -z "$(run sess-owner "$TMP/user.jsonl" "$BOB" ',"stop_hook_active":true')" ]] \
+MID2=$(python3 -c "import sqlite3;print(sqlite3.connect('$TMP/timeline/timeline.db').execute(\"SELECT MAX(id) FROM messages\").fetchone()[0])")
+printf '%s\n' "{\"type\":\"user\",\"message\":{\"content\":\"[inbox:$MID2] Message from alice/chat — handle it\"}}" > "$TMP/wake2.jsonl"
+[[ "$(run w6-control "$TMP/wake2.jsonl" "$BOB" | decision)" == "block" ]] \
+  && pass "control: this transcript does block" || fail "control: this transcript does block"
+[[ -z "$(run w6a "$TMP/wake2.jsonl" "$BOB" ',"stop_hook_active":true')" ]] \
   && pass "stop_hook_active never blocks" || fail "stop_hook_active never blocks"
-[[ -z "$(run s6 "$TMP/user.jsonl" "/tmp")" ]] && pass "non-agent cwd allowed" || fail "non-agent cwd allowed"
-[[ -z "$(JSTACK_INBOX_GUARD_DISABLED=1 run sess-owner "$TMP/user.jsonl" "$BOB")" ]] && pass "kill switch honored" || fail "kill switch honored"
-[[ -z "$(SKIP_SESSION_HOOK=1 run sess-owner "$TMP/user.jsonl" "$BOB")" ]] && pass "SKIP_SESSION_HOOK honored" || fail "SKIP_SESSION_HOOK honored"
+[[ -z "$(run s6 "$TMP/wake2.jsonl" "/tmp")" ]] && pass "non-agent cwd allowed" || fail "non-agent cwd allowed"
+[[ -z "$(JSTACK_INBOX_GUARD_DISABLED=1 run w6b "$TMP/wake2.jsonl" "$BOB")" ]] && pass "kill switch honored" || fail "kill switch honored"
+[[ -z "$(SKIP_SESSION_HOOK=1 run w6c "$TMP/wake2.jsonl" "$BOB")" ]] && pass "SKIP_SESSION_HOOK honored" || fail "SKIP_SESSION_HOOK honored"
 [[ -z "$(echo 'not json' | "$HOOK")" ]] && pass "malformed input allowed" || fail "malformed input allowed"
 
 echo

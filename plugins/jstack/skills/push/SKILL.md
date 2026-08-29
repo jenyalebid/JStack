@@ -1,6 +1,6 @@
 ---
 name: push
-description: Commit and push the work from this session — to whatever repo(s) the files you touched live in. Works from anywhere, including an agent cockpit that isn't itself a repo. With `all`, sweep every pending change in those repos into per-unit-of-work commits. Use when the user says "push", "commit", "ship it", "land this". Add `0` to commit without pushing. Add `all` to capture everything pending.
+description: Commit and push this session's work to whatever repo(s) the files it touched live in. Use when the user says "push", "commit", "ship it", or "land this".
 argument-hint: "[0] [all]"
 ---
 

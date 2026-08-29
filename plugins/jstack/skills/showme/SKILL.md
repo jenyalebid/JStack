@@ -1,6 +1,6 @@
 ---
 name: showme
-description: Use when the user asks to see, show, preview, open, look at, or visualize the result of what you've been working on — surfaces the actual artifact (code, preview, image, doc, mockup, running app, web page) in its real viewer instead of describing it in text. When the real result is a setup the user must perform externally, it opens the exact console page and lays out their steps. Mode token raw|live picks source-code vs live-running fidelity; location reveals the file in Finder so you can grab/attach/move it.
+description: Surface the actual artifact — code, preview, image, doc, mockup, running app, web page — in its real viewer instead of describing it in text. Use when the user asks to see, show, preview, open, or look at what you've been working on.
 argument-hint: "[raw|live|location] [focus]"
 ---
 

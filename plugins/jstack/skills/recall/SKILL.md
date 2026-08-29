@@ -1,6 +1,6 @@
 ---
 name: recall
-description: Use when the user asks what happened or what was done on a day or period — "/recall yesterday", "what did we do Monday?", "recall jan 24 lynda". Replays the timeline for that date and scope and outlines it for the user. Not for keyword questions ("when did we ship X?") — that's log_event grep.
+description: Replay what was done on a day or period, for one agent or the whole op. Use when the user asks what happened — "/recall yesterday", "what did we do Monday?". Not for keyword questions ("when did we ship X?") — that's log_event grep.
 argument-hint: "[yesterday|monday|jan 24|YYYY-MM-DD[..YYYY-MM-DD]] [agent[/submode]|all] [detailed]"
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Use when you want this session's work independently checked before trusting it's done — a trust-nothing reviewer verifies every claim from source. Default `internal` mode reports back in this session; add `external` to run it in a separate terminal you drive yourself.
+description: Independently verify this session's work before trusting it's done — every claim rechecked from source. Use when the user asks to audit, double-check, or get a second opinion on what was just built.
 argument-hint: "[focus] [@agent] [internal|external]"
 ---
 

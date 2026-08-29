@@ -1,6 +1,6 @@
 ---
 name: work
-description: Get battle-ready on a topic before doing the work — orient, load every relevant skill, survey recent changes in the area, read the core files, and report a grounded lay of the land. Use when the user says "let's work on X", "load the skills and start on Y", or otherwise wants you prepared on an area without re-explaining context. Optional @project targets a specific app for multi-project agents.
+description: Get battle-ready on a topic before doing the work — load the relevant skills, survey recent changes, read the core files, report the lay of the land. Use when the user says "let's work on X" or otherwise wants you prepared on an area.
 argument-hint: "[@project] <topic>"
 ---
 

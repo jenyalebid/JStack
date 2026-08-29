@@ -1,6 +1,6 @@
 ---
 name: print
-description: Print the absolute path of this session's local JSONL transcript file. Use when the user asks where the current conversation is stored on disk — "print your jsonl", "where is this session's transcript", "path to this session file".
+description: Print the absolute path of this session's local JSONL transcript file. Use when the user asks where the current conversation is stored on disk.
 argument-hint: ""
 ---
 

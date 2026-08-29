@@ -1,6 +1,6 @@
 ---
 name: splitoff
-description: Dub the current session into a new terminal — a verbatim copy of this conversation under a fresh id, opened in a new window, diverging forward. Use to branch an exploration without losing the full transcript (unlike handoff, which distills to a brief).
+description: Copy this session verbatim into a new terminal under a fresh id, diverging forward. Use to branch an exploration without losing the full transcript — unlike handoff, which distills to a brief.
 argument-hint: ""
 ---
 

@@ -10,9 +10,13 @@ Slash commands (all namespaced as `/jstack:*`):
 |---|---|
 | `/work` | Get battle-ready on a topic — orient, load every relevant skill, survey recent changes, read the core files, report a grounded lay of the land. `[@project] <topic>` |
 | `/handoff` | Hand off the session to a fresh terminal with context preserved |
+| `/splitoff` | Dub the session into a new terminal — a verbatim copy under a fresh id, diverging forward |
 | `/audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
 | `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
 | `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
+| `/recall` | Replay what was done on a day or period, scoped to an agent or the whole op |
+| `/showme` | Surface the result of the current topic in its real viewer instead of describing it |
+| `/print` | Print the absolute path of this session's JSONL transcript |
 | `/install-rules` | Symlink the 17 bundled rules into `~/.claude/rules/` |
 | `/post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
 

@@ -1,6 +1,6 @@
 ---
 name: day-audit
-description: Reverify a day's shipped work across every repo — did the day's commits, especially bug fixes, actually improve each app without regressing something else or sneaking in something big. Each repo is audited by its OWNING agent (from the agent registry) so the review carries real domain context, not a cold-start guess. Use when the user wants a day reviewed ("day audit", "audit yesterday", "did anything we shipped break"); ties into the timeline as the claims to check against. Takes an optional date (today | yesterday | "june 01" | YYYY-MM-DD); defaults to today.
+description: Reverify a day's shipped work across every repo — did the day's commits actually improve each app without regressing something else. Use when the user asks for a day audit, "audit yesterday", or "did anything we shipped break".
 argument-hint: "[today|yesterday|<date>]"
 ---
 

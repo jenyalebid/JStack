@@ -1,6 +1,6 @@
 ---
 name: post-session-review
-description: Review the session that just ended — walk the transcript, extract dropped threads into follow-ups, reconcile any docs the session left lying, and write the seat's timeline entry. Spawned by the jstack session-review engine ('review' action); can also be invoked manually with a session id.
+description: Review the session that just ended — timeline entry, dropped threads, doc reconciliation. Spawned by the jstack session-review engine, or invoked by hand with a session id.
 argument-hint: "<session-id>"
 ---
 

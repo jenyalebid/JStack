@@ -71,7 +71,15 @@ def resolve_transcript(sid):
 
 
 def written_paths(transcript):
-    """Every path written, in first-write order, deduped."""
+    """Every path written, in first-write order, deduped, symlinks resolved.
+
+    realpath, not just abspath, because git resolves them and we must agree with
+    it. Every seat's scratchpad is a symlink into its pad, which lives inside the
+    home repo — so `git -C <scratchpad>` discovers that repo, but the unresolved
+    /private/tmp/... pathspec is then rejected as outside it, and one pad write
+    took the whole stage list down with it. Resolving here keeps the path we
+    group by and the path we hand git the same string.
+    """
     seen = OrderedDict()
     try:
         fh = transcript.open(errors="ignore")
@@ -94,7 +102,7 @@ def written_paths(transcript):
                 for key in PATH_KEYS:
                     raw = params.get(key)
                     if raw:
-                        seen.setdefault(os.path.abspath(os.path.expanduser(raw)), None)
+                        seen.setdefault(os.path.realpath(os.path.expanduser(raw)), None)
                         break
     return list(seen)
 
@@ -130,6 +138,11 @@ def changed_paths(repo, paths):
 
     A repo with no commits yet has no HEAD to diff against; everything in it is
     untracked, which the second query already covers.
+
+    A query that FAILS raises. It used to be skipped, which meant one pathspec
+    git refused took every other path in the same batch down with it and the run
+    printed nothing — the precise lie this binary exists to not tell, and it told
+    it silently. Refusing loudly is recoverable; "nothing to commit" is not.
     """
     found = set()
     queries = [["ls-files", "--others", "--exclude-standard", "-z", "--", *paths]]
@@ -138,7 +151,7 @@ def changed_paths(repo, paths):
     for query in queries:
         proc = git(repo, *query)
         if proc.returncode != 0:
-            continue
+            die(f"git {query[0]} failed in {repo}: {proc.stderr.strip()}")
         for rel in proc.stdout.split("\0"):
             if rel:
                 found.add(os.path.join(repo, rel))

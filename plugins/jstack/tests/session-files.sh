@@ -160,4 +160,71 @@ rm -rf "$FIX/.claude/projects/-fixture-other"
 OUT="$(HOME="$FIX" TMPDIR="$TMP" CLAUDE_CODE_SESSION_ID="$SID" "$BIN")"
 [ "$OUT" = "$EXPECTED" ] || fail "env-resolved session differs from --session"
 
+# =============================================================================
+# 13. A WRITE THROUGH A SYMLINK POINTING INTO THE REPO.
+#
+# This is not a corner case — it is every J&J session. The scratchpad each one
+# is told to use is a symlink to its seat's pad, and the pad lives inside the
+# home repo. git -C follows the link and discovers that repo, so the file was
+# grouped under it, but the unresolved link path was then handed back as a
+# pathspec and refused as "outside repository". The query died, its failure was
+# skipped, and the run printed NOTHING while real work sat uncommitted.
+#
+# So: the symlinked write must come back as its real in-repo path, and — the
+# part that actually cost the work — the other paths in its batch must survive.
+# =============================================================================
+SID2="11111111-2222-3333-4444-555555555555"
+mkdir -p "$REPO/pad"
+ln -s "$REPO/pad" "$TMP/scratchpad"
+echo "note" > "$TMP/scratchpad/scratch.txt"       # untracked, inside the repo
+echo "v2"   > "$REPO/clean.py"                    # a plain sibling in the batch
+{
+  w Write file_path "$TMP/scratchpad/scratch.txt"
+  w Write file_path "$REPO/clean.py"
+} > "$PROJ/$SID2.jsonl"
+
+set +e
+OUT="$(run --session "$SID2" 2>&1)"; RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "symlinked write made the run fail outright (rc=$RC)"
+[ -n "$OUT" ] || fail "symlinked write blanked the whole stage list — the bug this test exists for"
+echo "$OUT" | grep -q "^$REPO/clean.py$" \
+  || fail "a plain file was dropped because a symlinked path shared its batch"
+echo "$OUT" | grep -q "^$REPO/pad/scratch.txt$" \
+  || fail "symlinked write not resolved to its real in-repo path"
+echo "$OUT" | grep -q "scratchpad" && fail "unresolved symlink path handed out for staging"
+git -C "$REPO" add $OUT || fail "stage list was not actually stageable"
+git -C "$REPO" reset -q
+
+# =============================================================================
+# 14. a git query that cannot run must RAISE, never return empty
+#
+# Forced with a git shim that fails exactly the state query, because the real
+# thing has to be made to fail on purpose — assertion 13 passing proves the
+# symptom is gone, not that the guard under it works. Skipping a failed query
+# is what let 13's bug print nothing instead of saying why.
+# =============================================================================
+SID3="99999999-8888-7777-6666-555555555555"
+w Write file_path "$REPO/modified.py" > "$PROJ/$SID3.jsonl"
+
+SHIM="$TMP/shim"; mkdir -p "$SHIM"
+cat > "$SHIM/git" <<'SHIMEOF'
+#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = "diff" ] || [ "$a" = "ls-files" ]; then
+    echo "fatal: simulated git failure" >&2; exit 128
+  fi
+done
+exec /usr/bin/git "$@"
+SHIMEOF
+chmod +x "$SHIM/git"
+
+set +e
+OUT="$(HOME="$FIX" PATH="$SHIM:$PATH" "$BIN" --session "$SID3" 2>&1)"; RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a run whose git query FAILED exited 0 — that reads as nothing-to-commit"
+[ -z "$(HOME="$FIX" PATH="$SHIM:$PATH" "$BIN" --session "$SID3" 2>/dev/null)" ] \
+  || fail "a failed run still printed a stage list"
+echo "$OUT" | grep -qi "git" || fail "the refusal does not say git was what failed"
+
 echo "PASS: session-files"

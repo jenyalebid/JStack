@@ -43,13 +43,17 @@ An example of a *failure* is worth including when the failure is counterintuitiv
 
 Write what to do and why, not the literal output shape. No verbatim report templates, no phase-by-phase walkthroughs, no agent-specific concrete examples pasted into another agent's playbook. A reader who knows the principle should be able to produce the correct shape; if they need a template, the template belongs in the canonical home, not here.
 
+## Instruct, don't explain
+
+Write the instruction. Leave out the reasoning that produced it, the cost of ignoring it, and the failure it prevents. A why earns its line only where the instruction reads as arbitrary and a reader without it will override the rule; elsewhere it doubles the length and changes nothing the reader does.
+
 ## A repeated correction is a binding bug
 
 When the same correction has to be given twice, the wording is rarely the problem. The law exists in a layer that does not load for that session type, or a broader line nearby steers the opposite way. Fix the binding — move the law up a layer, or code the seam so the wrong move is not reachable. Rewriting the sentence more precisely buys wording-level compliance and nothing else.
 
 ## Laws are timeless — no provenance in instruction text
 
-An instruction doc states the rule, the why, and how to comply — nothing else.
+An instruction doc states the rule and how to comply — nothing else.
 
 - **No date stamps, no "(Owner YYYY-MM-DD)" attributions, no quoted chat.** Git holds who and when; the doc holds only the law. A date is content only when the reader needs it to act (a deadline, a schedule).
 - **Corrections refine the existing line in place** — never appended as dated changelog or diary entries. A "log" section, where structure requires one, is a pointer to git, not an accumulator.
@@ -71,7 +75,7 @@ Reread the final file top to bottom before moving on: does any line carry proven
 
 ## Bloat ceiling
 
-Anthropic spec — each CLAUDE.md ≤ 200 lines; walk-up total (org root + agent root + sub-mode) ≤ 400. A skill's SKILL.md ≤ 100 lines: it is read whole on every invocation, so it carries the gate and the exact command, and anything a reader needs only sometimes goes in a sibling reference file the skill names. Going over isn't "needs trimming later" — it's a failed edit. Trim now or pick a different destination.
+Anthropic spec — each CLAUDE.md ≤ 200 lines; walk-up total (org root + agent root + sub-mode) ≤ 400. A skill's SKILL.md stays under 1,000 tokens (~4,000 chars) and aims well below it; the file is read whole on every invocation, so it carries the gate and the exact command, and anything a reader needs only sometimes goes in a sibling reference file the skill names. Going over isn't "needs trimming later" — it's a failed edit. Trim now or pick a different destination.
 
 What makes an instruction doc long is almost never the law; it is the same law stated three times at three strengths — the rule, then a table restating it, then a DO-NOT list restating it again. Say it once, at full force, in the place the reader hits first. A prohibition that only echoes a rule already stated above earns nothing and costs the reader's attention.
 

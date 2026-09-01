@@ -244,6 +244,16 @@ check("selfwrite prompt links the session",          "--session abcd1234-...." i
 check("selfwrite prompt does NOT name continuity",   "continuity" not in sw)
 check("selfwrite prompt names the review stamp",     "stamp abcd1234-.... assistant" in sw)
 check("first-review prompt has no delta scope",      "RESUME DELTA" not in sw)
+# The tag is assigned by the turn that still knows what the session was about,
+# and it must read from the vocabulary before writing to it — a prompt that
+# names `tag set` without `tag list` mints a private tag every session.
+check("selfwrite prompt reads the tag list first",   "log_event tag list" in sw)
+check("selfwrite prompt tags the ORIGINAL session",
+      "tag set <name> --session abcd1234-...." in sw)
+# Steps renumber when one is added; a duplicate number sends the writer looking
+# for a step that isn't there.
+check("selfwrite steps are numbered once each",
+      [sw.count(f"\n{n}. ") for n in (1, 2, 3)] == [1, 1, 1])
 
 # Hosts without the dashboard's review_sessions.py get NO stamp step — the
 # prompt must not instruct a command that does not exist on that machine.

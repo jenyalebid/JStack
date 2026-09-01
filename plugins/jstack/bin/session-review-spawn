@@ -96,7 +96,10 @@ FILER_BRIEFING_MARKER = "You are being briefed on a topic"
 
 # The one turn the dubbed session runs to write the original's running memory.
 # It ALREADY HAS the whole conversation in context — no file re-reading, no
-# re-derivation. Two writes and a stamp, then stop. Deliberately NOT a review:
+# re-derivation. An entry, its tag, and a stamp, then stop. The tag belongs
+# here and not to a later pass because this turn is the last thing that knows
+# what the session was about — a tagger reading the entry back is guessing from
+# a headline. Deliberately NOT a review:
 # no thread extraction, no doc reconciliation, no code — those are the manual
 # deep review. {delta_note} is filled only when the session was reviewed before
 # (a resume that ended again) — it scopes the entry to the unreviewed delta.
@@ -117,6 +120,18 @@ or any docs. Then stop.
    time of the last REAL message — not now. A session can end days after its last real
    work (terminal left open), and without --date the entry files under the wrong day.
    If nothing this session is timeline-worthy, SKIP this step — never invent an entry.
+
+2. TAG — the subject, so this work is findable across every seat that touched it.
+   Only if you wrote an entry above; if you skipped it, skip this too. Run:
+       log_event tag list
+   and pick the ONE tag that best describes what this session was ABOUT, then:
+       log_event tag set <name> --session {session_id}
+   The list is a small shared vocabulary and staying small is the point — a near
+   match is the right answer far more often than a new tag. Only if nothing on the
+   list plausibly covers the work, mint one and then set it:
+       log_event tag new <name> --description "one line: what work belongs under this"
+   A tag names a subject several sessions will share — never the seat, the date, or
+   a restatement of your headline.
 {stamp_step}
 That is every step — then stop. Nothing else."""
 
@@ -124,7 +139,7 @@ That is every step — then stop. Nothing else."""
 # actually have review_sessions.py on the spawn PATH get this step; everywhere
 # else the prompt must not instruct a command that cannot exist there.
 SELFWRITE_STAMP_STEP = """
-2. STAMP — mark this session written so the dashboard reflects it:
+3. STAMP — mark this session written so the dashboard reflects it:
        review_sessions.py stamp {session_id} assistant
 """
 

@@ -130,6 +130,21 @@ another block, don't duplicate.
 
 If nothing this session belongs, the `## TIMELINE` section says `none — {brief reason}`. Empty section without a reason = rejected.
 
+### Tag the session
+
+Wrote an entry? Tag its subject — that is how the work is found across seats.
+
+```bash
+log_event tag list
+log_event tag set <name> --session "$SID"
+```
+
+Pick the single best match from the list; a near match beats a new tag almost
+every time. Only when nothing on the list plausibly covers the work,
+`log_event tag new <name> --description "what belongs under this"`, then set it.
+A tag names a subject several sessions share — not the seat, the date, or your
+headline. No entry → no tag.
+
 ---
 
 ## Required output (exact section headers — the engine parses by name)

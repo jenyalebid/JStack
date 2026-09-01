@@ -367,6 +367,43 @@
       "notes": "Fixed, or filed - the rule the skill enforces. A break in reach gets fixed and becomes its own commit; a break not fixed becomes an issue in the owning repo, with a body a cold reader can act on. Replaces the reporting template that used to live in the host root CLAUDE.md, where findings could be mentioned in prose and lost at session end. Commit mechanics are NOT restated here - the skill hands committing to /jstack:push, which owns the commit contract. /jstack:report."
     },
     {
+      "id": "issue",
+      "kind": "skill",
+      "name": "Issue",
+      "status": "live",
+      "description": "Works one assigned GitHub issue from open to a PR: reads the brief, boards it, builds the fix in a worktree, opens the PR, answers on the issue.",
+      "code": [
+        "skills/issue/SKILL.md",
+        "bin/place-issue"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory, and the place-issue adapter it calls is present and executable."
+      },
+      "subsystems": [
+        {
+          "id": "place-issue",
+          "kind": "subsystem",
+          "name": "Board Placement",
+          "description": "Puts an existing issue on a work board and sets its status column, resolving board and column live from GitHub by title.",
+          "code": [
+            "bin/place-issue"
+          ],
+          "config": [],
+          "docs": [],
+          "test": {
+            "type": "script",
+            "path": "tests/skills.sh",
+            "description": "Covered by the skills gate: the adapter the issue skill declares is present and executable."
+          },
+          "subsystems": []
+        }
+      ]
+    },
+    {
       "id": "showme",
       "kind": "skill",
       "name": "Show Me",

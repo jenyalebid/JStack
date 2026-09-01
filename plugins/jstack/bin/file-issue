@@ -4,7 +4,19 @@
 #
 # Contract:
 #   file-issue --repo <owner/name> --title <t> (--body <text> | --body-file <p>)
-#              [--label L]... [--project N] [--no-board] [--dry-run]
+#              --label <bug|optimization|feature> [--label L]...
+#              [--project N] [--no-board] [--dry-run]
+#
+# EXACTLY ONE type label is required — bug, optimization, or feature. An issue
+# with no type is one nobody can sort, and "remember to label it" is an
+# instruction, not a mechanism. So the requirement is enforced here and the
+# three canonical labels are CREATED on the repo when missing: a repo that has
+# never been filed against self-heals on its first issue. Without that, a fresh
+# repo carries only GitHub's defaults, the type silently drops (see below), and
+# the issue arrives untyped with a zero exit and a receipt.
+#
+# Any OTHER label is advisory: unknown ones are warned about and dropped,
+# because losing the issue over a decorative label is the worse trade.
 #
 # Why this exists as an adapter and not a `gh issue create` in a skill: a bare
 # `gh issue create` leaves projectItems[] EMPTY. The issue is real, numbered,
@@ -19,14 +31,16 @@
 # owns, and second copies rot silently. Nothing here is configured per machine.
 #
 # Degrades, never blocks:
+#   no type label           -> exit 64, nothing filed (the one hard refusal)
 #   no gh / not authed      -> exit 3, nothing filed, caller reports it
 #   issues disabled on repo -> exit 4, nothing filed, caller reports it
+#   type label uncreatable  -> issue filed UNTYPED, loud on stderr, type=none
 #   no linked project       -> issue filed, board skipped (exit 0)
 #   >1 linked project       -> issue filed, board skipped unless --project (exit 0)
 #   no intake column        -> issue filed + added to board at its default (exit 0)
 #
 # Last stdout line is machine-parseable:
-#   ISSUE <url> board=<column|none>
+#   ISSUE <url> board=<column|none> type=<label|none>
 set -euo pipefail
 
 REPO="" TITLE="" BODY="" BODY_FILE="" PROJECT="" DRY=0 NO_BOARD=0
@@ -44,7 +58,7 @@ while [[ $# -gt 0 ]]; do
     --project)   PROJECT="${2:-}"; shift 2 ;;
     --no-board)  NO_BOARD=1; shift ;;
     --dry-run)   DRY=1; shift ;;
-    -h|--help)   sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *)           die "unknown argument '$1'" ;;
   esac
 done
@@ -59,6 +73,33 @@ if [[ -n "$BODY_FILE" ]]; then
 fi
 [[ -n "$BODY" ]] || die "a body is required (--body or --body-file) — an issue with no context is the thing this exists to prevent"
 
+# ── the type label: exactly one, and it is guaranteed to exist ───────────────
+TYPE_LABELS="bug optimization feature"
+type_color() { case "$1" in
+  bug)          echo "d73a4a" ;;
+  optimization) echo "1d76db" ;;
+  feature)      echo "0e8a16" ;;
+esac; }
+type_desc() { case "$1" in
+  bug)          echo "Something is broken" ;;
+  optimization) echo "Works, but should be better — performance, cost, clarity" ;;
+  feature)      echo "New capability" ;;
+esac; }
+
+# Counter + string, not an array: bash 3.2 (macOS /bin/bash) errors on
+# ${#arr[@]} for an empty array under `set -u`, and 0 is the case that matters.
+NTYPES=0 TYPES_GIVEN=""
+for l in ${LABELS+"${LABELS[@]}"}; do
+  for t in $TYPE_LABELS; do
+    [[ "$l" == "$t" ]] && { NTYPES=$((NTYPES + 1)); TYPES_GIVEN="${TYPES_GIVEN:+$TYPES_GIVEN }$l"; }
+  done
+done
+case "$NTYPES" in
+  1) ;;
+  0) die "one type label is required — --label bug | optimization | feature" ;;
+  *) die "exactly one type label, got: $TYPES_GIVEN" ;;
+esac
+
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
 
@@ -71,7 +112,7 @@ query($owner:String!,$name:String!){
   repository(owner:$owner,name:$name){
     hasIssuesEnabled
     labels(first:100){ nodes { name } }
-    projectsV2(first:10){ nodes { id number title
+    projectsV2(first:10){ nodes { id number title shortDescription
       field(name:"Status"){ ... on ProjectV2SingleSelectField { id options { id name } } } } }
   }
 }' -F owner="$OWNER" -F name="$NAME" 2>/dev/null)" || {
@@ -86,8 +127,19 @@ if not d:
     print("REPO_OK=0"); raise SystemExit
 want = sys.argv[1] or ""
 projects = (d.get("projectsV2") or {}).get("nodes") or []
+# A project marked [not-intake] in its GitHub description is a WORK board, not
+# a filing destination, and it is skipped. Without this, the first issue an
+# agent places on such a board links its repo to a second project, and every
+# later filing from that repo sees NPROJ=2 and silently stops landing on the
+# real intake board. The marker lives on GitHub so there is still no local
+# repo->board table to rot.
+# An explicitly named --project wins: asking for a board by number is a
+# decision, and this filter exists to resolve ambiguity, not to overrule.
 if want:
     projects = [p for p in projects if str(p.get("number")) == want]
+else:
+    projects = [p for p in projects
+                if not (p.get("shortDescription") or "").lstrip().lower().startswith("[not-intake]")]
 pid = col_field = col_opt = col_name = ""
 if len(projects) == 1:
     p = projects[0]
@@ -116,12 +168,31 @@ emit("KNOWN_LABELS", "\n".join(n["name"] for n in (d.get("labels") or {}).get("n
 [[ "${REPO_OK:-0}" == "1" ]] || { echo "file-issue: $REPO not found or not visible — nothing filed" >&2; exit 4; }
 [[ "${ISSUES_ON:-0}" == "1" ]] || { echo "file-issue: issues are disabled on $REPO — nothing filed" >&2; exit 4; }
 
-# Drop labels the repo doesn't have. An unknown label fails the whole create,
-# and losing the issue over a label is a bad trade — warn and file anyway.
-KEEP=()
+# An unknown label fails the whole create, so a label the repo lacks is either
+# created (the three canonical types — they are part of the filing contract and
+# every repo is entitled to them) or dropped with a warning (everything else —
+# losing the issue over a decorative label is the worse trade).
+KEEP=() TYPE_LANDED=""
 for l in ${LABELS+"${LABELS[@]}"}; do
+  is_type=0
+  for t in $TYPE_LABELS; do [[ "$l" == "$t" ]] && is_type=1; done
+
   if printf '%s\n' "${KNOWN_LABELS:-}" | grep -qxF "$l"; then
-    KEEP+=("$l")
+    KEEP+=("$l"); [[ "$is_type" == 1 ]] && TYPE_LANDED="$l"
+  elif [[ "$is_type" == 1 ]]; then
+    if [[ "$DRY" == "1" ]]; then
+      echo "file-issue: would create label '$l' on $REPO" >&2
+      KEEP+=("$l"); TYPE_LANDED="$l"
+    elif gh label create "$l" --repo "$REPO" --color "$(type_color "$l")" \
+           --description "$(type_desc "$l")" >/dev/null 2>&1; then
+      echo "file-issue: created label '$l' on $REPO" >&2
+      KEEP+=("$l"); TYPE_LANDED="$l"
+    else
+      # Filing untyped beats not filing, but it is a defect and it says so —
+      # both here and in the receipt, so a caller cannot report a type it
+      # did not get.
+      echo "file-issue: could not create label '$l' on $REPO — FILING UNTYPED" >&2
+    fi
   else
     echo "file-issue: label '$l' does not exist on $REPO — filing without it" >&2
   fi
@@ -141,7 +212,7 @@ if [[ "$DRY" == "1" ]]; then
     board="none (${NPROJ} projects linked — pass --project N)"
   fi
   echo "  board:  $board"
-  echo "ISSUE <dry-run> board=${board%% *}"
+  echo "ISSUE <dry-run> board=${board%% *} type=${TYPE_LANDED:-none}"
   exit 0
 fi
 
@@ -180,4 +251,4 @@ if [[ "$NO_BOARD" != "1" && "${NPROJ:-0}" == "1" && -n "${PROJECT_ID:-}" ]]; the
   fi
 fi
 
-echo "ISSUE $URL board=$BOARD"
+echo "ISSUE $URL board=$BOARD type=${TYPE_LANDED:-none}"

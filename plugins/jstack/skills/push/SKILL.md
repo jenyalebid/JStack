@@ -67,6 +67,79 @@ Hard rules (apply in every repo):
 
 ---
 
+## The commit contract (both modes)
+
+Git is the project's timeline. `git log --oneline` should read as the story of the work — which means a fixed vocabulary in the subject and the detail pushed into trailers.
+
+### Group into units of work first
+
+A commit is one coherent change. Before staging anything, split what you have:
+
+1. **Side fixes land first, one commit each.** A break you repaired on the way to the real task is its own unit, committed *before* the main work. History then reads *ground fixed, then thing built* — and the fix stays findable when the feature it enabled is long forgotten.
+2. **The deliverable** — the thing you were asked for — is one unit.
+3. **Same feature/system** — files touching one module/service/feature go together.
+4. **Same scope/domain** — distinct subprojects get distinct commits.
+5. **Pure docs, pure tests, pure data captures** — each its own commit.
+6. **Generated artifacts** (state files, timestamp bumps, caches, job log captures) — one `chore:` commit, last. Never buried in a feature commit.
+
+If two changes genuinely touch the same lines, they are one unit. Faking a split with a partial stage produces a commit that never existed as a working tree — don't. Fold it in and name it with an `Also-fixed:` trailer.
+
+### Subject
+
+```
+<type>(<scope>): <what changed, active voice>
+```
+
+≤72 chars, lowercase after the colon, no trailing period. `<scope>` is the area — a module, service, or surface. `<type>` is one of exactly these:
+
+| type | for |
+|---|---|
+| `feat` | new capability |
+| `fix` | a defect repaired |
+| `refactor` | structure changed, behaviour identical |
+| `perf` | faster or lighter, behaviour identical |
+| `test` | tests only |
+| `docs` | documentation only |
+| `chore` | generated artifacts, config, housekeeping |
+
+The vocabulary is fixed on purpose: `git log --oneline | grep ' fix('` is only a useful question if `fix` always means the same thing.
+
+### Body — why first, then what
+
+Blank line after the subject. Wrap ~80 chars. Lead with **why this change exists**, then what it does. Bullets where they help. Cite verifiable evidence — test counts, commit refs, the measurement — when there is any.
+
+### Trailers
+
+Last block, after a blank line. Git-native, so they stay greppable (`git log --grep`) and machine-readable (`git interpret-trailers`):
+
+| trailer | when |
+|---|---|
+| `Found-during: <task>` | a side fix — records what you were actually doing when it surfaced |
+| `Closes: #N` | this commit resolves that issue |
+| `Refs: #N` | related, does not close it |
+| `Also-fixed: <what>` | a fix that could not be split out of this commit |
+
+Never `Co-Authored-By`. Never a generated-by footer.
+
+### Example
+
+```
+fix(session-files): resolve pad symlinks before staging
+
+Every seat's pad is a symlink into the home repo. `git -C` follows it, but the
+unresolved /private/tmp pathspec is refused as outside-repo — and the refusal
+was swallowed as "nothing changed". Any session that wrote to its pad and edited
+repo files got a silently empty stage list.
+
+Resolve with realpath before the pathspec is built, and fail loud if git still
+refuses. Proved red by mutation; 17 tests.
+
+Found-during: xcode ACP seat cwd inversion
+Closes: #41
+```
+
+---
+
 ## Default (session-scoped)
 
 For **each repo** `R` from Step 1, in turn:
@@ -81,21 +154,19 @@ For **each repo** `R` from Step 1, in turn:
 
 2. **Do not cross-check the list against `git status`.** `session-files` already restricted it to paths git sees a change at, so re-testing them against the tree only hands back the judgment call it exists to remove. Check only the paths you added by hand in Step 1. Anything in `status` that is on nobody's list is another session's work — leave it, silently.
 
-3. **Stage explicitly** (absolute paths are fine with `-C`):
+3. **Split the repo's files into units of work** per **The commit contract** above. One unit is usually the whole answer; a session that fixed something on the way to the main task has at least two, and the side fix commits first. Say the split out loud in one line per unit before you stage — a split you never named is a split you didn't make.
+
+4. **Stage one unit explicitly** (absolute paths are fine with `-C`):
 
    ```bash
    git -C "$R" add <file1> <file2> ... <fileN>
    ```
 
-   No shell globs that could capture untouched files. Paste the exact paths.
+   No shell globs that could capture untouched files. Paste the exact paths. Stage only the unit you are about to commit, never the whole session's list at once.
 
-4. **Draft the commit message** in *this repo's* style (you just read its log):
+5. **Draft the commit message** to **The commit contract** — `<type>(<scope>): subject`, why-first body, trailers. Add `Found-during:` on a side fix and `Closes: #N` when it resolves a filed issue. Read this repo's recent log for local conventions the contract doesn't cover.
 
-   - Subject (≤72 chars): `<area>: <what changed in active voice>` — e.g. `auth: rename session token`, `dashboard: fix cwd resolution`.
-   - Blank line. Body: WHY first, then WHAT. Wrap ~80 chars. Bullets where helpful. Verifiable evidence (commit refs, test counts) when relevant.
-   - No emojis unless the user asked. No `Co-Authored-By`, no `Generated with Claude Code` footer.
-
-5. **Commit** (HEREDOC preserves formatting):
+6. **Commit** (HEREDOC preserves formatting):
 
    ```bash
    git -C "$R" commit -m "$(cat <<'EOF'
@@ -106,7 +177,9 @@ For **each repo** `R` from Step 1, in turn:
    )"
    ```
 
-6. **Push** (unless arg `0`):
+7. **Repeat 4–6 for each remaining unit**, in contract order: side fixes, then the deliverable, then `chore:` artifacts last.
+
+8. **Push** (unless arg `0`):
 
    ```bash
    git -C "$R" push
@@ -114,7 +187,7 @@ For **each repo** `R` from Step 1, in turn:
 
    If the push fails because the remote moved, `git -C "$R" pull --rebase` then push again. Never force-push to `main`/`master`.
 
-7. After all repos are done, **report** one line per repo: `<sha> on <branch> in <repo-name> — N files, +X/-Y`. Note any dropped non-repo files. Then stop.
+9. After all repos are done, **report** one line per commit: `<sha> <type>(<scope>): <subject>`, grouped by repo, with the branch. Note any dropped non-repo files. Then stop.
 
 ---
 
@@ -127,21 +200,18 @@ git -C "$R" status --short
 git -C "$R" diff --stat HEAD
 ```
 
-You're now responsible for everything pending in `R`. Group by **unit of work** — a coherent change that would land as one PR's worth of edits:
+You're now responsible for everything pending in `R`. Group by **unit of work** exactly as **The commit contract** defines it, plus one rule that only applies here:
 
-1. **Same feature/system** — files touching the same module/service/feature.
-2. **Same scope/domain** — distinct subprojects or areas get distinct commits.
-3. **Same kind of change** — pure docs, pure tests, pure data captures (CSVs/logs) each form their own commit.
-4. **Same author trail** — if you can tell another session or process touched a file, preserve that grouping.
+- **Same author trail** — if you can tell another session or process touched a file, preserve that grouping rather than merging it into yours.
 
-Auto-generated artifacts (state files, timestamp bumps, cache files, routine-job log captures) get their own `chore:` commit at the end — don't bury them in a feature commit.
+`all` differs from the default only in **scope** — everything pending versus this session's edits. The grouping, the subject vocabulary, and the trailers are the same contract in both modes.
 
 **Before committing anything**, write a one-line plan back to the user, repo by repo:
 
 ```
 push plan:
   <repo-a> (N commits):
-    1. <area>: <subject> — <file count> files
+    1. <type>(<scope>): <subject> — <file count> files
     2. ...
   <repo-b> (M commits):
     1. ...
@@ -162,10 +232,11 @@ Report: per repo, `<N> commits, <sha-first>..<sha-last> on <branch> in <repo-nam
 - **DO NOT** include a `Co-Authored-By` footer or `Generated with Claude Code` attribution.
 - **DO NOT** force-push to `main`/`master`. If push fails on rebase, surface it — don't paper over.
 - **DO NOT** amend a previous commit. Always a new one.
-- **DO NOT** silently squash `all` mode into one commit because it feels neater. The user wants per-unit-of-work commits.
+- **DO NOT** silently squash into one commit because it feels neater — in either mode. A side fix folded into the feature commit that carried it is invisible the moment anyone looks for it.
+- **DO NOT** invent a `<type>` outside the seven in the contract. An unknown type makes the log unqueryable, which is the only reason the vocabulary is fixed.
 
 ---
 
 ## After push
 
-Don't write a summary paragraph. One line per repo: `<sha> on <branch> in <repo>` (default) or `<N> commits, <first-sha>..<last-sha> in <repo>` (`all`). The git log is the receipt.
+Don't write a summary paragraph. One line per commit — `<sha> <type>(<scope>): <subject>` — grouped under its repo and branch. The git log is the receipt.

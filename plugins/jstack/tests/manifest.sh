@@ -24,7 +24,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 python3 - "$PLUGIN_ROOT" "$REPO_ROOT" <<'PY'
-import json, os, re, sys
+import json, os, re, subprocess, sys
 
 plugin_root, repo_root = sys.argv[1], sys.argv[2]
 fails, passes = [], []
@@ -40,6 +40,33 @@ def bad(label, detail):
 def read_json(path):
     with open(path) as fh:
         return json.load(fh)
+
+# ── 0. what "on disk" means here ─────────────────────────────────────────────
+# The tree this gate audits is the one a clone gets, so it counts what git
+# tracks, not what the filesystem holds. The checkout is shared: several
+# sessions are mid-edit at any moment, and a raw directory listing sees their
+# untracked work-in-progress. That work is invisible to every consumer of the
+# repo, so it cannot be a stale restatement — counting it only blocks the push
+# of whoever pushes next, for files that are not theirs to register.
+#
+# A staged deletion still lists, and that is correct: the index is what is
+# about to be pushed.
+def tracked(subdir):
+    res = subprocess.run(["git", "-C", plugin_root, "ls-files", "-z", "--", subdir],
+                         capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip() or f"git ls-files failed on {subdir}")
+    return [p for p in res.stdout.split("\0") if p]
+
+# A check that cannot look must raise: falling back to a raw listing here would
+# report "no drift" when it means "could not see git".
+try:
+    for _probe in ("skills", "tests", "bin", "rules-stage"):
+        tracked(_probe)
+except Exception as exc:
+    print(f"  FAIL git tracking — cannot list tracked files: {exc}")
+    print("\nFAIL — the tree could not be read; nothing was checked.")
+    sys.exit(1)
 
 # ── 1. version parity across the two plugin manifests ────────────────────────
 # Each engine reads its own manifest. Two files, one fact: whichever is not
@@ -82,10 +109,7 @@ if systems is not None:
     systems = list(flatten(systems))
 
     # 2a. every skill dir on disk is registered, and every registered skill exists
-    skills_dir = os.path.join(plugin_root, "skills")
-    on_disk = {d for d in os.listdir(skills_dir)
-               if os.path.isdir(os.path.join(skills_dir, d))
-               and os.path.exists(os.path.join(skills_dir, d, "SKILL.md"))}
+    on_disk = {p.split("/")[1] for p in tracked("skills") if p.endswith("/SKILL.md")}
     registered = set()
     for entry in systems:
         for path in entry.get("code", []):
@@ -104,7 +128,6 @@ if systems is not None:
         ok("skills registered", f"{len(on_disk)} skills, all accounted for")
 
     # 2b. every declared test resolves and runs; every test script is declared
-    tests_dir = os.path.join(plugin_root, "tests")
     declared, broken = set(), []
     for entry in systems:
         test = entry.get("test") or {}
@@ -123,7 +146,7 @@ if systems is not None:
     else:
         ok("declared tests resolve", f"{len(declared)} distinct scripts")
 
-    scripts = {f for f in os.listdir(tests_dir) if f.endswith(".sh")}
+    scripts = {os.path.basename(p) for p in tracked("tests") if p.endswith(".sh")}
     # this script proves the registry; it needs no registry entry of its own
     orphans = sorted(scripts - declared - {"manifest.sh"})
     if orphans:
@@ -161,10 +184,8 @@ except Exception as exc:
     readme = None
 
 if readme is not None:
-    bin_dir = os.path.join(plugin_root, "bin")
-    adapters = {f for f in os.listdir(bin_dir)
-                if not f.startswith(("__", "."))
-                and os.path.isfile(os.path.join(bin_dir, f))}
+    adapters = {os.path.basename(p) for p in tracked("bin")
+                if not os.path.basename(p).startswith(("__", "."))}
 
     m = re.search(r"(\d+) bundled `bin/` adapters \(([^)]*)\)", readme)
     if not m:
@@ -184,8 +205,7 @@ if readme is not None:
         else:
             ok("bin/ adapters", f"{len(adapters)}, names match")
 
-    rules_dir = os.path.join(plugin_root, "rules-stage")
-    rules = {f for f in os.listdir(rules_dir) if f.endswith(".md")}
+    rules = {os.path.basename(p) for p in tracked("rules-stage") if p.endswith(".md")}
     rule_claims = set(int(n) for n in re.findall(r"(\d+) (?:bundled rules|path-scoped rule files)", readme))
     if not rule_claims:
         bad("rule count claim",

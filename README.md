@@ -298,15 +298,37 @@ JStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
 │   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
-│   ├── skills/                            # the eight slash commands
+│   ├── skills/                            # the 11 slash commands
 │   │   ├── work/SKILL.md
-│   │   ├── active/SKILL.md
-│   │   ├── save/SKILL.md
 │   │   ├── handoff/SKILL.md
+│   │   ├── splitoff/SKILL.md
 │   │   ├── audit/SKILL.md
+│   │   ├── day-audit/SKILL.md
+│   │   ├── recall/SKILL.md
+│   │   ├── showme/SKILL.md
+│   │   ├── print/SKILL.md
 │   │   ├── push/SKILL.md
 │   │   ├── install-rules/SKILL.md
 │   │   └── post-session-review/SKILL.md
+│   ├── hooks/
+│   │   ├── hooks.json                     # PreToolUse + SessionStart + SessionEnd + Stop
+│   │   ├── inject-path-rules.py           # cross-tree rule injection
+│   │   ├── session-start-inject.py        # seat timeline injection
+│   │   ├── stop-inbox-guard.py            # an open inbox message cannot be walked past
+│   │   ├── stop-timeline-remind.py        # timeline write reminder
+│   │   └── session-end-review.sh          # spawns the review engine, detached
+│   ├── bin/                               # bundled adapters (auto-added to PATH)
+│   │   ├── open-terminal-here             # /handoff, /audit, /splitoff
+│   │   ├── dub-session                    # /splitoff
+│   │   ├── open-artifact                  # /showme
+│   │   ├── pict                           # image capture/convert
+│   │   ├── session-files                  # /push stage list
+│   │   ├── file-issue                     # /report issue filing + board placement
+│   │   ├── file-followup                  # review follow-ups
+│   │   ├── log_event                      # timeline writer
+│   │   ├── msg                            # agent inbox
+│   │   └── session-review-spawn           # review engine
+│   ├── scheduler/                         # RRULE daemon (one-time + recurring runs)
 │   ├── hooks/
 │   │   ├── hooks.json                     # PreToolUse + SessionEnd registration
 │   │   ├── inject-path-rules.py           # cross-tree rule injection

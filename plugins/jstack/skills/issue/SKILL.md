@@ -4,96 +4,52 @@ description: Work a GitHub issue end to end — read it, put it on the work boar
 argument-hint: "<owner/repo#N>"
 ---
 
-# /jstack:issue — work one GitHub issue
+# /jstack:issue
 
-You were spawned by an assignment. Someone put `owner/repo#N` on the agent account, and
-this session exists to take that issue from open to a PR waiting to be merged.
+`$ARGUMENTS` is `owner/repo#N`. Missing → ask which issue, never guess.
 
-The issue body is your whole brief. Nobody is standing by to explain it — read it, decide,
-build, and answer **on the issue**, because the issue is the only place your answer
-survives. This session's prose does not.
+Take that issue from open to a PR waiting to be merged. The issue body is your whole brief, and the issue is where your answer must land — this session's prose does not survive.
 
-## Arguments
+Two contracts hold the machinery together. **The branch is `issue-<N>`**, exactly: closing the issue merges the open PR whose head is `issue-<N>`, and nothing else records which branch belonged to which issue. And **never switch branches in the shared checkout** — every agent on this machine shares one working tree per repo, so `git checkout -b` moves the branch under other sessions mid-edit. Use a worktree, with no exception for a small change.
 
-`$ARGUMENTS` = `owner/repo#N`. No argument means you were opened by hand: ask which issue,
-do not guess.
-
-## The two contracts
-
-Break either and the machinery around this skill stops working.
-
-1. **The branch is `issue-<N>`.** Exactly that. When the issue is closed, a merge is
-   attempted against the open PR whose head is `issue-<N>` — there is no other record of
-   which branch belonged to which issue. A branch named anything else is work that never
-   merges.
-2. **You do not switch branches in a shared checkout.** Every agent on this machine shares
-   one working tree per repo. `git checkout -b` there moves the branch under everyone
-   else's feet mid-edit. Use a worktree (step 3); there is no exception for "just a small
-   change."
-
-## Procedure
-
-### 1 — Read the issue, all of it
+## 1. Read the issue, all of it
 
 ```bash
 gh issue view <N> --repo <owner/repo> --json title,body,labels,state,url,comments
 ```
 
-Comments included: a re-assignment or a resume means there may be a conversation above you
-already. The **last** comment is usually the most recent instruction.
+Comments matter: a re-assignment or resume means a conversation may already be above you, and the last comment is usually the live instruction.
 
-The type label tells you what is being asked: `bug` = something is broken, restore the
-claimed behaviour. `optimization` = it works, make it faster/cheaper/simpler/clearer
-without changing what it does. `feature` = it does not exist, build it.
+The type label sets the ask: `bug` = restore the claimed behaviour · `optimization` = same behaviour, faster or clearer · `feature` = build what does not exist. A body naming no symptom, surface, or ask is unactionable — go to **Blocked** rather than guessing.
 
-If the body genuinely cannot be acted on — it names no symptom, no surface, no ask — do
-not guess at a fix. Go to **Blocked** below.
-
-### 2 — Put it on the board
+## 2. Board it
 
 ```bash
 place-issue --repo <owner/repo> --issue <N> --status "In Progress"
 ```
 
-Defaults to the **Auto-Work** board. `place-issue --repo <owner/repo> --list-boards` shows
-every board and its columns if the work clearly belongs on another one — pick by fit, and
-say in your issue comment which board you chose and why. Adding is idempotent, so a
-resumed session re-running this does not duplicate its card.
+Defaults to the Auto-Work board; `--list-boards` shows the alternatives when the work clearly belongs elsewhere. Adding is idempotent, so a resumed session does not duplicate its card. A non-zero exit means the card is not where you would say it is — report that rather than claiming a column you did not get.
 
-A non-zero exit means the card is not where you say it is. Report that in your comment
-rather than claiming a column you did not get.
+## 3. Get a worktree
 
-### 3 — Get a worktree
-
-Find the repo's checkout on this machine, then branch **beside** it, never inside it:
+Branch beside the repo's checkout, never inside it:
 
 ```bash
 WT=<your-seat>/pad/issue-<N>
 git -C <repo-root> worktree add "$WT" -b issue-<N>     # first time
-git -C <repo-root> worktree add "$WT" issue-<N>        # branch already exists (resume)
+git -C <repo-root> worktree add "$WT" issue-<N>        # resume
 cd "$WT"
 ```
 
-Already there from an earlier turn? Use it as is. Everything from here happens in `$WT`.
+Repo not on this machine → clone it into the pad and work there.
 
-If the repo is not checked out on this machine, clone it into the pad instead and work
-there — a repo you cannot read is a blocker, not a reason to improvise.
+## 4. Do the work
 
-### 4 — Do the work
+Ordinary engineering to your own standard: read the code around the change, fix the cause. Run whatever the repo runs and report the real result. A bug fix leaves behind a test that fails without it; where that is genuinely impossible, say why in the comment.
 
-Ordinary engineering, in your own domain, to your own standard. Read the code around the
-change before touching it. Fix the cause, not the symptom.
+Stay inside the issue. Anything else you trip over goes through `/jstack:report` — its own commit or its own issue, never riding along in this PR.
 
-**Test it.** Run whatever the repo runs, and say the real result — a suite you did not run
-is not a suite that passed, and a failure you found is part of your answer. If your change
-fixes a bug, the repo should end up with a test that fails without your fix; if that is
-genuinely not possible here, say why in the comment.
-
-Stay inside the issue. Something else broken that you trip over goes through `/jstack:report`
-— fixed in its own commit, or filed as its own issue. It does not silently ride along in
-this PR.
-
-### 5 — Commit and open the PR
+## 5. Commit and open the PR
 
 ```bash
 git add <your files>
@@ -104,58 +60,19 @@ gh pr create --repo <owner/repo> --head issue-<N> --title "<title>" --body "Fixe
 <what changed and why, in a few lines>"
 ```
 
-`Fixes #<N>` in the body is not decoration — it is what ties the PR to the issue in
-GitHub's own UI, which is where a reviewer looks.
+`Fixes #<N>` is what ties the PR to the issue in GitHub's own UI. Do not merge and do not close the issue — closing is what merges, and it is not your call.
 
-Do not merge. Closing the issue is what merges, and that is not your call.
-
-### 6 — Answer on the issue
+## 6. Answer on the issue
 
 ```bash
 gh issue comment <N> --repo <owner/repo> --body "..."
-```
-
-Short, and specific enough to act on:
-
-- **What you changed** — behaviour, not a file tour.
-- **The PR** — `#<pr>`.
-- **How you know it works** — the test you ran and its actual result.
-- **What you did not do** — anything in the issue you left, and why.
-
-Then:
-
-```bash
 place-issue --repo <owner/repo> --issue <N> --status "Review"
 ```
 
-### 7 — Stay at the prompt
+Short and specific: what changed as behaviour rather than a file tour, the PR number, the actual test result, and anything you left undone and why.
 
-Do not exit. A comment on the issue comes back into **this session**, and a session that
-exited cannot receive one. Closing the issue merges the PR and ends this session — that is
-the ending, and it is not yours to trigger.
+Then stay at the prompt — do not exit. A comment on the issue comes back into this session, and one that exited cannot receive it.
 
 ## Blocked
 
-Blocked is a real outcome, not a failure to hide. Anything that stops you — the brief is
-unactionable, a decision is needed, credentials are missing, the fix is far larger than the
-issue implies:
-
-```bash
-place-issue --repo <owner/repo> --issue <N> --status "Blocked"
-gh issue comment <N> --repo <owner/repo> --body "Blocked: <what stopped you> / <exactly what you need to continue>"
-```
-
-Then stay at the prompt. The answer arrives as a comment, and it lands here.
-
-Say *exactly* what would unblock you. "Needs clarification" wastes the round trip that
-"should this apply to archived rows too, or only live ones?" would have ended.
-
-## Failure modes (DO NOT)
-
-- **DO NOT** branch or commit in the shared checkout. Worktree, always.
-- **DO NOT** name the branch anything but `issue-<N>`. Nothing merges if you do.
-- **DO NOT** merge your own PR, or close the issue.
-- **DO NOT** widen the PR beyond the issue. Extra findings go through `/jstack:report`.
-- **DO NOT** report a test result you did not see, or a board column you did not get.
-- **DO NOT** end the session. Rest at the prompt so the user can talk to it.
-- **DO NOT** answer only in this session. If it is not on the issue, it did not happen.
+Cannot proceed — unactionable brief, decision needed, missing credentials, a fix far larger than the issue implies: follow `${CLAUDE_PLUGIN_ROOT}/skills/issue/blocked.md`.

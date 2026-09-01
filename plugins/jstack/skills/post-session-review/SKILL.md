@@ -4,60 +4,22 @@ description: Review the session that just ended — timeline entry, dropped thre
 argument-hint: "<session-id>"
 ---
 
-# /jstack:post-session-review — review the session that just ended
+# /jstack:post-session-review
 
-You are spawned in the agent's workspace. Session ID is in `$ARGUMENTS`.
+Session ID is in `$ARGUMENTS`. The timeline entry is the deliverable; thread extraction and doc accuracy are hygiene and never substitute for it.
 
-**Why you exist:** the next session boots nearly blind. The one thing loaded
-into it is the seat's recent timeline entries, injected by the SessionStart
-hook. So your job is delivery, not tidiness:
-
-1. **The timeline entry — the deliverable.** Write the seat-tagged entry
-   (Phase C): the short, honest record of what this session did and what the
-   next run must know. The only artifact with a guaranteed path into the next
-   session — anything the next run must know rides here.
-2. **Thread extraction.** Read the session JSONL. Topics the user raised that
-   this session didn't resolve and aren't filed anywhere get filed or
-   explicitly dropped. **Judgment matters**: "forget it" / "skip" / "moving
-   on" means drop; raised-and-moved-on means file.
-3. **Accuracy — hygiene, not delivery.** Docs the session touched or
-   invalidated must not lie. But a true file nobody opens changed nothing —
-   accuracy never substitutes for the timeline write.
-
-Your output is parsed by the engine. Missing required sections OR empty
-sections without per-item citation = rejected, re-spawned. Don't write
-"clean" or "none" without an evidence trail.
-
----
+Output contract, parsed by the engine: `${CLAUDE_PLUGIN_ROOT}/skills/post-session-review/output.md`. One pass, no sub-spawns; read the JSONL once at Phase A and reuse it. The agent's walk-up CLAUDE.md carries glue applying after this procedure — read it.
 
 ## Setup
 
 ```bash
 SID="$ARGUMENTS"
-AGENT_TITLE=$(basename "$(dirname "$PWD")")                              # the agent dir name, title case
-AGENT=$(echo "$AGENT_TITLE" | tr '[:upper:]' '[:lower:]')                # lowercased
-JSONL=$(find ~/.claude/projects -name "${SID}.jsonl" -print -quit 2>/dev/null)
-echo "session=$SID agent=$AGENT_TITLE jsonl=$JSONL"
+eval "$(bash "${CLAUDE_PLUGIN_ROOT}/skills/post-session-review/resolve-seat.sh" "$SID")"
 ```
 
-If `$JSONL` is empty, emit a single-line `## SUMMARY` saying so and exit — the engine will surface it.
+Empty `$JSONL` → emit a single-line `## SUMMARY` saying no transcript was found, and exit.
 
-Resolve the seat the session ran in — it MUST match how the SessionStart
-injector reads entries back (first path segment under the agent dir; agent
-root → `chat`), or the next run won't find what you wrote:
-
-```bash
-CWD=$(jq -r 'select(.cwd) | .cwd' "$JSONL" | head -1)
-REL="${CWD#*/"$AGENT_TITLE"}"; REL="${REL#/}"
-SUBMODE="${REL%%/*}"; SUBMODE="${SUBMODE:-chat}"
-SEAT="$AGENT/$SUBMODE"
-```
-
----
-
-## Phase A — Thread extraction (FIRST)
-
-Walk every user turn in `$JSONL`. Use `Read` for short sessions, `Bash` + `jq` (or python3) for long:
+## Phase A — thread extraction
 
 ```bash
 jq -r 'select(.type == "user") | .message.content
@@ -65,45 +27,25 @@ jq -r 'select(.type == "user") | .message.content
   | gsub("\\s+"; " ")' "$JSONL" | head -200
 ```
 
-**Skip injected events**: `<system-reminder>`, `<command-message>`, `<command-name>`, tool-result blobs, bootstrap payloads. Only count actual user prose.
+Count only real user prose — skip `<system-reminder>`, `<command-message>`, `<command-name>`, tool-result blobs, bootstrap payloads.
 
-For each distinct topic the user raised, classify into **exactly one** of:
+Classify each distinct topic into exactly one: `resolved-in-session`, citing the resolution · `filed-elsewhere`, citing the destination · `user-dropped` — skip / forget / moving on / later, citing the exact line · `unfinished-active-work` — live in the last exchanges, never completed · `silently-dropped` — raised, moved past, in no file.
 
-- `resolved-in-session` — addressed before session ended; cite the resolution turn or artifact.
-- `filed-elsewhere` — landed in a PR, a commit, a follow-up, an issue; cite destination.
-- `user-dropped` — the user said skip / forget / moving on / actually-don't / later; cite the exact line.
-- `unfinished-active-work` — the user was actively engaged on this topic in the last exchanges before session ended, work did NOT complete, no resolution reached.
-- `silently-dropped` — raised mid-session, work moved on, never came back, not in any file.
-
-For each `unfinished-active-work` or `silently-dropped` topic, file a follow-up:
+File a follow-up for each of the last two:
 
 ```bash
 file-followup "Glanceable issue title" "1–2 plain sentences: what's unfinished and why it matters."
 ```
 
-(`file-followup` ships in the plugin's `bin/` — backend chosen by the plugin's `followup_backend` userConfig; with backend `none` it's a no-op, so carry the open thread as a detail bullet on the timeline entry (Phase C) — the injected entry is what the next session actually sees.)
+Title states the issue plainly, never action framing; body carries no hashes, GUIDs, paths or estimates. Already filed → update or skip, never a stacked "still pending" copy. Under `followup_backend: none` this is a no-op, so carry the thread as a Phase C detail bullet instead.
 
-Follow-up wording rules:
-- **Title:** one short line, issue stated plainly — not "Approve X" / "Decide Y" action framing.
-- **Body:** 1–2 plain sentences. No commit hashes, no GUIDs, no file paths, no hour estimates.
-- **No duplicate filings.** If the same issue is already filed, update/skip — never stack a "still pending" copy.
+A correction or new rule the user gave is applied at the most specific place that loads when the behavior matters — never parked in a follow-up.
 
-If a topic is a correction or new rule the user gave, apply it at the most specific place that loads when the behavior matters (project CLAUDE.md, agent CLAUDE.md, a path-scoped rule, or memory) — never park corrections in a follow-up.
+## Phase B — accuracy
 
-## Phase B — Accuracy
+Reconcile the docs this session touched, referenced or invalidated. `agree` needs no action. `fossil` — references superseded work; `Edit` the line out. `phantom` — the session claimed an update that never landed; apply it now and cite the edit.
 
-Reconcile docs against what the session actually did. Scope: the docs this
-session **touched, referenced, or invalidated** (from Phase A's walk — CLAUDE
-mds, project docs, configs it edited):
-
-- `agree` — doc and reality consistent — no action.
-- `fossil` — doc references work that's done/superseded — **`Edit` the doc to remove/rewrite the line**.
-- `phantom` — the session claimed a doc update that never landed — apply it now, cite the edit.
-
-## Phase C — Timeline (the running memory — THE deliverable)
-
-The timeline is the seat's memory: the next `$SEAT` session boots on the last
-entries under this exact source. Check what's already recorded, then write:
+## Phase C — timeline
 
 ```bash
 log_event tail "$SEAT" -n 10
@@ -112,76 +54,10 @@ log_event "$SEAT" --at "${STAMP#* }" --date "${STAMP%% *}" --session "$SID" "hea
   --detail "≤80 chars" --detail "≤80 chars" [--context "freeform depth, loaded on demand"]
 ```
 
-`--context` is optional depth for the next run: when the session left rich
-state that outgrows three bullets (a design's why, the exact state of a
-half-done thread), park it there — it is stored on the entry but never
-rendered or injected, surfaced only by `log_event show <id>` / `tail --json`.
-The transcript gets cleaned eventually; the entry plus its context must let
-the next session reconstruct the thread without it.
+Use `$STAMP` verbatim — timestamps inside the JSONL are UTC and would stamp the entry hours ahead.
 
-**Timeline-worthy:** code shipped, feature live, decision made, problem fixed, user directive that drove work, significant autonomous work, something durable learned.
-**NOT timeline-worthy:** "reviewed session", build counts, test counts, file paths, commit hashes, session UUIDs, internal cleanup.
+`--context` is optional depth, stored but never injected. Use it when the session left state outgrowing three bullets — transcripts get cleaned, so the entry plus its context is all the next session gets.
 
-Detail bullets earn their place by serving the NEXT run: an open thread, a
-decision and its why, a do-not-repeat. If the event is already covered by
-another block, don't duplicate.
+Timeline-worthy: code shipped, feature live, decision made, problem fixed, a user directive that drove work, significant autonomous work, something durable learned. Not: reviewed-session notes, build or test counts, paths, hashes, UUIDs, cleanup. Detail bullets serve the next run — an open thread, a decision and its why, a do-not-repeat.
 
-`$STAMP` is the transcript file's mtime — the moment the session's last message landed, already machine-local. Use it verbatim; never copy a timestamp from inside the JSONL into `--at` — those are UTC (`...Z`) and stamp the entry hours ahead. (`log_event` clamps impossible future stamps to now as a backstop, but the mtime is the honest time.)
-
-If nothing this session belongs, the `## TIMELINE` section says `none — {brief reason}`. Empty section without a reason = rejected.
-
-### Tag the session
-
-Wrote an entry? Tag its subject — that is how the work is found across seats.
-
-```bash
-log_event tag list
-log_event tag set <name> --session "$SID"
-```
-
-Pick the single best match from the list; a near match beats a new tag almost
-every time. Only when nothing on the list plausibly covers the work,
-`log_event tag new <name> --description "what belongs under this"`, then set it.
-A tag names a subject several sessions share — not the seat, the date, or your
-headline. No entry → no tag.
-
----
-
-## Required output (exact section headers — the engine parses by name)
-
-```
-## TRANSCRIPT_WALK
-- turn 1 [HH:MM]: "{first 60 chars of user message}" → {classification} → {citation OR disposition}
-- turn 2 [HH:MM]: ...
-(every distinct user turn. **If there were none, the FIRST line of this section MUST start with the literal phrase `no user turns` — verbatim, lowercase. Example: `no user turns — automation-triggered session (skill payload only)`.**)
-
-## DOC_RECONCILE
-- {file:line} — {fossil/phantom} — {action taken}
-OR
-- clean — examined: {docs checked, one line each}; all consistent.
-
-## ACTIONS_TAKEN
-- Edit {path:line} — {what changed}
-- file-followup "{title}" "{body}"
-- ...
-OR
-- none — {N} user turns walked, {K} docs checked; no action because:
-  - {topic 1}: {per-topic reasoning}
-
-## TIMELINE
-- log_event {agent}/{submode} --at HH:MM "headline" [--detail "..." --detail "..."]
-OR
-- none — {brief reason: routine maintenance / already covered by {seat} block at HH:MM / no timeline-worthy event}
-
-## SUMMARY
-One sentence: most important thing about this session (or the biggest miss).
-```
-
----
-
-## Rules
-
-- **One pass.** Don't fork, don't sub-spawn.
-- **Read the JSONL once** at Phase A start. Don't re-walk it for Phase B.
-- **Output structured sections verbatim** — exact headers, in order.
-- **Agent-specific glue** in the agent's walk-up CLAUDE.md applies after this skill's procedure — read it.
+Wrote an entry? Tag its subject with `log_event tag list`, then `log_event tag set <name> --session "$SID"`. A tag names a subject several sessions share, never the seat, the date, or your headline, and a near match beats a new tag. Only when nothing on the list covers the work, `log_event tag new <name> --description "what belongs under this"`. No entry, no tag.

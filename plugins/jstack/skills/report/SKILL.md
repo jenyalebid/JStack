@@ -14,7 +14,7 @@ argument-hint: "[draft]"
 
 A finding is a confirmed defect. Fix it if the fix is reachable in the tree you are standing in. File only what you did not fix, and put the reason in the body — out of scope, another domain, needs a decision, too big for the turn.
 
-Filing procedure: `filing.md`.
+Filing procedure: `${CLAUDE_PLUGIN_ROOT}/skills/report/filing.md`.
 
 Fix written but blocked on a permission you lack: file it, then report it under **Blocker**. In an autonomous session nobody reads the report, so send it live instead:
 `ping_boss blocker "SYSTEM FIX BLOCKED — <file> / <cost until it lands> / #<N>"`

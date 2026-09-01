@@ -4,62 +4,35 @@ description: Surface the actual artifact — code, preview, image, doc, mockup, 
 argument-hint: "[raw|live|location] [focus]"
 ---
 
-# /jstack:showme — surface the result of the current topic, visually
+# /jstack:showme
 
-User invoked showme. They don't want a text summary of what you produced — they want to **see it**, in the real viewer, right now. Your job: figure out the tangible result of the current topic, pick the right *surface* for it, and open it. Default to action — open the thing, don't ask which thing unless genuinely split.
+Put the thing on screen. Not a summary of it, not the path to it. Default to acting — open it rather than asking which one, unless two candidates are equally central and the wrong pick wastes the user's time.
 
-## Arguments
+Arguments, both optional. The reserved token `raw` / `live` / `location` anywhere in the args is the mode; everything else is a **focus** that narrows which artifact. Focus is an explicit narrowing instruction, so do not balance it against other candidates. No focus → the most recent salient result.
 
-`$ARGUMENTS` = `[mode] [focus]`, both optional.
+## 1. Identify the artifact
 
-- **`mode`** — a reserved token, `raw`, `live`, or `location`, anywhere in the args. Omitted = **default** (preview-preferred). `raw`/`default`/`live` set where on the fidelity ladder to land (below); `location` is off the ladder — it reveals the artifact in Finder instead of rendering it (see below).
-- **`focus`** — everything that isn't the mode token. Narrows which artifact when the session touched several ("the icon", "the settings screen", "the retro doc"). It's an explicit narrowing instruction — don't try to be balanced. Omitted: show the most recent salient result; if two candidates are equally central and the wrong pick wastes the user's time, ask one short question, otherwise take the most recent.
+Resolve the current topic's concrete result to an absolute path or URL. Locate it before opening — never open a guessed path.
 
-## The fidelity ladder — what `mode` selects
+The result is not always something you made. When the session ends with the ball in the user's court — a console to configure, billing to enable, an OAuth grant, a service to sign up for — the thing worth looking at is the page where they do it. Opening your code there is a miss.
 
-showme always picks a **surface** for the result. The mode chooses how close to raw source vs a live running environment:
+## 2. Pick the surface
 
-- **`raw` — the code behind it.** Source file(s) in the IDE/editor, not the rendered output. iOS → the Swift file open in Xcode. Web → the source file in the editor. A generated mockup/diagram → its `.html`/`.svg`/script source, not the rendered picture. A doc → the `.md` source, not the Quick Look render. This is "show me the code version."
-- **default — the cheapest faithful *visual*.** Prefer an **in-code preview** if the thing has or can have one: a SwiftUI `#Preview` in Xcode's canvas, a component/Storybook preview, a Quick Look render. Only fall to a heavier surface if no preview exists. A feature that *can* have a `#Preview` gets its preview, **not** a full sim build. A plain rendered artifact (an image, a PDF) just opens in its viewer.
-- **`live` — the thing running for real.** iOS → build + boot the simulator + launch + screenshot. Web → start the dev/preview server + open the live URL. Desktop → launch the built app + screenshot. Heaviest surface, highest fidelity. Prefer the project's own run/launch skill (`run`, `sim`, `device`, or a project-specific one) over hand-rolling the build.
+The mode sets where on the fidelity ladder to land:
 
-For a static artifact already produced (image, PDF), `default` and `live` collapse to "open it in the viewer"; `raw` shows its source if one exists, else the file itself.
+- **`raw`** — the source behind it. The `.swift` file, not the preview. A mockup's `.html`, not the render. A doc's `.md`, not the Quick Look.
+- **default** — the cheapest faithful visual. Prefer an in-code preview where the thing has or could have one: a SwiftUI `#Preview` in Xcode's canvas, a component preview, a Quick Look render. A feature that can have a `#Preview` gets it, never a full sim build. A finished static artifact just opens in its viewer.
+- **`live`** — the thing actually running: sim booted and launched, dev server up, app launched, plus a screenshot. Use the project's own run / sim / device skill rather than hand-rolling the build.
+- **`location`** — off the ladder. The intent is *where is this file*, so reveal it selected in the file manager instead of rendering: `open -R <abs-path>` on macOS, `nautilus --select` or the containing dir on Linux. This is the answer for a blob or binary with nothing to render. A URL has no file to reveal — say so and open it.
 
-**`location` — reveal, don't render.** Off the fidelity ladder entirely. The intent isn't "look at the content," it's "show me *where the file is* so I can grab, attach, move, or rename it." Resolve the same artifact (Step 1), then reveal it selected in the OS file manager rather than opening it: macOS → `open -R <abs-path>` (highlights it in Finder); Linux → `nautilus --select <abs-path>` (or `xdg-open` on the containing dir) — whatever's present. This applies to *any* artifact type — a `.enc` blob or binary that has nothing to render is the canonical case for `location`. For a URL/live result there's no file to reveal: say so and fall back to opening the URL.
+Open with `open-artifact <path-or-url>` (on PATH while jstack is enabled). Source on macOS goes to Xcode via `xed <file>`, falling back to `open-artifact` or `$EDITOR` elsewhere.
 
-## Step 1 — Identify the artifact
+A setup the user must perform gets the **deepest** deep-link that lands on the exact action — that project's IAM page, the billing screen, the integration's settings tab, never the product homepage. Open every distinct page they will touch, then give a numbered checklist of what to click and what to hand back, so the loop closes.
 
-Reflect on this conversation. What is the concrete result of the current topic — the thing worth looking at? Resolve it to an **absolute path** (or URL, for web/live). If you produced it this session you know where it is; otherwise locate it before opening — never open a guessed path. Apply `focus` to narrow.
+## 3. Confirm
 
-**The result is not always an artifact you made — sometimes it's an action the user must take.** If the session ended with the ball in *the user's* court (a cloud console to configure, billing to enable, a dashboard toggle, an OAuth/API grant, a service to sign up for), the "thing worth looking at" is **the place where they do it**, not a tool you built or a file you wrote. Surfacing a CLI demo or a code path here is a miss — open the console and tell them what to do. See the *Pending external setup* row below.
-
-## Step 2 — Pick the surface (by mode), then open
-
-`open-artifact` (bundled on PATH while jstack is enabled) hands a path or URL to the platform's default app/viewer — call it as a bare command. On macOS, code goes to Xcode via `xed <file>` (falls back to `open-artifact` / `$EDITOR` elsewhere). For the `location` mode, **reveal** instead of open: `open -R <abs-path>` on macOS (Linux: `nautilus --select` / file manager). Do **not** just print the path or paste the code — the point of showme is the thing is now on screen.
-
-| Result is… | `raw` (source) | default (preview / render) | `live` (running) |
-|---|---|---|---|
-| **iOS / mobile feature** | `xed <View>.swift` → Xcode | SwiftUI `#Preview` in Xcode's canvas if the view has / can have one; else fall to the sim | build + boot sim + launch + screenshot (use the project's run/sim/device skill) |
-| **Web feature / page** | source file in editor | component/Storybook preview, or the static file in the browser | start the dev server + open the live URL |
-| **Desktop app feature** | source in editor | usually same as live | launch the built app + screenshot |
-| **HTML mockup / sketch** | the `.html` source in editor | rendered in the browser | rendered in the browser |
-| **Image (png/jpg/svg/pdf/heic)** | its generating source if any (`.svg`, script); else the file | the image in the viewer | same as default |
-| **Markdown / doc** | the `.md`/source in editor | Quick Look render (macOS `qlmanage -p`) / default app | same as default |
-| **Data (csv/json)** | raw file in editor | compact table inline if clearer, else default app | same as default |
-| **Code change / diff** | the changed file(s) in editor/IDE | the diff inline, or in the editor | run it, if it has a runtime surface |
-| **Pending external setup** (a console/dashboard *the user* must configure) | the script/command/doc that drives the setup, in the editor | **open the deepest direct link to the exact page** (not the product homepage) + outline the numbered steps inline and name what info you need back | same — open the page(s), walk the steps with them |
-
-**When the result is a setup the user must perform.** Open the **deepest** deep-link that lands them on the exact action — the specific project's IAM page, the billing screen, the integration's settings tab — never just `console.cloud.google.com`. Open every distinct page they'll touch (you can open several). Then give a tight numbered checklist of what to click/enter and, crucially, **what to hand back to you** (an ID, a downloaded key, a confirmation) so the loop closes. The artifact is the button, not your code.
-
-**Features: preview by default, sim on `live`, code on `raw`.** "Show me the settings screen" → its SwiftUI preview in Xcode. "Show me the settings screen live" → running on the sim. "Show me the settings screen raw" → the Swift file in Xcode. Reach for the project's launch skill before hand-building.
-
-## Step 3 — Confirm
-
-One line: what you opened and where (`SettingsView.swift open in Xcode`, `settings-screen preview in Xcode's canvas`, `the app running on the sim — settings screen`, `<url> in the browser`, `Opened icon.png in Preview`, `Revealed firebase-keys.tar.gz.enc in Finder`). For anything you ran or previewed, attach or reference the screenshot so the visual is captured, not just asserted.
+One line naming what opened and where. Anything you ran or previewed gets its screenshot attached, so the visual is captured rather than asserted.
 
 ## Fallbacks
 
-- **Nothing visual exists** (the topic produced only a decision, a config value, an explanation): say so plainly and give the best textual rendering — a tight table, the key diff, the value. Don't fabricate an artifact to open.
-- **Requested surface unavailable** (no `#Preview` for a `default` request, no running server for `live`, no source for `raw`): drop to the nearest rung, open that, and say which rung you landed on and why.
-- **`open-artifact` / `xed` exits nonzero** (no opener, no Xcode, bad path): report the absolute path and what failed so the user can open it manually.
-- **Ambiguous topic, no focus**: pick the most recent salient artifact and open it; mention the others in one line so the user can `/jstack:showme <focus>` to switch.
+Requested rung unavailable — no `#Preview`, no running server, no source — drop to the nearest rung, open that, and say which one you landed on. A nonzero exit from `open-artifact` or `xed` gets the absolute path and the failure reported so the user can open it by hand. When the topic produced nothing visual, say so and give the best textual rendering; never fabricate an artifact to open.

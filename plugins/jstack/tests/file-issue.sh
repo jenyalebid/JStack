@@ -105,6 +105,22 @@ run --repo O/R --title t --body b --label optimization
   || bad "uncreatable type files untyped, loudly, and says so in the receipt" "rc=$RC $OUT"
 unset GH_LABEL_FAIL
 
+# GitHub label names are unique case-INSENSITIVELY, so a repo spelling its type
+# `Optimization` already has the one `optimization` asks for. Matching exactly
+# missed it, tried to create it, and the API refused the duplicate — every
+# issue on such a repo filed untyped, with a zero exit and a real board card.
+meta cased '{"data":{"repository":{"hasIssuesEnabled":true,"labels":{"nodes":[{"name":"Optimization"},{"name":"Bug"}]},"projectsV2":{"nodes":[]}}}}'
+: > "$GH_CALLS"
+export GH_LABEL_FAIL=1   # any create here is the bug; the API would refuse it too
+run --repo O/R --title t --body b --label optimization
+[[ $RC -eq 0 && "$OUT" == *"type=Optimization"* && "$OUT" != *UNTYPED* ]]   && ! grep -q "label create" "$GH_CALLS"   && ok "a differently-cased type label is matched, not re-created"   || bad "a differently-cased type label is matched, not re-created" "rc=$RC $OUT"
+: > "$GH_CALLS"
+run --repo O/R --title t --body b --label bug
+[[ $RC -eq 0 && "$OUT" == *"type=Bug"* ]] && grep -q '\-\-label Bug' "$GH_CALLS" \
+  && ok "the repo's own spelling is what gets passed to gh" \
+  || bad "the repo's own spelling is what gets passed to gh" "rc=$RC $OUT $(cat "$GH_CALLS")"
+unset GH_LABEL_FAIL
+
 echo "blind and refusing states exit nonzero"
 meta m "$BOARD_TODO"
 run --repo O/R --title t --body b --label bug --dry-run     # gh present, meta readable

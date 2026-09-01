@@ -177,8 +177,16 @@ for l in ${LABELS+"${LABELS[@]}"}; do
   is_type=0
   for t in $TYPE_LABELS; do [[ "$l" == "$t" ]] && is_type=1; done
 
-  if printf '%s\n' "${KNOWN_LABELS:-}" | grep -qxF "$l"; then
-    KEEP+=("$l"); [[ "$is_type" == 1 ]] && TYPE_LANDED="$l"
+  # GitHub label names are case-insensitive and unique that way, so a repo
+  # spelling its type label `Optimization` already HAS the label `optimization`
+  # asks for — matching exactly would miss it, then fail to create it (the API
+  # rejects the duplicate), and file the issue untyped. Match case-insensitively
+  # and carry the repo's own spelling forward, which is what `gh issue create`
+  # and the board both want.
+  MATCHED="$(printf '%s\n' "${KNOWN_LABELS:-}" | grep -ixF "$l" | head -1 || true)"
+
+  if [[ -n "$MATCHED" ]]; then
+    KEEP+=("$MATCHED"); [[ "$is_type" == 1 ]] && TYPE_LANDED="$MATCHED"
   elif [[ "$is_type" == 1 ]]; then
     if [[ "$DRY" == "1" ]]; then
       echo "file-issue: would create label '$l' on $REPO" >&2

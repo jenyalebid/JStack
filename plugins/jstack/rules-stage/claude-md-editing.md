@@ -59,7 +59,7 @@ An instruction doc states the rule and how to comply — nothing else.
 - **Corrections refine the existing line in place** — never appended as dated changelog or diary entries. A "log" section, where structure requires one, is a pointer to git, not an accumulator.
 - **Removals are silent.** When a law dies, delete it and every row/pointer that referenced it, everywhere — never write "X was removed/killed/reversed" in any doc or index. The next reader has no memory of the old law; annotating an absence is noise. The session timeline and git hold the event. A dated-row index (a corrections ledger, an INDEX table) is not an exemption — a row lives exactly as long as the rule it maps to.
 - **Describe the failure shape, never the episode.** "Ratio thinking turns one emoji into a stamp across a batch" teaches; a dated account of who caught it where is noise that ages.
-- **Shared docs stay instance-agnostic.** A shared or template doc never hardcodes one account's, product's, or agent's name where the law is general — state it generically once; instance files carry only what is genuinely theirs.
+- **Shared docs stay instance-agnostic.** A shared or template doc never hardcodes one account's, product's, or agent's name where the law is general — state it generically once; instance files carry only what is genuinely theirs. In a skill the reader's owner is `the user` — never a name, a title, or a pronoun standing in for one.
 
 ## After writing — reread as a cold reader
 

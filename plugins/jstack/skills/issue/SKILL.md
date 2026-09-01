@@ -157,5 +157,5 @@ Say *exactly* what would unblock you. "Needs clarification" wastes the round tri
 - **DO NOT** merge your own PR, or close the issue.
 - **DO NOT** widen the PR beyond the issue. Extra findings go through `/jstack:report`.
 - **DO NOT** report a test result you did not see, or a board column you did not get.
-- **DO NOT** end the session. Rest at the prompt so Boss can talk to it.
+- **DO NOT** end the session. Rest at the prompt so the user can talk to it.
 - **DO NOT** answer only in this session. If it is not on the issue, it did not happen.

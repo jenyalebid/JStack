@@ -15,6 +15,13 @@ set -euo pipefail
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$PLUGIN_ROOT/bin/session-files"
 
+# The fixture repo below is only a fixture if no ambient git env points
+# elsewhere — a caller with GIT_DIR or GIT_INDEX_FILE set (git hooks export
+# both, and this machine's per-session index isolation sets the latter) would
+# have every `git -C "$REPO"` here write to that repo instead.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_CONFIG_PARAMETERS
+
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 

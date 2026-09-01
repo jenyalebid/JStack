@@ -3,6 +3,7 @@ paths:
   - "**/CLAUDE.md"
   - "**/rules/*.md"
   - "**/commands/*.md"
+  - "**/SKILL.md"
 ---
 
 # Editing CLAUDE.md and instruction docs
@@ -70,7 +71,9 @@ Reread the final file top to bottom before moving on: does any line carry proven
 
 ## Bloat ceiling
 
-Anthropic spec — each CLAUDE.md ≤ 200 lines; walk-up total (org root + agent root + sub-mode) ≤ 400. Going over isn't "needs trimming later" — it's a failed edit. Trim now or pick a different destination.
+Anthropic spec — each CLAUDE.md ≤ 200 lines; walk-up total (org root + agent root + sub-mode) ≤ 400. A skill's SKILL.md ≤ 100 lines: it is read whole on every invocation, so it carries the gate and the exact command, and anything a reader needs only sometimes goes in a sibling reference file the skill names. Going over isn't "needs trimming later" — it's a failed edit. Trim now or pick a different destination.
+
+What makes an instruction doc long is almost never the law; it is the same law stated three times at three strengths — the rule, then a table restating it, then a DO-NOT list restating it again. Say it once, at full force, in the place the reader hits first. A prohibition that only echoes a rule already stated above earns nothing and costs the reader's attention.
 
 ## Tone
 

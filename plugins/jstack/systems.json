@@ -349,7 +349,7 @@
           "id": "file-issue",
           "kind": "subsystem",
           "name": "Issue Filing",
-          "description": "Files a GitHub issue for an unfixed finding AND places it on the board its owner reads, resolving repo -> project -> intake column live from GitHub.",
+          "description": "Files a GitHub issue for an unfixed finding AND places it on the board its owner reads, resolving repo -> project -> intake column live from GitHub. Exactly one type label (bug / optimization / feature) is required and created on repos that lack it.",
           "code": [
             "bin/file-issue"
           ],
@@ -358,7 +358,7 @@
           "test": {
             "type": "script",
             "path": "tests/file-issue.sh",
-            "description": "Drives the real binary against a stub gh: a filed issue is added to its board and the intake column set (TODO/Backlog/Triage found by name, never by position); a repo linked to no project still files, one linked to several is skipped rather than guessed unless --project names it; an unknown label is dropped instead of taking the issue down; and every blind or refusing state - no gh, failed graphql, null repo, issues disabled, no body - exits nonzero so the caller can never report a number it did not get."
+            "description": "Drives the real binary against a stub gh: a filed issue is added to its board and the intake column set (TODO/Backlog/Triage found by name, never by position); a repo linked to no project still files, one linked to several is skipped rather than guessed unless --project names it; a project marked [not-intake] is excluded so a work board cannot steal filing, though --project still selects it; exactly one type label is required and a missing one is created on the repo, with an uncreatable one filing untyped and saying type=none in its receipt; an unknown non-type label is dropped instead of taking the issue down; and every blind or refusing state - no gh, failed graphql, null repo, issues disabled, no body - exits nonzero so the caller can never report a number it did not get."
           },
           "subsystems": [],
           "notes": "Board routing is read live from repository.projectsV2 rather than a local repo->board map, because a second copy of a fact GitHub already owns rots silently. Placement is best-effort AFTER creation: an issue that files but fails to board still exits 0 with board=none in its receipt, since losing the issue would be the worse outcome. Portable with no config: a machine whose repos are linked to no project gets plain issues."
@@ -396,10 +396,11 @@
           "docs": [],
           "test": {
             "type": "script",
-            "path": "tests/skills.sh",
-            "description": "Covered by the skills gate: the adapter the issue skill declares is present and executable."
+            "path": "tests/place-issue.sh",
+            "description": "Drives the real binary against a stub gh: the card is added AND its column set, and a column that could not be set is reported as unset with exit 5 rather than claimed; an exact board title beats a substring that also matches, an ambiguous or unknown title exits 4 without placing, and a closed board is not a placement target; a user-owned account resolves like an org one even though gh exits non-zero on that call; the dry run mutates nothing and exits 5 on a column that does not exist."
           },
-          "subsystems": []
+          "subsystems": [],
+          "notes": "Companion to file-issue, and a different act: file-issue answers where a NEW finding goes (an intake column, by repo linkage); this answers where work-in-progress is visible (a work board, by title). Adding is idempotent, so a resumed session re-running it does not duplicate its card. Board titles are read live for the same reason file-issue reads linkage live - a local board->id table is a second copy of a fact GitHub owns."
         }
       ]
     },

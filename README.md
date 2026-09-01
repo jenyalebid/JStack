@@ -13,6 +13,7 @@ Slash commands (all namespaced as `/jstack:*`):
 | `/splitoff` | Dub the session into a new terminal — a verbatim copy under a fresh id, diverging forward |
 | `/audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
 | `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
+| `/report` | Close out a task: settle every finding as its own commit or a filed GitHub issue, then report |
 | `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
 | `/recall` | Replay what was done on a day or period, scoped to an agent or the whole op |
 | `/showme` | Surface the result of the current topic in its real viewer instead of describing it |
@@ -27,7 +28,7 @@ Plus four **whole systems** that run themselves once installed:
 - **Agent inbox** — addressed seat-to-seat messaging with a tracked outcome: `bin/msg` sends `@agent` / `@agent-seat` a message that lands in a `messages` table beside the timeline, injects at the top of that seat's next session, and cannot be walked past — a Stop hook blocks the first stop that would leave it open, and closing it requires recording what was done. Optional rungs type into a live session or wake the receiver outright. Where the timeline answers *what did this seat do*, the inbox answers *what is it being asked to do, by whom, and what came of it*. Full contract: **[docs/systems/agent-inbox.md](plugins/jstack/docs/systems/agent-inbox.md)**.
 - **Scheduler** — the piece that *starts* a session rather than reviewing or remembering one: a daemon firing one-time and recurring agent runs on RRULE schedules, with the timeout counted from spawn, TTFT/stall watchdogs on hung turns, authoritative process-group kills, catch-up after downtime, per-job concurrency policy, and rate-limit deferral. One package, every machine — a host declares its timezone, spawn environment, and workspace resolution in `config/scheduler.json` and nothing host-specific lives in the code. Needs `python-dateutil`. Setup and the full contract: **[docs/systems/scheduler.md](plugins/jstack/docs/systems/scheduler.md)**.
 
-And the supporting machinery: 17 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, 9 bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `log_event`, `msg`, `session-review-spawn`, `session-files`, `dub-session`, `open-artifact`, `pict`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
+And the supporting machinery: 17 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, 10 bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `file-issue`, `log_event`, `msg`, `session-review-spawn`, `session-files`, `dub-session`, `open-artifact`, `pict`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
 
 ---
 
@@ -186,6 +187,16 @@ Files a follow-up reminder, routed by the `followup_backend` config:
 
 **Contract:** `file-followup <title> <body>`, exit 0 = filed or intentionally skipped.
 
+### `file-issue` — used by `/report`
+
+Files a GitHub issue for a finding the session did not fix, **and places it on the board its owner actually reads**. A bare `gh issue create` leaves `projectItems[]` empty — the issue exists, is numbered, and is invisible. Filing and placing are one act, or the tracker is a no-op with a receipt.
+
+Board routing is read **live from GitHub** (`repository.projectsV2` → the project's `Status` field → the intake column, matched by name: TODO / Todo / Backlog / Triage / Inbox / New). There is no repo→board map to configure, and none to go stale.
+
+**Contract:** `file-issue --repo <owner/name> --title <t> (--body <text> | --body-file <p>) [--label L]... [--project N] [--no-board] [--dry-run]`. Last stdout line is `ISSUE <url> board=<column|none>`.
+
+Degrades rather than blocking: no `gh` → exit 3; repo unreadable or issues disabled → exit 4; repo linked to no project (or to several, without `--project`) → issue filed, board skipped, exit 0. Every non-zero exit means **nothing was filed**, so a caller can never report an issue number it didn't get.
+
 ---
 
 ## How the skills work (so you can predict behavior)
@@ -298,7 +309,7 @@ JStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
 │   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
-│   ├── skills/                            # the 11 slash commands
+│   ├── skills/                            # the 12 slash commands
 │   │   ├── work/SKILL.md
 │   │   ├── handoff/SKILL.md
 │   │   ├── splitoff/SKILL.md
@@ -308,6 +319,7 @@ JStack/
 │   │   ├── showme/SKILL.md
 │   │   ├── print/SKILL.md
 │   │   ├── push/SKILL.md
+│   │   ├── report/SKILL.md
 │   │   ├── install-rules/SKILL.md
 │   │   └── post-session-review/SKILL.md
 │   ├── hooks/
@@ -329,15 +341,6 @@ JStack/
 │   │   ├── msg                            # agent inbox
 │   │   └── session-review-spawn           # review engine
 │   ├── scheduler/                         # RRULE daemon (one-time + recurring runs)
-│   ├── hooks/
-│   │   ├── hooks.json                     # PreToolUse + SessionEnd registration
-│   │   ├── inject-path-rules.py           # cross-tree rule injection
-│   │   └── session-end-review.sh          # spawns the review engine, detached
-│   ├── bin/                               # bundled adapters (auto-added to PATH)
-│   │   ├── open-terminal-here
-│   │   ├── file-followup
-│   │   ├── log_event                      # timeline writer
-│   │   └── session-review-spawn           # review engine
 │   ├── rules-stage/                       # rules installed via /install-rules
 │   ├── systems.json                       # registry: every bundled system + its test
 │   ├── tests/                             # runnable system tests (*.sh, exit 0 = pass)

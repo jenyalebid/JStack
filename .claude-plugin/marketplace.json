@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "jstack",
-      "description": "Agent workflow skills — /work, /handoff, /splitoff, /audit, /day-audit, /recall, /showme, /push, /print, /install-rules — plus the timeline, inbox, rule-injection and scheduler they run on.",
+      "description": "Agent workflow skills — /work, /handoff, /splitoff, /audit, /day-audit, /recall, /showme, /push, /report, /print, /install-rules — plus the timeline, inbox, rule-injection and scheduler they run on.",
       "source": "./plugins/jstack",
       "category": "productivity"
     }

@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# JStack adapter — file a GitHub issue for a finding the session did not fix,
+# and put it where a human will actually see it.
+#
+# Contract:
+#   file-issue --repo <owner/name> --title <t> (--body <text> | --body-file <p>)
+#              [--label L]... [--project N] [--no-board] [--dry-run]
+#
+# Why this exists as an adapter and not a `gh issue create` in a skill: a bare
+# `gh issue create` leaves projectItems[] EMPTY. The issue is real, numbered,
+# and invisible — it never appears on the board its owner actually reads, so it
+# rots exactly like the ledger this replaced. Filing and placing are one act or
+# the mechanism is a no-op with a receipt.
+#
+# Board routing is READ LIVE FROM GITHUB, never from a local map:
+#   repository.projectsV2 -> the project(s) this repo is linked to
+#   project.field("Status") -> the intake option (TODO / Todo / Backlog / Triage)
+# A local repo->board table would be a second copy of a fact GitHub already
+# owns, and second copies rot silently. Nothing here is configured per machine.
+#
+# Degrades, never blocks:
+#   no gh / not authed      -> exit 3, nothing filed, caller reports it
+#   issues disabled on repo -> exit 4, nothing filed, caller reports it
+#   no linked project       -> issue filed, board skipped (exit 0)
+#   >1 linked project       -> issue filed, board skipped unless --project (exit 0)
+#   no intake column        -> issue filed + added to board at its default (exit 0)
+#
+# Last stdout line is machine-parseable:
+#   ISSUE <url> board=<column|none>
+set -euo pipefail
+
+REPO="" TITLE="" BODY="" BODY_FILE="" PROJECT="" DRY=0 NO_BOARD=0
+LABELS=()
+
+die() { echo "file-issue: $*" >&2; exit 64; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo)      REPO="${2:-}"; shift 2 ;;
+    --title)     TITLE="${2:-}"; shift 2 ;;
+    --body)      BODY="${2:-}"; shift 2 ;;
+    --body-file) BODY_FILE="${2:-}"; shift 2 ;;
+    --label)     LABELS+=("${2:-}"); shift 2 ;;
+    --project)   PROJECT="${2:-}"; shift 2 ;;
+    --no-board)  NO_BOARD=1; shift ;;
+    --dry-run)   DRY=1; shift ;;
+    -h|--help)   sed -n '2,30p' "$0"; exit 0 ;;
+    *)           die "unknown argument '$1'" ;;
+  esac
+done
+
+[[ -n "$REPO"  ]] || die "--repo <owner/name> is required"
+[[ -n "$TITLE" ]] || die "--title is required"
+[[ "$REPO" == */* ]] || die "--repo must be owner/name, got '$REPO'"
+
+if [[ -n "$BODY_FILE" ]]; then
+  [[ -r "$BODY_FILE" ]] || die "--body-file '$BODY_FILE' is not readable"
+  BODY="$(cat "$BODY_FILE")"
+fi
+[[ -n "$BODY" ]] || die "a body is required (--body or --body-file) — an issue with no context is the thing this exists to prevent"
+
+OWNER="${REPO%%/*}"
+NAME="${REPO##*/}"
+
+command -v gh >/dev/null 2>&1 || { echo "file-issue: gh not on PATH — nothing filed" >&2; exit 3; }
+gh auth status >/dev/null 2>&1 || { echo "file-issue: gh not authenticated — nothing filed" >&2; exit 3; }
+
+# ── look before filing: issues enabled? which board? which intake column? ────
+META="$(gh api graphql -f query='
+query($owner:String!,$name:String!){
+  repository(owner:$owner,name:$name){
+    hasIssuesEnabled
+    labels(first:100){ nodes { name } }
+    projectsV2(first:10){ nodes { id number title
+      field(name:"Status"){ ... on ProjectV2SingleSelectField { id options { id name } } } } }
+  }
+}' -F owner="$OWNER" -F name="$NAME" 2>/dev/null)" || {
+  echo "file-issue: cannot read $REPO (missing, no access, or network) — nothing filed" >&2
+  exit 4
+}
+
+eval "$(printf '%s' "$META" | python3 -c '
+import json, shlex, sys
+d = json.load(sys.stdin).get("data", {}).get("repository") or {}
+if not d:
+    print("REPO_OK=0"); raise SystemExit
+want = sys.argv[1] or ""
+projects = (d.get("projectsV2") or {}).get("nodes") or []
+if want:
+    projects = [p for p in projects if str(p.get("number")) == want]
+pid = col_field = col_opt = col_name = ""
+if len(projects) == 1:
+    p = projects[0]
+    pid = p["id"]
+    f = p.get("field") or {}
+    if f.get("id"):
+        for cand in ("todo", "to do", "backlog", "triage", "inbox", "new"):
+            for o in f.get("options") or []:
+                if o["name"].strip().lower() == cand:
+                    col_field, col_opt, col_name = f["id"], o["id"], o["name"]
+                    break
+            if col_opt:
+                break
+def emit(k, v):
+    print(f"{k}={shlex.quote(str(v))}")
+emit("REPO_OK", 1)
+emit("ISSUES_ON", 1 if d.get("hasIssuesEnabled") else 0)
+emit("NPROJ", len(projects))
+emit("PROJECT_ID", pid)
+emit("COL_FIELD", col_field)
+emit("COL_OPT", col_opt)
+emit("COL_NAME", col_name)
+emit("KNOWN_LABELS", "\n".join(n["name"] for n in (d.get("labels") or {}).get("nodes") or []))
+' "$PROJECT")"
+
+[[ "${REPO_OK:-0}" == "1" ]] || { echo "file-issue: $REPO not found or not visible — nothing filed" >&2; exit 4; }
+[[ "${ISSUES_ON:-0}" == "1" ]] || { echo "file-issue: issues are disabled on $REPO — nothing filed" >&2; exit 4; }
+
+# Drop labels the repo doesn't have. An unknown label fails the whole create,
+# and losing the issue over a label is a bad trade — warn and file anyway.
+KEEP=()
+for l in ${LABELS+"${LABELS[@]}"}; do
+  if printf '%s\n' "${KNOWN_LABELS:-}" | grep -qxF "$l"; then
+    KEEP+=("$l")
+  else
+    echo "file-issue: label '$l' does not exist on $REPO — filing without it" >&2
+  fi
+done
+
+if [[ "$DRY" == "1" ]]; then
+  echo "DRY RUN — would file on $REPO"
+  echo "  title:  $TITLE"
+  echo "  labels: ${KEEP[*]:-<none>}"
+  if [[ "$NO_BOARD" == "1" ]]; then
+    board="none (--no-board)"
+  elif [[ "${NPROJ:-0}" == "1" ]]; then
+    board="${COL_NAME:-<project default>}"
+  elif [[ "${NPROJ:-0}" == "0" ]]; then
+    board="none (repo linked to no project)"
+  else
+    board="none (${NPROJ} projects linked — pass --project N)"
+  fi
+  echo "  board:  $board"
+  echo "ISSUE <dry-run> board=${board%% *}"
+  exit 0
+fi
+
+# ── file ────────────────────────────────────────────────────────────────────
+BF="$(mktemp)"; trap 'rm -f "$BF"' EXIT
+printf '%s\n' "$BODY" > "$BF"
+
+args=(--repo "$REPO" --title "$TITLE" --body-file "$BF")
+for l in ${KEEP+"${KEEP[@]}"}; do args+=(--label "$l"); done
+
+URL="$(gh issue create "${args[@]}")" || { echo "file-issue: gh issue create failed — nothing filed" >&2; exit 5; }
+URL="$(printf '%s' "$URL" | tr -d '[:space:]')"
+NUM="${URL##*/}"
+
+# ── place it on the board (best effort — the issue already exists) ───────────
+BOARD="none"
+if [[ "$NO_BOARD" != "1" && "${NPROJ:-0}" == "1" && -n "${PROJECT_ID:-}" ]]; then
+  NODE="$(gh issue view "$NUM" --repo "$REPO" --json id -q .id 2>/dev/null || true)"
+  if [[ -n "$NODE" ]]; then
+    ITEM="$(gh api graphql -f query='
+      mutation($p:ID!,$c:ID!){ addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item { id } } }' \
+      -F p="$PROJECT_ID" -F c="$NODE" -q .data.addProjectV2ItemById.item.id 2>/dev/null || true)"
+    if [[ -n "$ITEM" ]]; then
+      BOARD="${COL_NAME:-added}"
+      if [[ -n "${COL_FIELD:-}" && -n "${COL_OPT:-}" ]]; then
+        gh api graphql -f query='
+          mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){
+            updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,
+              value:{singleSelectOptionId:$o}}){ projectV2Item { id } } }' \
+          -F p="$PROJECT_ID" -F i="$ITEM" -F f="$COL_FIELD" -F o="$COL_OPT" >/dev/null 2>&1 \
+          || { echo "file-issue: filed + added to board, but could not set column" >&2; BOARD="added"; }
+      fi
+    else
+      echo "file-issue: issue filed, but adding it to the board failed" >&2
+    fi
+  fi
+fi
+
+echo "ISSUE $URL board=$BOARD"

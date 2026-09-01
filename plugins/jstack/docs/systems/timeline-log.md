@@ -28,7 +28,7 @@ log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
 - **`--context`** is on-demand depth: stored on the entry, never injected — surfaced only by `show` and `tail --json`. Keeps the boot window lean while the entry stays self-sufficient.
 - **`--origin direct|indirect`** marks who drove the session the entry came from: `direct` = a human at the wheel, `indirect` = cron/gateway/spawned. Resolution: flag > `JSTACK_TIMELINE_ORIGIN` env > direct. Spawn plumbing sets the env on unattended sessions (a bad env value falls back to direct — origin is metadata and must never block a write); pre-origin rows read back as `''`.
 - **`--pipeline-task <tag>`** consolidates: every existing entry carrying the tag (tagged column or legacy tag-in-text) is replaced by one current entry. The tag is auto-prepended to the headline; the earliest matched timestamp is kept unless `--at` is given. One live entry per task, always current.
-- **`--session <sid>`** links the entry to the transcript that produced it. The link is advisory — transcripts get cleaned over time; anything the future must know rides the entry itself (bullets or `--context`).
+- **`--session <sid>`** links the entry to the transcript that produced it, and is the column tags resolve through. Falls back to `$CLAUDE_CODE_SESSION_ID` when the flag is absent, so a hand-typed write is still reachable by tag; the explicit flag wins, since a caller writing on another session's behalf knows better than its own environment. The transcript link itself is advisory — transcripts get cleaned over time; anything the future must know rides the entry itself (bullets or `--context`).
 - Headlines collapse internal newlines/whitespace; details are normalized to `- ` bullets.
 
 ## Query / admin contract
@@ -39,6 +39,7 @@ log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]   # k
 log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> [<seat>|all] [--full] [--json]   # date recall: a day or range replayed, optionally one seat; --full rides context blobs
 log_event show <id>                                  # everything one entry holds, incl. context (id from grep / recall / tail --json)
 log_event verdict <agent[/submode]> shipped|drift|blocked|empty --note "..."
+log_event tag list|show <name>|new <name> --description "..."|set <name>...|unset <name>...
 ```
 
 Recall routing: a date question ("what happened Monday?") is `recall`; a keyword question ("when did we ship X?") is `grep`; either chains into `show <id>` for one entry's full depth. All are cheaper and more reliable than transcript archaeology — and they are the same mechanism as seat injection: one store, different read shapes (`tail` = last-N entries or last-N sessions per seat, `recall` = per date, `grep` = per keyword, `show` = per entry).
@@ -56,10 +57,16 @@ hooks/session-start-inject.py --explain <agent[/submode]>
 
 `ok: false` means the answer couldn't be computed — a consumer renders that as unknown, never as "nothing injects". Liveness is deliberately not part of the answer: it reports what a person sitting down in that seat would receive, which is what a marker in a UI means. A second implementation of this window is a second truth, and the copy that isn't the injector is the one that goes stale and lies.
 
+## Tags — the third axis
+
+`tail` answers *which seat*, `recall` answers *when*. Neither answers *what a stretch of work was about*: one seat spans several subjects in a week, and one subject spans several seats. Tags are that axis, and they are a **relation on the session, not the entry** — a session is one sitting with one subject, so tagging each entry separately would ask the same question repeatedly and let one sitting's entries disagree about what it was. Entries reach their tag through `entries.session_id` (`tags` + `session_tags`, migrated in place like the columns).
+
+Assignment happens at write time, by the writer that still knows what the session was — the session-end self-write and the review skill both read `tag list` and `tag set` the best match. Two gates keep the vocabulary small enough to be worth sharing: `tag new` requires a `--description`, and `tag set` refuses a name it doesn't know rather than minting it. Reads (`tail`, `grep`, `recall`) take `--tag <name>` and error on an undefined one — silence there would read as "that never happened", a different and more misleading answer than "no such tag". `tag show <name>` is the cross-seat surface: one subject, every seat that touched it.
+
 ## The store
 
 - Sqlite, WAL — concurrent session-ends write safely.
-- Schema upgrades happen in place on connect (a pre-`context`/pre-`origin` db gains the columns on first write).
+- Schema upgrades happen in place on connect (a pre-`context`/pre-`origin` db gains the columns on first write; a pre-tag db gains the `tags`/`session_tags` relation).
 - The db is the source of truth AND the only artifact. Nothing else writes it; nothing renders from it — display surfaces (dashboards, recall outlines) query and format on read.
 
 ## Configuration

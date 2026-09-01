@@ -88,6 +88,51 @@ behalf of the other kind (e.g. a human logging an event a cron performed).
 Dashboards and queries filter on it — a mislabeled origin miscounts the
 day's autonomous vs driven work.
 
+## Tags — the subject, across seats
+
+A seat answers "who did it" and a date answers "when". Neither answers
+"show me everything we did on X" — one seat spans several subjects in a week,
+and one subject spans several seats. The tag is that axis, and it is a
+relation on the **session**, not the entry: a session is one sitting with one
+subject, and entries reach their tag through `session_id`.
+
+Whoever writes the entry assigns the tag, in the same breath:
+
+```bash
+log_event tag list                                # the whole vocabulary, with counts
+log_event tag set jremote --session {session_id}  # --session defaults to $CLAUDE_CODE_SESSION_ID
+```
+
+**Pick from the list; minting is the rare path.** The value of a tag is that
+it means the same thing to every writer, which only holds while the list stays
+short. A near match beats a new tag almost every time. When nothing on the
+list plausibly covers the work:
+
+```bash
+log_event tag new <name> --description "one line: what work belongs under this"
+```
+
+Lowercase, hyphens, no spaces. A tag names a **subject** — never the seat, the
+date, or a restatement of the headline. If only this one session would ever
+carry it, it isn't a tag.
+
+Reads filter with `--tag`, and that read is unbounded by seat — which is the
+whole point:
+
+```bash
+log_event tag show jremote --since 2026-08-01   # every seat's work on it
+log_event tail alpha/chat --tag infra           # one seat, one subject
+log_event grep "webhook" --tag infra
+log_event recall 2026-08-01..2026-08-31 all --tag jremote
+```
+
+An undefined tag is an error on every read, not an empty list — silence there
+would read as "we never worked on it", which is a different answer.
+
+A tag can only reach entries that carry a `session_id`, so a write with no
+`--session` falls back to `$CLAUDE_CODE_SESSION_ID`. Pass `--session`
+explicitly only when writing on another session's behalf.
+
 ## Headline grade
 
 The headline reads like a news ticker. Short, declarative, present-tense.
@@ -153,7 +198,10 @@ log_event recall 2026-04-28 alpha              # one agent's day (alpha/chat = o
 log_event recall 2026-04-21..2026-04-27 --full # a week, context blobs included
 log_event grep "publish endpoint" --seat alpha/chat --since 2026-04-01
 log_event show 1234                 # everything one entry holds (id from grep/recall/tail --json)
+log_event tag show jremote          # one subject, every seat that touched it
 ```
+
+`--tag <name>` narrows `tail`, `grep` and `recall` the same way — see **Tags**.
 
 ## Verdicts — the independent check
 

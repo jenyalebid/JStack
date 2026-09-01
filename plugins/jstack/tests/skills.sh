@@ -75,10 +75,12 @@ SIZE_CEILING=4000
 
 check_size() {
   local skill_md="$1"
-  local bytes
-  bytes=$(wc -c < "$skill_md" | tr -d ' ')
-  if [[ "$bytes" -gt "$SIZE_CEILING" ]]; then
-    echo "SKILL.md is $bytes chars, ceiling is $SIZE_CEILING — move what a reader needs only sometimes into a sibling file"
+  local chars
+  # -m not -c: these files are full of em-dashes, and counting their bytes
+  # would measure something the ceiling is not stated in.
+  chars=$(wc -m < "$skill_md" | tr -d ' ')
+  if [[ "$chars" -gt "$SIZE_CEILING" ]]; then
+    echo "SKILL.md is $chars chars, ceiling is $SIZE_CEILING — move what a reader needs only sometimes into a sibling file"
     return 1
   fi
   return 0

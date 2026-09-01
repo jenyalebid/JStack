@@ -36,6 +36,12 @@ command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 not on PATH" >&2; ex
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/jstack-tlinjtest.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# Hermetic in the environment too. The fixture leans on session-less rows being
+# one session each (case d), and a write with no --session now inherits
+# $CLAUDE_CODE_SESSION_ID — so running this from inside a live session would
+# collapse every fixture row into one sitting and the window would stop capping.
+unset CLAUDE_CODE_SESSION_ID
+
 ROOT="$TMP/Agents"
 mkdir -p "$ROOT/Gamma/review" "$ROOT/Gamma/chat" "$ROOT/Gamma/pm" "$ROOT/Loner"
 printf '# Gamma\n' > "$ROOT/Gamma/CLAUDE.md"

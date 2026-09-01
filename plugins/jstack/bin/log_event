@@ -19,6 +19,13 @@ Query / admin (first positional is the subcommand):
     log_event verdict <agent[/submode]> <shipped|drift|blocked|empty> --note "..."
         Stamp the seat's LATEST entry with an independent verdict (meta review's
         "do not repeat" loop). Verdicts ride tail/injection output.
+    log_event tag list | show <name> | new <name> --description "..." |
+              set <name>... | unset <name>...
+        A small shared vocabulary of subjects, related to SESSIONS. One seat
+        spans several subjects and one subject spans several seats, so neither
+        the seat nor the date answers "everything we did on X" — the tag does.
+        Whoever writes the entry picks from `tag list`; minting is rare.
+        `--tag <name>` filters tail / grep / recall.
 
 Origin marks who drove the session the entry came from: `direct` (a human at
 the wheel) or `indirect` (cron/gateway/spawned work). Resolution: --origin
@@ -47,7 +54,7 @@ from pathlib import Path
 
 _VALID_VERDICTS = {"shipped", "drift", "blocked", "empty"}
 _VALID_ORIGINS = {"direct", "indirect"}
-_SUBCOMMANDS = {"tail", "verdict", "grep", "show", "recall"}
+_SUBCOMMANDS = {"tail", "verdict", "grep", "show", "recall", "tag"}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS entries (
@@ -68,6 +75,20 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 CREATE INDEX IF NOT EXISTS idx_entries_seat ON entries(agent, submode, date, time);
 CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date, time);
+
+CREATE TABLE IF NOT EXISTS tags (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_tags (
+    session_id  TEXT NOT NULL,
+    tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (session_id, tag_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_tags_tag ON session_tags(tag_id);
 """
 
 
@@ -303,7 +324,8 @@ def _entry_row(row: tuple) -> dict:
             "session_id": sid, "context": ctx, "origin": org}
 
 
-def tail_entries(seat: str, n: int, origin: str | None = None) -> list[dict]:
+def tail_entries(seat: str, n: int, origin: str | None = None,
+                 tag: str | None = None) -> list[dict]:
     """Last n entries for a seat, oldest→newest.
 
     Broader (submode-less) rows age out of the last-n window as seat-tagged
@@ -317,6 +339,9 @@ def tail_entries(seat: str, n: int, origin: str | None = None) -> list[dict]:
     where, params = _seat_filter(seat)
     if origin == "direct":
         where += " AND origin != 'indirect'"
+    if tag:
+        frag, tp = _tag_clause(tag)
+        where += f" AND {frag}"; params = params + tp
     con = connect()
     rows = con.execute(
         f"SELECT {_ENTRY_COLS} FROM entries WHERE {where}"
@@ -327,7 +352,8 @@ def tail_entries(seat: str, n: int, origin: str | None = None) -> list[dict]:
 
 
 def tail_session_window(seat: str, sessions: int,
-                        origin: str | None = None) -> list[dict]:
+                        origin: str | None = None,
+                        tag: str | None = None) -> list[dict]:
     """Every entry the seat's last `sessions` sessions wrote, oldest→newest.
 
     The window unit is the SESSION, not the entry — what a person sitting
@@ -344,6 +370,9 @@ def tail_session_window(seat: str, sessions: int,
     where, params = _seat_filter(seat)
     if origin == "direct":
         where += " AND origin != 'indirect'"
+    if tag:
+        frag, tp = _tag_clause(tag)
+        where += f" AND {frag}"; params = params + tp
     con = connect()
     keys = [r[0] for r in con.execute(
         f"SELECT {_SESSION_KEY} AS skey FROM entries WHERE {where}"
@@ -379,7 +408,7 @@ def format_tail(entries: list[dict]) -> str:
 
 
 def grep_entries(pattern: str, seat: str | None = None,
-                 since: str | None = None) -> list[dict]:
+                 since: str | None = None, tag: str | None = None) -> list[dict]:
     """Substring search (case-insensitive) over headline + details + context,
     across all days and seats — the recall surface for 'when did we do X?'."""
     esc = (pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"))
@@ -387,6 +416,9 @@ def grep_entries(pattern: str, seat: str | None = None,
     where = ["(headline LIKE ? ESCAPE '\\' OR details LIKE ? ESCAPE '\\'"
              " OR context LIKE ? ESCAPE '\\')"]
     params: list = [like, like, like]
+    if tag:
+        frag, tp = _tag_clause(tag)
+        where.append(frag); params.extend(tp)
     if seat:
         agent, submode = parse_source(seat)
         where.append("agent = ?"); params.append(agent)
@@ -404,13 +436,19 @@ def grep_entries(pattern: str, seat: str | None = None,
              "headline": h, "origin": o} for i, d, t, a, s, h, o in rows]
 
 
-def recall_entries(day_from: str, day_to: str,
-                   seat: str | None = None) -> list[dict]:
+def recall_entries(day_from: str, day_to: str, seat: str | None = None,
+                   tag: str | None = None) -> list[dict]:
     """A day (or range) replayed — the recall surface for date questions
     ('what happened Monday?'), optionally narrowed to one seat. Same store,
-    same seat semantics as tail (bare agent = all its seats)."""
+    same seat semantics as tail (bare agent = all its seats).
+
+    With `tag` and no seat this is the cross-agent question — "everything we
+    did on X last month", however many agents and seats it took."""
     where = ["date >= ?", "date <= ?"]
     params: list = [day_from, day_to]
+    if tag:
+        frag, tp = _tag_clause(tag)
+        where.append(frag); params.extend(tp)
     if seat:
         agent, submode = parse_source(seat)
         where.append("agent = ?"); params.append(agent)
@@ -469,6 +507,152 @@ def show_entry(entry_id: int) -> dict | None:
             "context": ctx, "origin": org}
 
 
+# ---------------------------------------------------------------------- tags
+
+# A tag is a coarse subject — what a stretch of work was ABOUT, across seats.
+# One seat spans several subjects (a chat seat works the app, the infra, and
+# the plugin in one week) and one subject spans several seats (two agents on
+# the same app), so neither the seat nor the date answers "show me everything
+# we did on X". The tag does.
+#
+# The relation is session→tag, not entry→tag. A session is one sitting with one
+# subject; tagging each entry separately would ask the same question twice and
+# let one sitting's entries disagree about what it was. Entries resolve their
+# tags through `entries.session_id`.
+_TAG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def normalize_tag(name: str) -> str:
+    return name.strip().lower().lstrip("#")
+
+
+def list_tags() -> list[dict]:
+    """Every tag with its description and how many sessions carry it.
+
+    This is the vocabulary a writer reads before picking one. Ordered by use
+    so the tags that already mean something are the ones seen first."""
+    con = connect()
+    rows = con.execute(
+        "SELECT t.name, t.description, COUNT(st.session_id), t.created_at"
+        " FROM tags t LEFT JOIN session_tags st ON st.tag_id = t.id"
+        " GROUP BY t.id ORDER BY COUNT(st.session_id) DESC, t.name",
+    ).fetchall()
+    con.close()
+    return [{"name": n, "description": d, "sessions": c, "created_at": ca}
+            for n, d, c, ca in rows]
+
+
+def create_tag(name: str, description: str) -> str | None:
+    """Mint a tag. Returns an error string, or None on success.
+
+    The description is required and that is the whole point of the gate: a
+    tag nobody can read is a tag nobody else will match against, so the
+    vocabulary splits into synonyms and the relation stops answering the
+    question it exists for. Minting should be rare; it costs a sentence."""
+    name = normalize_tag(name)
+    if not _TAG_RE.fullmatch(name):
+        return (f"'{name}' is not a tag name — lowercase letters, digits and "
+                "hyphens, starting with a letter or digit")
+    description = " ".join(description.split())
+    if not description:
+        return (f"'{name}' needs --description: one line saying what work "
+                "belongs under it, so the next writer can match against it")
+    con = connect()
+    try:
+        with con:
+            con.execute(
+                "INSERT INTO tags (name, description, created_at) VALUES (?,?,?)",
+                (name, description, datetime.now().isoformat(timespec="seconds")))
+    except sqlite3.IntegrityError:
+        con.close()
+        return f"tag '{name}' already exists"
+    con.close()
+    return None
+
+
+def tag_session(session_id: str, names: list[str]) -> tuple[list[str], list[str]]:
+    """Attach existing tags to a session. Returns (attached, unknown).
+
+    Unknown names are NOT auto-created. Picking from the list is the common
+    path and minting is the rare one; a `set` that silently mints inverts
+    that within a week."""
+    wanted = [normalize_tag(n) for n in names if normalize_tag(n)]
+    con = connect()
+    known = {n: i for n, i in con.execute("SELECT name, id FROM tags")}
+    attached, unknown = [], []
+    now = datetime.now().isoformat(timespec="seconds")
+    with con:
+        for n in wanted:
+            if n not in known:
+                unknown.append(n)
+                continue
+            con.execute("INSERT OR IGNORE INTO session_tags (session_id, tag_id,"
+                        " created_at) VALUES (?,?,?)", (session_id, known[n], now))
+            attached.append(n)
+    con.close()
+    return attached, unknown
+
+
+def untag_session(session_id: str, names: list[str]) -> list[str]:
+    """Detach tags from a session. A mistag with no way back is a debt."""
+    removed = []
+    con = connect()
+    with con:
+        for n in [normalize_tag(x) for x in names if normalize_tag(x)]:
+            cur = con.execute(
+                "DELETE FROM session_tags WHERE session_id = ? AND tag_id ="
+                " (SELECT id FROM tags WHERE name = ?)", (session_id, n))
+            if cur.rowcount:
+                removed.append(n)
+    con.close()
+    return removed
+
+
+def session_tags(session_id: str) -> list[str]:
+    con = connect()
+    rows = con.execute(
+        "SELECT t.name FROM session_tags st JOIN tags t ON t.id = st.tag_id"
+        " WHERE st.session_id = ? ORDER BY t.name", (session_id,)).fetchall()
+    con.close()
+    return [r[0] for r in rows]
+
+
+def _tag_clause(tag: str) -> tuple[str, tuple]:
+    """(where-fragment, params) keeping only entries whose session carries `tag`.
+
+    Entries with no session_id can never match — there is nothing to resolve
+    through. That is why writes fall back to the session env var."""
+    return ("session_id IN (SELECT st.session_id FROM session_tags st"
+            " JOIN tags t ON t.id = st.tag_id WHERE t.name = ?)",
+            (normalize_tag(tag),))
+
+
+def tag_exists(tag: str) -> bool:
+    con = connect()
+    row = con.execute("SELECT 1 FROM tags WHERE name = ?",
+                      (normalize_tag(tag),)).fetchone()
+    con.close()
+    return row is not None
+
+
+def tag_entries(tag: str, since: str | None = None) -> list[dict]:
+    """Every entry under a tag, across seats and agents — the cross-agent
+    surface ('all the jremote work last month'), unbounded by seat or day."""
+    where, params = _tag_clause(tag)
+    clauses, ps = [where], list(params)
+    if since:
+        clauses.append("date >= ?"); ps.append(since)
+    con = connect()
+    rows = con.execute(
+        "SELECT id, date, time, agent, submode, headline, session_id, origin"
+        f" FROM entries WHERE {' AND '.join(clauses)} ORDER BY date, time, id",
+        ps).fetchall()
+    con.close()
+    return [{"id": i, "date": d, "time": t, "source": format_source(a, s),
+             "headline": h, "session_id": sid, "origin": o}
+            for i, d, t, a, s, h, sid, o in rows]
+
+
 # ------------------------------------------------------------------------ CLI
 
 def _write_usage() -> str:
@@ -490,7 +674,7 @@ def _write_usage() -> str:
 
 
 def _cmd_tail(rest: list[str]) -> int:
-    seat, n, sessions, as_json, origin = None, 10, None, False, None
+    seat, n, sessions, as_json, origin, tag = None, 10, None, False, None, None
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -498,6 +682,8 @@ def _cmd_tail(rest: list[str]) -> int:
             n = int(rest[i + 1]); i += 2
         elif a == "--sessions":
             sessions = int(rest[i + 1]); i += 2
+        elif a == "--tag":
+            tag = rest[i + 1]; i += 2
         elif a == "--json":
             as_json = True; i += 1
         elif a == "--origin":
@@ -519,10 +705,16 @@ def _cmd_tail(rest: list[str]) -> int:
     if not seat:
         print("log_event tail: seat required (agent or agent/submode)", file=sys.stderr)
         return 2
+    if tag and not tag_exists(tag):
+        # Silence here reads as "that seat never worked on it", which is a
+        # different and much more misleading answer than "no such tag".
+        print(f"log_event tail: no tag '{normalize_tag(tag)}' — see "
+              "`log_event tag list`", file=sys.stderr)
+        return 2
     if sessions is not None:
-        entries = tail_session_window(seat, sessions, origin=origin)
+        entries = tail_session_window(seat, sessions, origin=origin, tag=tag)
     else:
-        entries = tail_entries(seat, n, origin=origin)
+        entries = tail_entries(seat, n, origin=origin, tag=tag)
     if as_json:
         print(json.dumps(entries, ensure_ascii=False, indent=2))
     elif entries:
@@ -531,7 +723,7 @@ def _cmd_tail(rest: list[str]) -> int:
 
 
 def _cmd_grep(rest: list[str]) -> int:
-    pattern, seat, since, as_json = None, None, None, False
+    pattern, seat, since, as_json, tag = None, None, None, False, None
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -539,6 +731,8 @@ def _cmd_grep(rest: list[str]) -> int:
             seat = rest[i + 1]; i += 2
         elif a == "--since":
             since = rest[i + 1]; i += 2
+        elif a == "--tag":
+            tag = rest[i + 1]; i += 2
         elif a == "--json":
             as_json = True; i += 1
         elif a.startswith("-"):
@@ -551,9 +745,14 @@ def _cmd_grep(rest: list[str]) -> int:
         else:
             pattern = a; i += 1
     if not pattern:
-        print('log_event grep: pattern required', file=sys.stderr)
+        print('log_event grep: pattern required (for a tag alone, '
+              '`log_event tag show <name>`)', file=sys.stderr)
         return 2
-    hits = grep_entries(pattern, seat=seat, since=since)
+    if tag and not tag_exists(tag):
+        print(f"log_event grep: no tag '{normalize_tag(tag)}' — see "
+              "`log_event tag list`", file=sys.stderr)
+        return 2
+    hits = grep_entries(pattern, seat=seat, since=since, tag=tag)
     if as_json:
         print(json.dumps(hits, ensure_ascii=False, indent=2))
     else:
@@ -563,12 +762,14 @@ def _cmd_grep(rest: list[str]) -> int:
 
 
 def _cmd_recall(rest: list[str]) -> int:
-    dates, seat, full, as_json = None, None, False, False
+    dates, seat, full, as_json, tag = None, None, False, False, None
     pos: list[str] = []
     i = 0
     while i < len(rest):
         a = rest[i]
-        if a == "--full":
+        if a == "--tag":
+            tag = rest[i + 1]; i += 2
+        elif a == "--full":
             full = True; i += 1
         elif a == "--json":
             as_json = True; i += 1
@@ -596,7 +797,11 @@ def _cmd_recall(rest: list[str]) -> int:
         print(f"log_event recall: bad date '{dates}' (expected YYYY-MM-DD or "
               "YYYY-MM-DD..YYYY-MM-DD)", file=sys.stderr)
         return 2
-    entries = recall_entries(day_from, day_to, seat=seat)
+    if tag and not tag_exists(tag):
+        print(f"log_event recall: no tag '{normalize_tag(tag)}' — see "
+              "`log_event tag list`", file=sys.stderr)
+        return 2
+    entries = recall_entries(day_from, day_to, seat=seat, tag=tag)
     if as_json:
         print(json.dumps(entries, ensure_ascii=False, indent=2))
     elif entries:
@@ -623,6 +828,9 @@ def _cmd_show(rest: list[str]) -> int:
         print(f"pipeline-task: {e['pipeline_task']}")
     if e["session_id"]:
         print(f"session: {e['session_id']}")
+        tags = session_tags(e["session_id"])
+        if tags:
+            print(f"tags: {', '.join(tags)}")
     if e["origin"]:
         print(f"origin: {e['origin']}")
     if e["verdict"]:
@@ -631,6 +839,110 @@ def _cmd_show(rest: list[str]) -> int:
     if e["context"]:
         print(f"context:\n{e['context']}")
     return 0
+
+
+def _env_session() -> str:
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+
+
+def _tag_usage() -> str:
+    return ('usage: log_event tag list [--json]\n'
+            '   or: log_event tag show <name> [--since YYYY-MM-DD] [--json]\n'
+            '   or: log_event tag new <name> --description "what belongs here"\n'
+            '   or: log_event tag set <name> [<name>...] [--session <id>]\n'
+            '   or: log_event tag unset <name> [<name>...] [--session <id>]\n'
+            '       (--session defaults to $CLAUDE_CODE_SESSION_ID)')
+
+
+def _cmd_tag(rest: list[str]) -> int:
+    if not rest:
+        print(_tag_usage(), file=sys.stderr)
+        return 2
+    verb, rest = rest[0], rest[1:]
+    as_json, since, description, session = False, None, "", None
+    pos: list[str] = []
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--json":
+            as_json = True; i += 1
+        elif a == "--since":
+            since = rest[i + 1]; i += 2
+        elif a in ("--description", "--desc"):
+            description = rest[i + 1]; i += 2
+        elif a == "--session":
+            session = rest[i + 1]; i += 2
+        elif a.startswith("-"):
+            print(f"log_event tag: unknown flag {a}\n{_tag_usage()}", file=sys.stderr)
+            return 2
+        else:
+            pos.append(a); i += 1
+
+    if verb == "list":
+        tags = list_tags()
+        if as_json:
+            print(json.dumps(tags, ensure_ascii=False, indent=2))
+        elif not tags:
+            print("no tags yet — log_event tag new <name> --description \"...\"")
+        else:
+            w = max(len(t["name"]) for t in tags)
+            for t in tags:
+                print(f"{t['name']:<{w}}  {t['sessions']:>4} sessions  {t['description']}")
+        return 0
+
+    if verb == "new":
+        if len(pos) != 1:
+            print(f"log_event tag new: one name\n{_tag_usage()}", file=sys.stderr)
+            return 2
+        err = create_tag(pos[0], description)
+        if err:
+            print(f"log_event tag new: {err}", file=sys.stderr)
+            return 2
+        print(f"tag '{normalize_tag(pos[0])}' created — {' '.join(description.split())}")
+        return 0
+
+    if verb in ("set", "unset"):
+        sid = (session or _env_session()).strip()
+        if not sid:
+            print("log_event tag: no session — pass --session <id> "
+                  "($CLAUDE_CODE_SESSION_ID is unset, and a tag attached to "
+                  "nothing is a tag nobody can query)", file=sys.stderr)
+            return 2
+        if not pos:
+            print(f"log_event tag {verb}: at least one tag name\n{_tag_usage()}",
+                  file=sys.stderr)
+            return 2
+        if verb == "unset":
+            removed = untag_session(sid, pos)
+            print(f"untagged {sid[:8]}: {', '.join(removed) or '<nothing matched>'}")
+            return 0 if removed else 1
+        attached, unknown = tag_session(sid, pos)
+        if attached:
+            print(f"tagged {sid[:8]}: {', '.join(attached)}")
+        for u in unknown:
+            print(f"log_event tag set: no tag '{u}' — pick one from "
+                  "`log_event tag list`, or mint it with `log_event tag new "
+                  f"{u} --description \"...\"` if nothing fits", file=sys.stderr)
+        return 0 if attached and not unknown else 2
+
+    if verb == "show":
+        if len(pos) != 1:
+            print(f"log_event tag show: one name\n{_tag_usage()}", file=sys.stderr)
+            return 2
+        name = normalize_tag(pos[0])
+        if not tag_exists(name):
+            print(f"log_event tag show: no tag '{name}'", file=sys.stderr)
+            return 1
+        hits = tag_entries(name, since=since)
+        if as_json:
+            print(json.dumps(hits, ensure_ascii=False, indent=2))
+        else:
+            for h in hits:
+                print(f"#{h['id']} {h['date']} {h['time']} [{h['source']}] {h['headline']}")
+        return 0 if hits else 1
+
+    print(f"log_event tag: no '{verb}' verb\n{_tag_usage()}", file=sys.stderr)
+    return 2
 
 
 def _cmd_verdict(rest: list[str]) -> int:
@@ -671,6 +983,8 @@ def main(argv: list[str]) -> int:
             return _cmd_show(rest)
         if cmd == "verdict":
             return _cmd_verdict(rest)
+        if cmd == "tag":
+            return _cmd_tag(rest)
 
     if len(argv) < 2:
         print(_write_usage(), file=sys.stderr)
@@ -722,6 +1036,15 @@ def main(argv: list[str]) -> int:
         print(f"log_event: bad --origin '{origin}' (expected direct|indirect)",
               file=sys.stderr)
         return 2
+
+    # A write with no session_id can never be reached by a tag — the relation
+    # resolves entries through it — and 16% of a recent month's entries had
+    # none, because an agent typing the write by hand does not think to pass
+    # a uuid. The env var is the same session either way; the explicit flag
+    # still wins, since a caller writing on behalf of another session knows
+    # better than its own environment does.
+    if not session_id:
+        session_id = _env_session() or None
 
     label = day if day else "today"
     if pipeline_task:

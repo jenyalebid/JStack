@@ -7,6 +7,7 @@
 #   - chronological order by --at; --date targets the named day
 #   - --pipeline-task consolidation: one live row per task, earliest ts kept
 #   - origin: direct|indirect — flag > JSTACK_TIMELINE_ORIGIN env > direct
+#   - tags: a session→tag relation, minted deliberately, filtering every read
 #   - bad --at / bad --origin / missing args → exit 2
 #
 # Exit 0 = all pass, exit 1 = any fail.
@@ -19,6 +20,13 @@ LOG_EVENT="$PLUGIN_ROOT/bin/log_event"
 TMP=$(mktemp -d /tmp/jstack-log-event-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 export JSTACK_TIMELINE_DIR="$TMP"
+
+# Hermetic in the environment too, not just on disk. A write with no --session
+# now falls back to $CLAUDE_CODE_SESSION_ID, so running this suite from inside a
+# live session would silently stamp every "sessionless" row with the ambient id
+# and quietly retire the cases that depend on there being none. The fallback
+# gets its own test below, with the var set on purpose.
+unset CLAUDE_CODE_SESSION_ID
 
 fails=0
 fail() { echo "FAIL: $1" >&2; fails=$((fails+1)); }
@@ -346,6 +354,92 @@ t=$("$LOG_EVENT" tail iris/chat -n 2)
 t=$("$LOG_EVENT" tail iris/chat --sessions 99)
 [[ "$t" == *"Iris session one"* ]] \
   && pass "tail --sessions beyond history returns all" || fail "tail --sessions overflow"
+
+# ---- tags: a session→tag relation, and the gates that keep it small ---------
+# The value of a tag is that a small shared vocabulary means the same thing to
+# every writer. Everything below guards that: minting costs a description, an
+# unrecognized name is refused rather than created, and a query against a name
+# nobody defined errors instead of returning an empty list that reads as "we
+# never worked on it".
+"$LOG_EVENT" tag new jremote --description "the iOS remote app and its host board" >/dev/null 2>&1 \
+  && pass "tag new creates" || fail "tag new creates"
+"$LOG_EVENT" tag new infra --description "daemons, dashboard, scheduler" >/dev/null 2>&1
+"$LOG_EVENT" tag new sloppy >/dev/null 2>&1
+[[ $? -eq 2 && $(SQL "SELECT COUNT(*) FROM tags WHERE name='sloppy'") == "[(0,)]" ]] \
+  && pass "tag new without --description refused, nothing created" || fail "tag new description gate"
+"$LOG_EVENT" tag new jremote --description "duplicate" >/dev/null 2>&1
+[[ $? -eq 2 && $(SQL "SELECT COUNT(*) FROM tags WHERE name='jremote'") == "[(1,)]" ]] \
+  && pass "duplicate tag refused" || fail "duplicate tag refused"
+"$LOG_EVENT" tag new "Not A Tag" --description "x" >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "malformed tag name refused" || fail "malformed tag name refused"
+
+# The relation is session→tag, so entries reach their tags through session_id.
+# One session spanning two seats is the case the whole feature exists for.
+"$LOG_EVENT" kim/chat --at 07:00 --date "$DAY" --session tag-s1 "Kim on the remote" >/dev/null
+"$LOG_EVENT" lee/chat --at 07:05 --date "$DAY" --session tag-s1 "Lee on the remote" >/dev/null
+"$LOG_EVENT" kim/chat --at 07:10 --date "$DAY" --session tag-s2 "Kim on the daemons" >/dev/null
+"$LOG_EVENT" tag set jremote --session tag-s1 >/dev/null
+"$LOG_EVENT" tag set infra --session tag-s2 >/dev/null
+
+"$LOG_EVENT" tag set nosuchthing --session tag-s1 >/dev/null 2>&1
+[[ $? -eq 2 && $(SQL "SELECT COUNT(*) FROM tags WHERE name='nosuchthing'") == "[(0,)]" ]] \
+  && pass "tag set refuses an unknown name instead of minting it" || fail "tag set auto-mint guard"
+
+out=$("$LOG_EVENT" tag show jremote)
+[[ "$out" == *"Kim on the remote"* && "$out" == *"Lee on the remote"* && "$out" != *"daemons"* ]] \
+  && pass "tag show spans seats, excludes other tags" || fail "tag show cross-seat ($out)"
+
+out=$("$LOG_EVENT" tail kim/chat -n 10 --tag jremote)
+[[ "$out" == *"Kim on the remote"* && "$out" != *"Kim on the daemons"* ]] \
+  && pass "tail --tag filters through session_id" || fail "tail --tag ($out)"
+out=$("$LOG_EVENT" grep "Kim on" --tag infra)
+[[ "$out" == *"daemons"* && "$out" != *"remote"* ]] \
+  && pass "grep --tag filters" || fail "grep --tag ($out)"
+out=$("$LOG_EVENT" recall "$DAY" all --tag jremote)
+[[ "$out" == *"Lee on the remote"* && "$out" != *"daemons"* ]] \
+  && pass "recall --tag filters" || fail "recall --tag ($out)"
+
+# Silence for an undefined tag reads as "that never happened" — a different and
+# much more misleading answer than "no such tag".
+for verb in "tail kim/chat --tag" "grep Kim --tag" "recall $DAY all --tag"; do
+  # shellcheck disable=SC2086
+  "$LOG_EVENT" $verb ghosttag >/dev/null 2>&1
+  [[ $? -eq 2 ]] || fail "unknown tag on '$verb' should exit 2"
+done
+"$LOG_EVENT" tail kim/chat --tag ghosttag 2>&1 | grep -q "no tag 'ghosttag'" \
+  && pass "unknown tag errors on every read, and names itself" || fail "unknown tag message"
+
+"$LOG_EVENT" tag set "#JRemote" --session tag-s3 >/dev/null 2>&1
+[[ $(SQL "SELECT COUNT(*) FROM session_tags WHERE session_id='tag-s3'") == "[(1,)]" ]] \
+  && pass "tag names normalize (#JRemote → jremote)" || fail "tag normalize"
+"$LOG_EVENT" tag unset jremote --session tag-s3 >/dev/null 2>&1
+[[ $(SQL "SELECT COUNT(*) FROM session_tags WHERE session_id='tag-s3'") == "[(0,)]" ]] \
+  && pass "tag unset detaches" || fail "tag unset"
+
+# A tag attached to no session can never be queried, so refuse rather than
+# silently attach to the empty string.
+"$LOG_EVENT" tag set jremote >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "tag set with no session anywhere refused" || fail "tag set no-session gate"
+
+# The write-side fallback. 16% of a recent month's rows carried no session_id —
+# an agent typing the write by hand does not think to pass a uuid, and every one
+# of those rows is unreachable by any tag. The explicit flag still wins: a caller
+# writing on another session's behalf knows better than its own environment.
+CLAUDE_CODE_SESSION_ID=env-sess "$LOG_EVENT" mo/chat --at 06:00 --date "$DAY" "From the env" >/dev/null
+[[ $(SQL "SELECT session_id FROM entries WHERE headline='From the env'") == "[('env-sess',)]" ]] \
+  && pass "write with no --session inherits CLAUDE_CODE_SESSION_ID" || fail "env session fallback"
+CLAUDE_CODE_SESSION_ID=env-sess "$LOG_EVENT" mo/chat --at 06:05 --date "$DAY" --session flag-sess "Flag wins" >/dev/null
+[[ $(SQL "SELECT session_id FROM entries WHERE headline='Flag wins'") == "[('flag-sess',)]" ]] \
+  && pass "explicit --session beats the env var" || fail "explicit session precedence"
+
+out=$("$LOG_EVENT" show "$(SQL "SELECT id FROM entries WHERE headline='Kim on the remote'" | tr -dc '0-9')")
+[[ "$out" == *"tags: jremote"* ]] && pass "show prints the session's tags" || fail "show tags line ($out)"
+
+# The relation must arrive on dbs that predate it — the same in-place upgrade
+# the context/origin columns get, or every installed host stays tagless.
+JSTACK_TIMELINE_DIR="$OLD" "$LOG_EVENT" tag new legacyok --description "arrived by migration" >/dev/null 2>&1
+[[ $(python3 -c "import sqlite3; print(sqlite3.connect('$OLD/timeline.db').execute(\"SELECT name FROM tags\").fetchall())") == "[('legacyok',)]" ]] \
+  && pass "tag tables migrate onto a pre-tag db" || fail "tag schema migration"
 
 echo
 if [[ $fails -gt 0 ]]; then

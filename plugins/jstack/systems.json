@@ -162,6 +162,28 @@
       "notes": "Args: [yesterday|monday|jan 24|YYYY-MM-DD[..YYYY-MM-DD]] [agent[/submode]|all] [detailed]. Date-or-period questions only — a keyword question (\"when did we ship X?\") is a log_event grep, not this. /jstack:recall."
     },
     {
+      "id": "tag",
+      "kind": "skill",
+      "name": "Tag",
+      "status": "live",
+      "description": "Files the session under a timeline subject by hand: reads the vocabulary through bin/log_event (with the marker saying what this session already carries), offers the fitting names as a pick, and mints only through the 'Other' branch. The same assignment the session-end self-write makes automatically, available mid-session and correctable.",
+      "code": [
+        "skills/tag/SKILL.md",
+        "bin/log_event"
+      ],
+      "config": [],
+      "docs": [
+        "docs/systems/timeline-log.md"
+      ],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/log_event adapter is executable."
+      },
+      "subsystems": [],
+      "notes": "Args: [tag] to set, -[tag] to detach, --session <id> to retarget; empty offers the vocabulary as a pick. The gates live in the CLI, not here — `tag new` requires a description and `tag set` refuses an unknown name, so the skill can never mint by accident. /jstack:tag."
+    },
+    {
       "id": "splitoff",
       "kind": "skill",
       "name": "Split Off",

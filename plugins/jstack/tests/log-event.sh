@@ -385,6 +385,17 @@ t=$("$LOG_EVENT" tail iris/chat --sessions 99)
 [[ $? -eq 2 && $(SQL "SELECT COUNT(*) FROM tags WHERE name='nosuchthing'") == "[(0,)]" ]] \
   && pass "tag set refuses an unknown name instead of minting it" || fail "tag set auto-mint guard"
 
+# A picker reads the vocabulary to offer it, and has to know which names are
+# already on the session in hand — offering what is set is how a pick becomes a
+# no-op the user has to notice for themselves.
+out=$("$LOG_EVENT" tag list --session tag-s1)
+[[ "$out" == *"● jremote"* && "$out" != *"● infra"* ]] \
+  && pass "tag list marks what the session carries" || fail "tag list --session marker ($out)"
+[[ $("$LOG_EVENT" tag list --session tag-s1 --json | grep -c '"carried": true') == 1 ]] \
+  && pass "tag list --json carries the membership" || fail "tag list --json carried"
+[[ "$(env -u CLAUDE_CODE_SESSION_ID "$LOG_EVENT" tag list)" != *"●"* ]] \
+  && pass "no session, no marker column" || fail "tag list marks with no session"
+
 out=$("$LOG_EVENT" tag show jremote)
 [[ "$out" == *"Kim on the remote"* && "$out" == *"Lee on the remote"* && "$out" != *"daemons"* ]] \
   && pass "tag show spans seats, excludes other tags" || fail "tag show cross-seat ($out)"

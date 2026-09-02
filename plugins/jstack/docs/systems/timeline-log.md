@@ -40,7 +40,8 @@ log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]   # k
 log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> [<seat>|all] [--full] [--json]   # date recall: a day or range replayed, optionally one seat; --full rides context blobs
 log_event show <id>                                  # everything one entry holds, incl. context (id from grep / recall / tail --json)
 log_event verdict <agent[/submode]> shipped|drift|blocked|empty --note "..."
-log_event tag list|show <name>|new <name> --description "..."|set <name>...|unset <name>...
+log_event tag list [--session <id>]                   # the vocabulary; inside a session, `●` marks the tags that session already carries
+log_event tag show <name>|new <name> --description "..."|set <name>...|unset <name>...
 ```
 
 Recall routing: a date question ("what happened Monday?") is `recall`; a keyword question ("when did we ship X?") is `grep`; either chains into `show <id>` for one entry's full depth. All are cheaper and more reliable than transcript archaeology — and they are the same mechanism as seat injection: one store, different read shapes (`tail` = last-N entries or last-N sessions per seat, `recall` = per date, `grep` = per keyword, `show` = per entry).
@@ -62,7 +63,7 @@ hooks/session-start-inject.py --explain <agent[/submode]>
 
 `tail` answers *which seat*, `recall` answers *when*. Neither answers *what a stretch of work was about*: one seat spans several subjects in a week, and one subject spans several seats. Tags are that axis, and they are a **relation on the session, not the entry** — a session is one sitting with one subject, so tagging each entry separately would ask the same question repeatedly and let one sitting's entries disagree about what it was. Entries reach their tag through `entries.session_id` (`tags` + `session_tags`, migrated in place like the columns).
 
-Assignment happens at write time, by the writer that still knows what the session was — the session-end self-write and the review skill both read `tag list` and `tag set` the best match. Two gates keep the vocabulary small enough to be worth sharing: `tag new` requires a `--description`, and `tag set` refuses a name it doesn't know rather than minting it. Reads (`tail`, `grep`, `recall`) take `--tag <name>` and error on an undefined one — silence there would read as "that never happened", a different and more misleading answer than "no such tag". `tag show <name>` is the cross-seat surface: one subject, every seat that touched it.
+Assignment happens at write time, by the writer that still knows what the session was — the session-end self-write and the review skill both read `tag list` and `tag set` the best match. `/jstack:tag` is the same act by hand, mid-session: it reads the vocabulary, offers the fitting names as a pick, and mints only through the "Other" branch. Two gates keep the vocabulary small enough to be worth sharing: `tag new` requires a `--description`, and `tag set` refuses a name it doesn't know rather than minting it. Reads (`tail`, `grep`, `recall`) take `--tag <name>` and error on an undefined one — silence there would read as "that never happened", a different and more misleading answer than "no such tag". `tag show <name>` is the cross-seat surface: one subject, every seat that touched it.
 
 ### Opening a session ON a subject
 

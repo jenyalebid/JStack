@@ -23,12 +23,13 @@ Query / admin (first positional is the subcommand):
     log_event verdict <agent[/submode]> <shipped|drift|blocked|empty> --note "..."
         Stamp the seat's LATEST entry with an independent verdict (meta review's
         "do not repeat" loop). Verdicts ride tail/injection output.
-    log_event tag list | show <name> | new <name> --description "..." |
-              set <name>... | unset <name>...
+    log_event tag list [--session <id>] | show <name> |
+              new <name> --description "..." | set <name>... | unset <name>...
         A small shared vocabulary of subjects, related to SESSIONS. One seat
         spans several subjects and one subject spans several seats, so neither
         the seat nor the date answers "everything we did on X" — the tag does.
-        Whoever writes the entry picks from `tag list`; minting is rare.
+        Whoever writes the entry picks from `tag list`; minting is rare. `list`
+        marks with `●` what the session in hand already carries.
         `--tag <name>` filters tail / grep / recall.
 
 Origin marks who drove the session the entry came from: `direct` (a human at
@@ -547,19 +548,30 @@ def normalize_tag(name: str) -> str:
     return name.strip().lower().lstrip("#")
 
 
-def list_tags() -> list[dict]:
+def list_tags(session_id: str = "") -> list[dict]:
     """Every tag with its description and how many sessions carry it.
 
     This is the vocabulary a writer reads before picking one. Ordered by use
-    so the tags that already mean something are the ones seen first."""
+    so the tags that already mean something are the ones seen first.
+
+    With `session_id`, each row also says whether THAT session already carries
+    the tag (`carried`). The vocabulary and the session's own membership are
+    the same question asked at the same moment — a picker that shows the list
+    without saying which is already on invites re-setting what is set."""
     con = connect()
     rows = con.execute(
         "SELECT t.name, t.description, COUNT(st.session_id), t.created_at"
         " FROM tags t LEFT JOIN session_tags st ON st.tag_id = t.id"
         " GROUP BY t.id ORDER BY COUNT(st.session_id) DESC, t.name",
     ).fetchall()
+    mine: set[str] = set()
+    if session_id:
+        mine = {r[0] for r in con.execute(
+            "SELECT t.name FROM session_tags st JOIN tags t ON t.id = st.tag_id"
+            " WHERE st.session_id = ?", (session_id,)).fetchall()}
     con.close()
-    return [{"name": n, "description": d, "sessions": c, "created_at": ca}
+    return [{"name": n, "description": d, "sessions": c, "created_at": ca,
+             "carried": n in mine}
             for n, d, c, ca in rows]
 
 
@@ -905,7 +917,11 @@ def _cmd_tag(rest: list[str]) -> int:
             pos.append(a); i += 1
 
     if verb == "list":
-        tags = list_tags()
+        # The vocabulary, and — when a session is in hand — which of it that
+        # session already carries. `●` is "already on this session"; a picker
+        # reading the list needs both halves or it offers what is set.
+        sid = (session or _env_session()).strip()
+        tags = list_tags(sid)
         if as_json:
             print(json.dumps(tags, ensure_ascii=False, indent=2))
         elif not tags:
@@ -913,7 +929,8 @@ def _cmd_tag(rest: list[str]) -> int:
         else:
             w = max(len(t["name"]) for t in tags)
             for t in tags:
-                print(f"{t['name']:<{w}}  {t['sessions']:>4} sessions  {t['description']}")
+                mark = ("● " if t["carried"] else "  ") if sid else ""
+                print(f"{mark}{t['name']:<{w}}  {t['sessions']:>4} sessions  {t['description']}")
         return 0
 
     if verb == "new":

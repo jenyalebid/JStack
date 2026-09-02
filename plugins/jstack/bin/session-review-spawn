@@ -123,8 +123,13 @@ or any docs. Then stop.
 
 2. TAG — the subject, so this work is findable across every seat that touched it.
    Only if you wrote an entry above; if you skipped it, skip this too. Run:
-       log_event tag list
-   and pick the ONE tag that best describes what this session was ABOUT, then:
+       log_event tag list --session {session_id}
+   `●` marks what that session is ALREADY filed under — set by hand with /tag, or by
+   an earlier end; if one is marked and it still fits, you are done, stop here. The
+   --session is not optional: you are running inside a disposable duplicate, so a bare
+   list marks the duplicate's tags, which are none, and you would file a second tag
+   beside a right one. Otherwise pick the ONE tag that best describes what this
+   session was ABOUT, then:
        log_event tag set <name> --session {session_id}
    The list is a small shared vocabulary and staying small is the point — a near
    match is the right answer far more often than a new tag. Only if nothing on the

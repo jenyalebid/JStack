@@ -250,6 +250,12 @@ check("first-review prompt has no delta scope",      "RESUME DELTA" not in sw)
 check("selfwrite prompt reads the tag list first",   "log_event tag list" in sw)
 check("selfwrite prompt tags the ORIGINAL session",
       "tag set <name> --session abcd1234-...." in sw)
+# BOTH halves name the original: Claude Code overrides CLAUDE_CODE_SESSION_ID with
+# the running session's own id, so inside the dub a bare `tag list` reports the
+# dub's filings — none — and a session already tagged by hand or by an earlier end
+# gets a second tag set beside the right one.
+check("selfwrite prompt reads the ORIGINAL session's filings",
+      "tag list --session abcd1234-...." in sw)
 # Steps renumber when one is added; a duplicate number sends the writer looking
 # for a step that isn't there.
 check("selfwrite steps are numbered once each",

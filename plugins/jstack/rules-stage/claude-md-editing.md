@@ -10,6 +10,8 @@ paths:
 
 CLAUDE.md files load on every walk-up. Every line you add is paid for in context on every session that touches the cwd. Before adding content, find where it already lives.
 
+Tag the session — `log_event tag set md` — so instruction-doc work reads back as one thread across every seat that touched it.
+
 ## One canonical home per procedure
 
 Process lives in exactly one place. CLAUDE.md sites point to it; they do not restate it. Concretely:

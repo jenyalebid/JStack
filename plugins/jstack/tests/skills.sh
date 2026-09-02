@@ -64,6 +64,15 @@ if got_name != expected_name:
 if not got_desc:
     print(f"empty description: {p}")
     sys.exit(1)
+# The description is the trigger the model matches on, not a pitch for the
+# skill. It states when to invoke and nothing else — no rationale, no summary
+# of what the skill does. That is what the body is for.
+if not got_desc.startswith(("Use when", "Use only when", "Use only if", "Use at")):
+    print(f"description must open with a trigger clause (Use when/Use only when/Use only if/Use at), not a pitch: {p}")
+    sys.exit(1)
+if len(got_desc) > 140:
+    print(f"description is {len(got_desc)} chars, ceiling is 140 — cut the reasons, keep the trigger: {p}")
+    sys.exit(1)
 PY
 }
 

@@ -1,6 +1,6 @@
 ---
 name: push
-description: Commit and push this session's work to whatever repo(s) the files it touched live in. Use when the user says "push", "commit", "ship it", or "land this".
+description: Use when the user says push, commit, ship it, or land this.
 argument-hint: "[0] [all]"
 ---
 

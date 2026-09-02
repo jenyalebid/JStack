@@ -1,6 +1,6 @@
 ---
 name: install-rules
-description: Install the JStack-bundled rules and bare slash commands into ~/.claude/ — the user-scope files a plugin cannot ship itself.
+description: Use when the user asks to install or refresh the JStack rules and bare slash commands in ~/.claude/.
 argument-hint: "[--copy] [--force]"
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: print
-description: Print the absolute path of this session's local JSONL transcript file. Answered by a UserPromptSubmit hook without a model turn; this is the fallback when the hook does not fire.
+description: Use only when the user asks for this session's transcript path and the JStack hook did not answer it.
 argument-hint: ""
 ---
 

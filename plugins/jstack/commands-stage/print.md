@@ -1,6 +1,6 @@
 ---
 name: print
-description: Print the absolute path of this session's JSONL transcript. Runs in the JStack UserPromptSubmit hook — no model turn.
+description: Use only if /print was typed and the JStack hook did not answer it.
 argument-hint: ""
 ---
 

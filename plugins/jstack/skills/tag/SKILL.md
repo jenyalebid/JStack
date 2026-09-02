@@ -1,6 +1,6 @@
 ---
 name: tag
-description: File a session under a timeline subject — reuse a tag from the shared vocabulary, or mint one when nothing fits. Use when tagging a session mid-turn, or when asked what a session is filed under.
+description: Use when filing this session under a timeline subject, or when asked what it is filed under.
 argument-hint: "[name] | -[name] | --session <id>"
 ---
 

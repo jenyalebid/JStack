@@ -1,6 +1,6 @@
 ---
 name: showme
-description: Surface the actual artifact — code, preview, image, doc, mockup, running app, web page — in its real viewer instead of describing it in text. Use when the user asks to see, show, preview, open, or look at what you've been working on.
+description: Use when the user asks to see, show, preview, open, or look at what you've been working on.
 argument-hint: "[raw|live|location] [focus]"
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: report
-description: Close out a task — settle every finding as a commit or a filed issue, then report the result in the standard shape. Use at the end of any task that produced work.
+description: Use at the end of any task that produced work.
 argument-hint: "[draft]"
 ---
 

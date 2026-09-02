@@ -1,6 +1,6 @@
 ---
 name: pict
-description: Render what a session opens with — the whole injected context, in wire order — and put it on screen. Runs in the JStack UserPromptSubmit hook — no model turn.
+description: Use only if /pict was typed and the JStack hook did not answer it.
 argument-hint: "[dir] [--full] [pict flags]"
 ---
 

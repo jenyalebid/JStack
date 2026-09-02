@@ -1,6 +1,6 @@
 ---
 name: issue
-description: Work a GitHub issue end to end — read it, put it on the work board, build the fix in a worktree, open the PR, answer on the issue. Runs when an issue is assigned to the agent account.
+description: Use when working a GitHub issue end to end, or when an issue is assigned to the agent account.
 argument-hint: "<owner/repo#N>"
 ---
 

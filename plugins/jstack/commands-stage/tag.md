@@ -1,6 +1,6 @@
 ---
 name: tag
-description: File this session under a timeline subject. Runs in the JStack UserPromptSubmit hook — no model turn.
+description: Use only if /tag was typed and the JStack hook did not answer it.
 argument-hint: "[name] | [name <description, to mint>] | -[name]"
 ---
 

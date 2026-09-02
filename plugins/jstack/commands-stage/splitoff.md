@@ -1,6 +1,6 @@
 ---
 name: splitoff
-description: Fork this session verbatim into a new terminal under a fresh id. Runs in the JStack UserPromptSubmit hook — no model turn.
+description: Use only if /splitoff was typed and the JStack hook did not answer it.
 argument-hint: "[name for the copy]"
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: day-audit
-description: Reverify a day's shipped work across every repo — did the day's commits actually improve each app without regressing something else. Use when the user asks for a day audit, "audit yesterday", or "did anything we shipped break".
+description: Use when the user asks for a day audit — "audit yesterday", "did anything we shipped break".
 argument-hint: "[today|yesterday|<date>]"
 ---
 

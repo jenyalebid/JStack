@@ -1,6 +1,6 @@
 ---
 name: post-session-review
-description: Review the session that just ended — timeline entry, dropped threads, doc reconciliation. Spawned by the jstack session-review engine, or invoked by hand with a session id.
+description: Use when reviewing a session that has ended — spawned by the session-review engine, or invoked with a session id.
 argument-hint: "<session-id>"
 ---
 

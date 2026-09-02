@@ -1,6 +1,6 @@
 ---
 name: work
-description: Get battle-ready on a topic before doing the work — load the relevant skills, survey recent changes, read the core files, report the lay of the land. Use when the user says "let's work on X" or otherwise wants you prepared on an area.
+description: Use when the user says "let's work on X", or otherwise wants you prepared on an area before the work starts.
 argument-hint: "[@project] <topic>"
 ---
 

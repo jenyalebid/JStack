@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Hand off the current session to a fresh Claude Code terminal with context preserved — same workspace, or a different agent via @name.
+description: Use when the user asks to hand this session off to a fresh terminal or to another agent.
 argument-hint: "[@agent] [focus]"
 ---
 

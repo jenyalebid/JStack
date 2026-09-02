@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Independently verify this session's work before trusting it's done — every claim rechecked from source. Use when the user asks to audit, double-check, or get a second opinion on what was just built.
+description: Use when the user asks to audit, double-check, or get a second opinion on this session's work.
 argument-hint: "[focus] [@agent] [internal|external]"
 ---
 

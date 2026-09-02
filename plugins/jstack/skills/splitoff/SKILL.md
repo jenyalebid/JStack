@@ -1,6 +1,6 @@
 ---
 name: splitoff
-description: Copy this session verbatim into a new terminal under a fresh id, diverging forward. Answered by a UserPromptSubmit hook without a model turn; this is the fallback when the hook does not fire.
+description: Use only when the user asks to fork or copy this session into a new terminal and the JStack hook did not answer it.
 argument-hint: "[name for the copy]"
 ---
 

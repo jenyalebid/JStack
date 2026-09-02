@@ -237,7 +237,7 @@ sw = eng.SELFWRITE_PROMPT.format(
     marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
     submode="chat", session_id="abcd1234-....",
     stamp_step=eng.SELFWRITE_STAMP_STEP.format(session_id="abcd1234-...."),
-    delta_note="",
+    delta_note="", compact_note="",
 )
 check("selfwrite prompt formats + names seat source", "log_event alpha/chat" in sw)
 check("selfwrite prompt links the session",          "--session abcd1234-...." in sw)
@@ -266,6 +266,7 @@ check("selfwrite steps are numbered once each",
 sw_bare = eng.SELFWRITE_PROMPT.format(
     marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
     submode="chat", session_id="abcd1234-....", stamp_step="", delta_note="",
+    compact_note="",
 )
 check("stampless prompt omits the host-only command", "review_sessions" not in sw_bare)
 check("stampless prompt keeps the timeline step",     "log_event alpha/chat" in sw_bare)
@@ -276,9 +277,61 @@ sw_delta = eng.SELFWRITE_PROMPT.format(
     marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
     submode="chat", session_id="abcd1234-....", stamp_step="",
     delta_note=eng.SELFWRITE_DELTA_NOTE.format(boundary="2026-07-15 10:30"),
+    compact_note="",
 )
 check("resume-delta prompt names the boundary",
       "RESUME DELTA" in sw_delta and "2026-07-15 10:30" in sw_delta)
+check("uncompacted prompt says nothing about compaction", "COMPACTED" not in sw_delta)
+
+# ---- compacted sessions -------------------------------------------------
+# A compact makes the dub's context a summary of the early turns instead of the
+# turns. The prompt's opening rule is "do not re-read files" — correct in every
+# other case, wrong here, so the note must lift it for the transcript and hand
+# over the exact command, or the writer obeys the rule and files an entry for
+# the tail of the session.
+sw_compact = eng.SELFWRITE_PROMPT.format(
+    marker=eng.SELFWRITE_MARKER, agent="alpha", agent_title="Alpha",
+    submode="chat", session_id="abcd1234-....", stamp_step="", delta_note="",
+    compact_note=eng.SELFWRITE_COMPACT_NOTE.format(
+        count_phrase="twice", when="2026-07-15 14:05",
+        jsonl_path="/tmp/x/abcd1234.jsonl"),
+)
+check("compact note names the count and the last compact",
+      "twice" in sw_compact and "2026-07-15 14:05" in sw_compact)
+check("compact note points at the session's own transcript",
+      "/tmp/x/abcd1234.jsonl" in sw_compact)
+check("compact note lifts the no-re-read rule",
+      "no-re-read rule above is lifted" in sw_compact)
+check("compact note hands over a runnable jq", 'jq -r ' in sw_compact
+      and 'gsub("\\\\s+"; " ")' in sw_compact)
+check("compact note still leads to the same one entry",
+      "log_event alpha/chat" in sw_compact)
+
+# Detection is the engine's job, from the file — the writer cannot see its own
+# missing context. A compact_boundary line is `type: system` + that subtype;
+# a plain system line is not one, and a boundary already covered by a previous
+# review (before the offset) is not this write's problem.
+sys_line = _json.dumps({"type": "system", "subtype": "info",
+                        "timestamp": "2026-07-15T16:00:00Z"}) + "\n"
+cb1 = _json.dumps({"type": "system", "subtype": "compact_boundary",
+                   "parentUuid": None,
+                   "timestamp": "2026-07-15T18:00:00Z"}) + "\n"
+cb2 = _json.dumps({"type": "system", "subtype": "compact_boundary",
+                   "parentUuid": None,
+                   "timestamp": "2026-07-15T21:05:00Z"}) + "\n"
+cf = Path(eng.CFG["state_dir"]) / "compact.jsonl"
+cf.write_text(sys_line)
+check("compact_scope: none in a clean session", eng.compact_scope(cf, 0) == (0, None))
+cf.write_text(sys_line + cb1 + cb2)
+n, when = eng.compact_scope(cf, 0)
+from datetime import datetime as _dt
+want_c = _dt.fromisoformat("2026-07-15T21:05:00+00:00").astimezone().strftime("%Y-%m-%d %H:%M")
+check(f"compact_scope: counts every boundary, dates the last ({n}, {when})",
+      (n, when) == (2, want_c))
+n2, _w2 = eng.compact_scope(cf, len((sys_line + cb1).encode()))
+check("compact_scope: boundaries before the reviewed offset don't count", n2 == 1)
+check("compact_scope: unreadable transcript → no claim",
+      eng.compact_scope(Path(eng.CFG["state_dir"]) / "nope.jsonl", 0) == (0, None))
 
 # ---- resume-delta boundary (mechanical, from the reviewed offset) --------
 # The boundary is the last user/assistant timestamp WITHIN the recorded

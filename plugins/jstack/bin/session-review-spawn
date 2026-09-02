@@ -15,6 +15,9 @@ The action a session end triggers is `session_end_action`:
     up exactly where the user left off, with no trailing self-write turn. On
     re-end after a resume, the engine computes the last-reviewed boundary from
     the recorded offset and the prompt scopes the entry to the delta after it.
+    If the session COMPACTED, the resumed dub holds a summary of the earlier
+    turns rather than the turns — the engine detects that and the prompt sends
+    the writer to the transcript for the part its own context lost.
     Thread extraction / doc reconciliation are NOT done here — those live only
     in the manual deep review.
   - "review" — the legacy fresh-session multi-phase review: `claude
@@ -103,12 +106,14 @@ FILER_BRIEFING_MARKER = "You are being briefed on a topic"
 # no thread extraction, no doc reconciliation, no code — those are the manual
 # deep review. {delta_note} is filled only when the session was reviewed before
 # (a resume that ended again) — it scopes the entry to the unreviewed delta.
+# {compact_note} is filled only when the session was compacted — the one case
+# where "what is already in your context" is NOT the whole conversation.
 SELFWRITE_PROMPT = """{marker}
 
 Your session has ended. Do ONLY the steps below from what is already in your
 context above — do not re-read files, do not analyze, do not touch code, reminders,
 or any docs. Then stop.
-{delta_note}
+{delta_note}{compact_note}
 1. TIMELINE — this is your seat's running memory: the next {agent}/{submode} session
    boots on the last entries under this exact source, so write the line that lets it
    build on this session instead of starting cold. If this session did something
@@ -157,6 +162,32 @@ RESUME DELTA — this session ended and was timeline-written before. Everything
 through {boundary} (local time) is already covered by earlier entries. Scope
 the entry below to ONLY what happened after that point; if nothing after it is
 timeline-worthy, that IS the skip case.
+"""
+
+# Injected when the session was COMPACTED. The whole selfwrite design rests on
+# the dub carrying the conversation — a compact breaks exactly that: it writes a
+# new-root boundary line, so a resume rebuilds context from the summary forward
+# and the earlier turns, though still on disk, are not in the writer's context.
+# Left unsaid, the writer files an entry for the tail of the session while
+# believing it saw all of it. So this note names the loss and lifts the
+# no-re-read rule for ONE file — the session's own transcript.
+SELFWRITE_COMPACT_NOTE = r"""
+COMPACTED — this conversation was compacted {count_phrase}, last at {when}
+(local). A compact starts a NEW ROOT in the transcript: what came before it is
+still on disk but is NOT in the context you are reading — you have a summary of
+it plus what followed. Write from context alone and your entry silently covers
+only the tail of the session.
+
+So for this write only, the no-re-read rule above is lifted for exactly ONE
+file: your own transcript. Before step 1, read the user's side of the whole
+session —
+    jq -r 'select(.type == "user") | .message.content
+      | if type == "string" then . else map(select(.type == "text") | .text) | join(" ") end
+      | gsub("\\s+"; " ")' {jsonl_path} | head -200
+Count only real user prose — skip <system-reminder>, <command-message>,
+<command-name> and tool-result blobs. Then write ONE entry for the WHOLE
+session, weighted by what the user actually asked for across all of it, not by
+what happens to still be in your context. Read nothing else.
 """
 
 
@@ -595,6 +626,55 @@ def record_reviewed_offset(session_id: str, size: int) -> None:
         pass
 
 
+def _local_stamp(ts: str | None) -> str | None:
+    """A transcript timestamp (UTC ISO) as local 'YYYY-MM-DD HH:MM'. Every
+    time a prompt shows the user a moment from the JSONL it must be local —
+    the raw values are UTC and would read hours ahead."""
+    if not ts:
+        return None
+    try:
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t.astimezone().strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return None
+
+
+def compact_scope(jsonl_path: Path, offset: int) -> tuple[int, str | None]:
+    """(how many times this session was compacted past `offset`, local time of
+    the last one).
+
+    A compact writes a `system` / `compact_boundary` line whose parentUuid is
+    None — a new root. Resuming walks the chain back to that root, so the turns
+    above it are in the file but never in the resumed context. That makes the
+    selfwrite dub something less than "the conversation it lived", and the
+    writer cannot know it from the inside: its context looks complete. The
+    engine can see it from the file, so the engine is what tells it.
+
+    Scoped past `offset` for the same reason the delta boundary is: a compact
+    the previous review already wrote up is not this write's problem."""
+    count, newest = 0, None
+    try:
+        with jsonl_path.open() as f:
+            if offset > 0:
+                f.seek(offset)   # append-only file: recorded size = line boundary
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("type") != "system" or e.get("subtype") != "compact_boundary":
+                    continue
+                count += 1
+                ts = e.get("timestamp")
+                if ts and (newest is None or ts > newest):
+                    newest = ts
+    except OSError:
+        return 0, None
+    return count, _local_stamp(newest)
+
+
 def last_reviewed_boundary(jsonl_path: Path, offset: int) -> str | None:
     """Local 'YYYY-MM-DD HH:MM' of the last user/assistant message within the
     first `offset` bytes — the portion the previous review already covered.
@@ -619,15 +699,7 @@ def last_reviewed_boundary(jsonl_path: Path, offset: int) -> str | None:
         ts = e.get("timestamp")
         if ts and (newest is None or ts > newest):
             newest = ts
-    if not newest:
-        return None
-    try:
-        t = datetime.fromisoformat(newest.replace("Z", "+00:00"))
-        if t.tzinfo is None:
-            t = t.replace(tzinfo=timezone.utc)
-        return t.astimezone().strftime("%Y-%m-%d %H:%M")
-    except (ValueError, TypeError):
-        return None
+    return _local_stamp(newest)
 
 
 # ------------------------------------------------------------ selfwrite dubs
@@ -820,13 +892,15 @@ def _selfwrite_env(origin: str = "direct") -> dict:
 
 def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
                     submode: str, jsonl_path: Path,
-                    origin: str = "direct", boundary: str | None = None) -> None:
+                    origin: str = "direct", boundary: str | None = None,
+                    compacted: tuple[int, str | None] = (0, None)) -> None:
     """Resume a disposable DUPLICATE of the just-ended session for ONE turn so
     it writes the original's running memory — one seat-tagged timeline entry —
     instead of paying a fresh stranger to re-derive what the session already
     knows.
 
-    Cheap by construction: the dub carries the full conversation, so this is
+    Cheap by construction: the dub carries the conversation (all of it, unless
+    it compacted — see `compacted` below), so this is
     ~1 turn, not the ~50-turn multi-phase review. The write lands in the dub,
     which is DELETED afterwards — the primary session JSONL is never touched,
     so resuming it later starts exactly where the user left off, with no
@@ -836,16 +910,29 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     `boundary` (last-reviewed local time, computed by the caller from the
     recorded offset) is non-None only when this session was reviewed at a
     previous end — the prompt then scopes the entry to the delta after it.
+
+    `compacted` (count, local time of the last compact) is non-zero only when
+    the session compacted — the case where the dub does NOT carry the full
+    conversation, so the prompt sends the writer to the transcript for the part
+    the resume left behind.
     """
     env = _selfwrite_env(origin)
     stamp_step = (
         SELFWRITE_STAMP_STEP.format(session_id=session_id)
         if shutil.which("review_sessions.py", path=env["PATH"]) else ""
     )
+    n_compacts, last_compact = compacted
+    compact_note = ""
+    if n_compacts and last_compact:
+        compact_note = SELFWRITE_COMPACT_NOTE.format(
+            count_phrase="once" if n_compacts == 1 else f"{n_compacts} times",
+            when=last_compact, jsonl_path=jsonl_path,
+        )
     prompt = SELFWRITE_PROMPT.format(
         marker=SELFWRITE_MARKER, agent=agent, agent_title=agent_title,
         submode=submode, session_id=session_id, stamp_step=stamp_step,
         delta_note=SELFWRITE_DELTA_NOTE.format(boundary=boundary) if boundary else "",
+        compact_note=compact_note,
     )
 
     # Dub the transcript — the write happens in this disposable duplicate so the
@@ -891,8 +978,12 @@ def spawn_selfwrite(session_id: str, agent: str, agent_title: str,
     if not Path(cwd).is_dir():
         cwd = str(CFG["agent_root"] / agent_title)
 
-    _log(f"SELFWRITE {session_id[:8]} → {agent}/{submode} "
-         f"(dub {dub_id[:8]}{', delta since ' + boundary if boundary else ''})")
+    notes = ""
+    if boundary:
+        notes += f", delta since {boundary}"
+    if compact_note:
+        notes += f", compacted x{n_compacts} (last {last_compact})"
+    _log(f"SELFWRITE {session_id[:8]} → {agent}/{submode} (dub {dub_id[:8]}{notes})")
     try:
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True,
@@ -1234,6 +1325,11 @@ def main():
     # earlier end (a resume that ended again). Purely mechanical: recorded
     # byte offset → last covered timestamp → injected scope.
     boundary = last_reviewed_boundary(jsonl_path, prior)
+    # Same scoping, different loss: a compact past the prior offset means the
+    # selfwrite dub resumes into a summary, not the conversation. Only the
+    # selfwrite path needs telling — `review` reads the JSONL line by line and
+    # so already sees the turns a resume drops.
+    compacted = compact_scope(jsonl_path, prior)
 
     try:
         try:
@@ -1244,7 +1340,7 @@ def main():
             spawn_review(session_id, agent, agent_title, origin, boundary)
         else:  # "selfwrite" (default) — a disposable dub writes the session's memory
             spawn_selfwrite(session_id, agent, agent_title, submode, jsonl_path,
-                            origin, boundary)
+                            origin, boundary, compacted)
     finally:
         slot.close()
 

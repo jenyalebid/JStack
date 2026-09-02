@@ -9,7 +9,10 @@
 # assertion checks the code as well as the text.
 #
 #   - a prompt that is not /tag passes through untouched (exit 0, silent)
-#   - bare /tag lists the vocabulary, `●` on what this session carries
+#   - bare /tag says what this session carries, then the rest of the names
+#   - the answer carries no use counts and no descriptions
+#   - every answer goes out on BOTH channels — the stdout JSON the harness
+#     renders, and the stderr text it falls back to — and they agree
 #   - unknown name + trailing words mints, then attaches
 #   - unknown name alone refuses, and names the near miss instead
 #   - a carried tag toggles off; -name says it outright
@@ -33,14 +36,31 @@ fails=0
 pass() { echo "ok: $1"; }
 fail() { echo "FAIL: $1" >&2; fails=$((fails+1)); }
 
-# Runs the hook on one prompt. Sets $OUT (what the user sees) and $CODE.
-# Both come back because a right answer on the wrong exit code is a bug.
+# Runs the hook on one prompt. Sets $OUT (the stderr text — what the user sees
+# when the harness ignores the JSON), $JSON (stdout — what it renders when it
+# doesn't) and $CODE. All three come back because a right answer on the wrong
+# exit code is a bug, and an answer on only one channel is half a hook.
 run() {
   local prompt="$1" sid="${2-s-one}"
   OUT=$(printf '{"session_id":"%s","prompt":%s}' "$sid" \
         "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$prompt")" \
-        | "$HOOK" 2>&1)
+        | "$HOOK" 2>&1 >"$TMP/stdout")
   CODE=$?
+  JSON=$(cat "$TMP/stdout")
+}
+
+# The `reason` the harness would put on screen, or empty if stdout was not the
+# block payload. Read out rather than grepped: the point is that it parses.
+reason() {
+  python3 - "$JSON" <<'PY' 2>/dev/null
+import json, sys
+d = json.loads(sys.argv[1])
+h = d.get("hookSpecificOutput") or {}
+assert d.get("decision") == "block", d
+assert h.get("hookEventName") == "UserPromptSubmit", d
+assert h.get("suppressOriginalPrompt") is True, d
+print(d["reason"], end="")
+PY
 }
 
 # 1. Anything that is not /tag is none of this hook's business
@@ -65,6 +85,27 @@ run "/tag"
 run "/tag" "s-two"
 [[ "$OUT" != *"● deploys"* && "$OUT" == *"deploys"* ]] \
   && pass "another session sees it uncarried" || fail "marker leaked across sessions ($OUT)"
+[[ "$OUT" == "○ untagged"* ]] \
+  && pass "a session carrying nothing says so" || fail "untagged head ($OUT)"
+
+# 4b. Names and nothing else. The counts and descriptions are real, and they
+#     belong to the question `log_event tag list` answers — putting them here
+#     turned a one-line answer into a table.
+run "/tag" "s-two"
+[[ "$OUT" != *"sessions"* && "$OUT" != *"shipping builds"* ]] \
+  && pass "no use counts, no descriptions" || fail "listing carries bloat ($OUT)"
+[[ "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" == "1" ]] \
+  && pass "the answer is two lines" || fail "line count ($OUT)"
+
+# 4c. Both channels carry the same answer, and the stdout one is the block
+#     payload the harness renders without welding the hook's path onto it.
+run "/tag"
+[[ "$(reason)" == "$OUT" ]] \
+  && pass "the JSON reason is the text on stderr" \
+  || fail "channels disagree (json=$(reason) stderr=$OUT)"
+[[ "$JSON" != *"$HOOK"* ]] \
+  && pass "the answer does not name the hook that printed it" \
+  || fail "hook path leaked into the answer ($JSON)"
 
 # 5. Naming a carried tag takes it off — one word, no verb
 run "/tag deploys"

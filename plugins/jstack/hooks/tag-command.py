@@ -13,10 +13,17 @@ model tagging a session it has been reasoning about, mid-turn, in its own words.
 
 Grammar, one tag per invocation:
 
-    /tag                     the vocabulary, `●` on what this session carries
+    /tag                     what this session is filed under, then the rest
     /tag <name>              carried already → remove it; known → attach it
     /tag <name> <words...>   unknown name → mint it with <words...>, attach it
     /tag -<name>             remove, said outright
+
+Bare `/tag` answers one question — *what is this session filed under* — and
+then names the other tags it could be. Nothing else: not the use counts, not
+the descriptions. Both are real, and both belong to a different question (which
+tag fits work you are describing), which is the model's `/jstack:tag` and
+`log_event tag list`. Rendering them here made the answer a table to read
+instead of a line.
 
 Toggle is the whole set-vs-unset decision: the state is already on screen from
 the last bare `/tag`, so a second verb would only let the two disagree.
@@ -35,17 +42,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _answer import block  # noqa: E402 — sibling module, path set above
+
 LOG_EVENT = Path(__file__).resolve().parent.parent / "bin" / "log_event"
 
 # `/tag`, `/jstack:tag`, or the stub's sentinel — then the rest of the line.
 TRIGGER = re.compile(r"^\s*(?:/(?:jstack:)?tag|JSTACK_TAG_CMD)\b[ \t]*(.*)$",
                      re.IGNORECASE | re.DOTALL)
-
-
-def block(message: str) -> None:
-    """Answer the user and stop the prompt — the turn never starts."""
-    print(message.rstrip(), file=sys.stderr)
-    sys.exit(2)
 
 
 def log_event(*args: str) -> tuple[int, str]:
@@ -54,12 +58,19 @@ def log_event(*args: str) -> tuple[int, str]:
 
 
 def render(tags: list[dict]) -> str:
+    """Two lines: what this session carries, then what else it could.
+
+    The marker column is the only structure — `●` is filed, the indent under
+    it is the rest of the vocabulary in the order the CLI hands it over
+    (busiest first, so the likely tag is the first word). Names only; see the
+    module docstring for why the counts and descriptions are not here.
+    """
     if not tags:
         return "no tags yet — /tag <name> <what work belongs under it> mints the first one"
-    w = max(len(t["name"]) for t in tags)
-    lines = [f"{'●' if t['carried'] else ' '} {t['name']:<{w}}  "
-             f"{t['sessions']:>3} sessions  {t['description']}" for t in tags]
-    return "\n".join(lines)
+    carried = [t["name"] for t in tags if t["carried"]]
+    rest = [t["name"] for t in tags if not t["carried"]]
+    head = "● " + "  ".join(carried) if carried else "○ untagged"
+    return head + ("\n  " + "  ".join(rest) if rest else "")
 
 
 def main() -> None:

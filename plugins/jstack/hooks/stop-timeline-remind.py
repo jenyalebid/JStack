@@ -5,8 +5,15 @@ Auto work (cron/gateway/--print sessions nobody typed into) gets no post-session
 review (by design) — but its work must still land on the daily timeline,
 written by the model that did the work while its context is still loaded, not
 scraped or generated after the fact. Mechanism: block the FIRST stop of an auto
-session once, with a reminder to append via log_event (or do nothing if the
-wake was a no-op); the model finishes the append and stops for real.
+session once, with a reminder to append via log_event and file it under its
+subject tag (or do nothing if the wake was a no-op); the model finishes the
+append and stops for real.
+
+The tag step lives here and not in a later pass for the same reason the entry
+does — this turn is the last thing that knows what the session was about, and a
+tagger reading the entry back is guessing from a headline. Without it the tag
+vocabulary only ever sees user-engaged seats (which tag in the review engine's
+self-write), and the whole fleet's recurring work is invisible to `tag show`.
 
 Loop guards (both required):
   - `stop_hook_active` in the hook input — the harness sets it when the model
@@ -130,6 +137,17 @@ def main():
         '[--context "<longer state worth on-demand recall — never injected>"]\n\n'
         "Pass --session exactly as written (it binds the entry to this session so the "
         "dashboard can reopen it); it stamps now automatically — do not pass --at or --date.\n\n"
+        "Only if you wrote that entry, file it under its subject so the work is findable "
+        "across every seat that touched it. Read the shared vocabulary, then set the ONE "
+        "tag that says what this session was ABOUT:\n\n"
+        f"  {PLUGIN_BIN}/log_event tag list\n"
+        f"  {PLUGIN_BIN}/log_event tag set <name> --session {session_id}\n\n"
+        "Recurring work is the same subject every run — the tag your last run used is "
+        "almost always the right answer, and reusing it is the point. Mint one only if "
+        "nothing on the list plausibly covers this work:\n\n"
+        f'  {PLUGIN_BIN}/log_event tag new <name> --description "one line: what work belongs under this"\n\n'
+        "A tag names a subject many sessions share — never the seat, the date, or a "
+        "restatement of your headline.\n\n"
         "Then stop. If this wake was a no-op (nothing notable happened) or you already "
         "appended this session's entry, do nothing and stop. Do not start new work."
     )

@@ -27,6 +27,12 @@ export JSTACK_TIMELINE_DIR="$TMP"
 # and quietly retire the cases that depend on there being none. The fallback
 # gets its own test below, with the var set on purpose.
 unset CLAUDE_CODE_SESSION_ID
+# Same trap, second var: origin resolves flag > $JSTACK_TIMELINE_ORIGIN > direct,
+# and cron/auto sessions export it as `indirect`. Inheriting it would flip the
+# default-origin cases — a suite that passes for a typed session and fails for a
+# cron one is a test that reports the runner, not the code. The env-default case
+# sets it on purpose below.
+unset JSTACK_TIMELINE_ORIGIN
 
 fails=0
 fail() { echo "FAIL: $1" >&2; fails=$((fails+1)); }

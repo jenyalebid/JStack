@@ -41,6 +41,12 @@ trap 'rm -rf "$TMP"' EXIT
 # $CLAUDE_CODE_SESSION_ID — so running this from inside a live session would
 # collapse every fixture row into one sitting and the window would stop capping.
 unset CLAUDE_CODE_SESSION_ID
+# Likewise origin: the fixture seeds rows through the real log_event, and the
+# injection window drops `indirect` ones. A cron session exports
+# JSTACK_TIMELINE_ORIGIN=indirect, which would seed the whole fixture as indirect
+# and empty every expected injection — passing for a typed runner, failing for a
+# cron one.
+unset JSTACK_TIMELINE_ORIGIN
 
 ROOT="$TMP/Agents"
 mkdir -p "$ROOT/Gamma/review" "$ROOT/Gamma/chat" "$ROOT/Gamma/pm" "$ROOT/Loner"

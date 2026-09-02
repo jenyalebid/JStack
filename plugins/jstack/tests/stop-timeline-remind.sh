@@ -74,6 +74,15 @@ check("reminder carries agent source", d is not None and "log_event gamma" in d.
 check("reminder threads --session <this session id>",
       d is not None and "--session sid-auto-1" in d.get("reason", ""))
 check("reminder allows the no-op out", d is not None and "do nothing and stop" in d.get("reason", ""))
+# an entry without a tag is invisible to `tag show` — auto seats are most of the
+# fleet, so the tag step has to ride the SAME reminder the entry does
+check("reminder names the tag vocabulary read",
+      d is not None and "log_event tag list" in d.get("reason", ""))
+check("reminder threads --session into tag set",
+      d is not None and "tag set <name> --session sid-auto-1" in d.get("reason", ""))
+# 12 auto sessions a day per seat would shred a shared vocabulary if each minted
+check("reminder biases tagging to reuse over minting",
+      d is not None and "reusing it is the point" in d.get("reason", ""))
 
 # second stop of the SAME session → marker present → pass through (no loop)
 d2 = run_hook("sid-auto-1", t)

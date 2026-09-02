@@ -7,12 +7,16 @@ Write:
               [--pipeline-task <repo>#<issue>] [--session <id>]
 
 Query / admin (first positional is the subcommand):
-    log_event tail <agent[/submode]> [-n N | --sessions N] [--json]
+    log_event tail <agent[/submode]> [-n N | --sessions N] [--tag <name>] [--json]
+    log_event tail --tag <name> [--sessions N]
         A seat's recent history, oldest→newest. -n counts ENTRIES; --sessions
         counts SESSIONS and returns every entry those sessions wrote (the
         window seat injection uses — one sitting is one unit, however many
         entries it logged). Seat form filters agent+submode; bare agent
         matches all its submodes. Human format includes verdict lines.
+        With --tag and NO seat it is the same window over a subject instead
+        of a seat — the last N sittings anyone had on X, seat named on each
+        line. That is what a tagged session boots on.
     log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]
     log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> [<seat>|all] [--full] [--json]
     log_event show <id>
@@ -297,14 +301,16 @@ _ENTRY_COLS = ("id, date, time, agent, submode, headline, details, verdict,"
 _SESSION_KEY = "COALESCE(NULLIF(session_id, ''), 'entry:' || id)"
 
 
-def _seat_filter(seat: str) -> tuple[str, tuple]:
-    """(where, params) selecting a seat's rows.
+def _seat_filter(seat: str | None) -> tuple[str, tuple]:
+    """(where, params) selecting a seat's rows — everything when seat is None.
 
     Seats are directories: a seat query matches its own dir plus every
     ancestor dir (social/chat also pulls social), never siblings — a chat
     seat's tail can't pick up a neighboring work dir's lineage. It also
     matches the agent's submode-less rows — entries migrated from the
     pre-seat era (and any bare-source writes). Bare agent = all submodes."""
+    if seat is None:
+        return "1 = 1", ()
     agent, submode = parse_source(seat)
     if not submode:
         return "agent = ?", (agent,)
@@ -324,13 +330,17 @@ def _entry_row(row: tuple) -> dict:
             "session_id": sid, "context": ctx, "origin": org}
 
 
-def tail_entries(seat: str, n: int, origin: str | None = None,
+def tail_entries(seat: str | None, n: int, origin: str | None = None,
                  tag: str | None = None) -> list[dict]:
     """Last n entries for a seat, oldest→newest.
 
     Broader (submode-less) rows age out of the last-n window as seat-tagged
     entries accrue; without them a seat would boot blind right after
     migration.
+
+    `seat=None` drops the seat filter entirely — only meaningful with `tag`,
+    and then it is the subject read: everything the op did on X, whichever
+    agent did it.
 
     origin='direct' keeps only human-driven entries (auto/cron rows are
     origin='indirect'; pre-origin legacy '' rows count as direct). This is
@@ -351,7 +361,7 @@ def tail_entries(seat: str, n: int, origin: str | None = None,
     return [_entry_row(r) for r in reversed(rows)]
 
 
-def tail_session_window(seat: str, sessions: int,
+def tail_session_window(seat: str | None, sessions: int,
                         origin: str | None = None,
                         tag: str | None = None) -> list[dict]:
     """Every entry the seat's last `sessions` sessions wrote, oldest→newest.
@@ -363,6 +373,11 @@ def tail_session_window(seat: str, sessions: int,
     (pipeline consolidations, multi-topic days), which is exactly when the
     history matters most. Rows with no session_id count as one session each
     (see _SESSION_KEY).
+
+    `seat=None` with a `tag` is the same window over a SUBJECT instead of a
+    seat: the last N sittings anyone had on X. That read is what a tagged
+    session boots on, and it is deliberately not seat-bounded — two agents
+    working one subject are one thread, not two.
 
     Session recency is its newest entry's timestamp; all of a chosen
     session's entries ride, and the returned entries stay in chronological
@@ -392,13 +407,19 @@ def tail_session_window(seat: str, sessions: int,
     return [_entry_row(r) for r in rows]
 
 
-def format_tail(entries: list[dict]) -> str:
+def format_tail(entries: list[dict], show_seat: bool = False) -> str:
     """Default tail text — what seat injection boots on. Lean by design:
     headline + bullets + verdict only; `context` never rides (on-demand via
-    --json or `show`)."""
+    --json or `show`).
+
+    `show_seat` names the seat on every line. Off for a seat read, where it
+    would repeat the seat the caller just asked for; ON for a subject read,
+    where "who did this" is the one thing the rows no longer have in common
+    and an unlabelled block would read as one agent's own history."""
     lines = []
     for e in entries:
-        lines.append(f"{e['date']} {e['time']} — {e['headline']}")
+        who = f" [{format_source(e['agent'], e['submode'])}]" if show_seat else ""
+        lines.append(f"{e['date']} {e['time']}{who} — {e['headline']}")
         for d in e["details"]:
             lines.append(f"- {d}")
         if e["verdict"]:
@@ -663,7 +684,9 @@ def _write_usage() -> str:
             'unless logging an earlier event;\n'
             '        --origin defaults from $JSTACK_TIMELINE_ORIGIN, else direct)\n'
             '   or: log_event tail <agent[/submode]> [-n N | --sessions N] '
-            '[--json]\n'
+            '[--tag <name>] [--json]\n'
+            '   or: log_event tail --tag <name> [--sessions N]   '
+            '(one subject, every seat)\n'
             '   or: log_event grep "<substring>" [--seat <agent[/submode]>] '
             '[--since YYYY-MM-DD] [--json]\n'
             '   or: log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> '
@@ -702,8 +725,11 @@ def _cmd_tail(rest: list[str]) -> int:
             return 2
         else:
             seat = a; i += 1
-    if not seat:
-        print("log_event tail: seat required (agent or agent/submode)", file=sys.stderr)
+    if not seat and not tag:
+        # A seatless tail with no tag is "everything, ever" — never what
+        # anyone meant, and on a real db it is thousands of rows.
+        print("log_event tail: seat required (agent or agent/submode), or "
+              "--tag <name> for a subject across seats", file=sys.stderr)
         return 2
     if tag and not tag_exists(tag):
         # Silence here reads as "that seat never worked on it", which is a
@@ -718,7 +744,7 @@ def _cmd_tail(rest: list[str]) -> int:
     if as_json:
         print(json.dumps(entries, ensure_ascii=False, indent=2))
     elif entries:
-        print(format_tail(entries))
+        print(format_tail(entries, show_seat=seat is None))
     return 0
 
 

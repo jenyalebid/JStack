@@ -392,6 +392,25 @@ out=$("$LOG_EVENT" tag show jremote)
 out=$("$LOG_EVENT" tail kim/chat -n 10 --tag jremote)
 [[ "$out" == *"Kim on the remote"* && "$out" != *"Kim on the daemons"* ]] \
   && pass "tail --tag filters through session_id" || fail "tail --tag ($out)"
+
+# The subject read: a seatless tail is the window over a TAG instead of a seat,
+# which is what a session pinned to a subject boots on. Two agents on one
+# subject are one thread — so Lee's row must ride Kim's, and the seat has to be
+# named on every line or the block reads as one agent's own history.
+out=$("$LOG_EVENT" tail --tag jremote --sessions 10)
+[[ "$out" == *"Kim on the remote"* && "$out" == *"Lee on the remote"* \
+   && "$out" != *"daemons"* ]] \
+  && pass "seatless tail --tag spans agents" || fail "seatless tail --tag ($out)"
+[[ "$out" == *"[kim/chat]"* && "$out" == *"[lee/chat]"* ]] \
+  && pass "subject read names the seat on each line" || fail "subject read seat labels ($out)"
+# A seat read must NOT gain the label — it would repeat the seat just asked for.
+[[ $("$LOG_EVENT" tail kim/chat -n 10) != *"[kim/chat]"* ]] \
+  && pass "seat read stays unlabelled" || fail "seat read gained a label"
+# Seatless with no tag is "everything, ever" — never what anyone meant.
+"$LOG_EVENT" tail --sessions 5 >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "seatless tail with no tag refused" || fail "seatless tail no-tag gate"
+"$LOG_EVENT" tail --tag ghosttag >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "seatless tail on an unknown tag errors" || fail "seatless unknown tag"
 out=$("$LOG_EVENT" grep "Kim on" --tag infra)
 [[ "$out" == *"daemons"* && "$out" != *"remote"* ]] \
   && pass "grep --tag filters" || fail "grep --tag ($out)"

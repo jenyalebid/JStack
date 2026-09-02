@@ -37,6 +37,15 @@ to "*/social"). Finally `*/*` is the fleet default, so a newly-created seat
 inherits injection without another registration edit. With no default, seats
 with no match get nothing. No config key → no injection anywhere (opt-in).
 
+A session can be opened on a SUBJECT instead of its seat: `JSTACK_TIMELINE_TAG`
+in the spawn's environment (a pinned tag on the jRemote board, or set by hand
+from the desk) swaps the seat window for a tag window — the last N sittings
+ANY seat had on that tag, seat named on each line. It replaces the seat
+history rather than adding to it: opening a subject is not opening a seat, and
+a block of both is neither. The session is tagged with it at that same instant,
+so the work it does continues the thread instead of falling out of it. An
+unknown tag falls back to the seat's history and says so in the injection.
+
 Seat resolution (MUST match the engine's resolve_submode and the Stop hook):
 the session dir's full path under {agent_root}/{Name}, "/"-joined — seats are
 directories, and each dir is its own seat (chat ≠ social/chat ≠ social); empty
@@ -173,13 +182,22 @@ def inject_count(cfg: dict, agent: str, submode: str) -> int:
         seat = seat.rsplit("/", 1)[0]
 
 
-def tail(seat: str, n: int, as_json: bool = False) -> str:
+def tail(seat: str | None, n: int, as_json: bool = False,
+         tag: str | None = None) -> str:
     # --origin direct: the injection is a person sitting down mid-history —
     # it carries the seat's human-driven narrative only. Auto sessions
     # (origin=indirect: crons, publish wakes, spawned work) neither receive
     # injections (the live-session gate above) nor ride in them.
-    cmd = [str(PLUGIN_BIN / "log_event"), "tail", seat, "--sessions", str(n),
-           "--origin", "direct"]
+    #
+    # A tag read passes NO seat: the subject is the window, and who worked it
+    # is what the read is meant to cross. log_event names the seat on every
+    # line in that mode, so the block still says who did what.
+    cmd = [str(PLUGIN_BIN / "log_event"), "tail"]
+    if seat:
+        cmd.append(seat)
+    if tag:
+        cmd += ["--tag", tag]
+    cmd += ["--sessions", str(n), "--origin", "direct"]
     if as_json:
         cmd.append("--json")
     try:
@@ -187,6 +205,49 @@ def tail(seat: str, n: int, as_json: bool = False) -> str:
         return r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def pinned_tag() -> str:
+    """The subject this session was opened on, or "".
+
+    Set by whoever spawned the session — a pinned tag on the jRemote board,
+    or `JSTACK_TIMELINE_TAG=<tag> claude` from the desk. It replaces the
+    seat's own history with the subject's: the same seat opened on `jremote`
+    and on `social` is two different cockpits, and the point of opening one
+    is not to read the other."""
+    return os.environ.get("JSTACK_TIMELINE_TAG", "").strip().lower()
+
+
+def tag_known(tag: str) -> bool:
+    """Is `tag` in the vocabulary? Unknown is NOT the same as empty — a typo'd
+    pin must fall back to the seat's history and say so, not silently boot a
+    session blind on a subject that does not exist."""
+    try:
+        r = subprocess.run([str(PLUGIN_BIN / "log_event"), "tag", "list",
+                            "--json"], capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            return False
+        return any(t.get("name") == tag for t in json.loads(r.stdout or "[]"))
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        return False
+
+
+def carry_tag(tag: str, session_id: str) -> None:
+    """Attach the pinned tag to this session, at its first instant.
+
+    Without this the pin decays: a session opened on a subject writes its
+    entries untagged, so the next session opened on the same pin cannot see
+    what this one did. Idempotent (INSERT OR IGNORE), so a resume re-running
+    the hook costs nothing. Never mints — an unknown tag was already refused
+    above, and minting is a deliberate act."""
+    if not session_id:
+        return
+    try:
+        subprocess.run([str(PLUGIN_BIN / "log_event"), "tag", "set", tag,
+                        "--session", session_id],
+                       capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def explain(seat: str) -> dict:
@@ -286,16 +347,42 @@ def build_inbox(seat: str, rows: list) -> str:
     return "\n".join(lines)
 
 
-def build_context(agent: str, submode: str, entries: str, n: int) -> str:
+def build_context(agent: str, submode: str, entries: str, n: int,
+                  note: str = "") -> str:
     seat = f"{agent}/{submode}"
-    return (
-        "<jstack-timeline>\n"
+    head = (
         f"Injected on entry by JStack — everything {seat} (your seat) wrote across "
         f"its last {n} sessions, oldest first. This is your own recent history: "
         "you are not starting "
         "cold. Build on it — don't re-discover, re-propose, or re-litigate what's "
         "already below. A `↳ verdict:` line is the independent review's call on that "
-        "run — if its note names a move to avoid, pick differently.\n\n"
+        "run — if its note names a move to avoid, pick differently."
+    )
+    return (
+        "<jstack-timeline>\n"
+        + (f"{note}\n\n" if note else "")
+        + f"{head}\n\n{entries}\n"
+        "</jstack-timeline>"
+    )
+
+
+def build_tag_context(tag: str, seat: str, entries: str, n: int) -> str:
+    """The subject cockpit — this session was opened ON something.
+
+    Deliberately NOT the seat's history plus the subject's: a pinned session
+    is a sitting with one subject, and the seat's other threads are noise
+    against it. Whoever worked it is in the rows, because a subject is not
+    one agent's — the seat here is only where the terminal happens to run."""
+    return (
+        "<jstack-timeline>\n"
+        f"Injected on entry by JStack — this session is pinned to **{tag}**, so "
+        f"what follows is the last {n} sittings ANY seat had on that subject, "
+        f"oldest first, each line naming who worked it. It is not "
+        f"{seat}'s own history: you are opening a subject, not a seat. Build on "
+        "it — don't re-discover, re-propose, or re-litigate what's already below. "
+        "Your own entries are tagged the same way automatically, so what you do "
+        "here continues this thread. A `↳ verdict:` line is the independent "
+        "review's call on that run.\n\n"
         f"{entries}\n"
         "</jstack-timeline>"
     )
@@ -342,11 +429,39 @@ def main() -> int:
     seat = f"{agent}/{submode}"
     blocks = []
 
+    # A pinned tag replaces the seat window with the subject's. The seat's
+    # configured depth still sets it — but a seat that injects nothing still
+    # gets history when a pin explicitly asked for a subject, so 0 floors at
+    # the fleet default rather than making the pin a no-op.
+    tag = pinned_tag()
+    note = ""
+    if tag and not tag_known(tag):
+        # Refusing quietly would boot the session with no history at all and
+        # nothing on screen explaining why. Say it, then fall back to the seat.
+        note = (f"[This session was opened on tag '{tag}', which is not in the "
+                "timeline vocabulary (`log_event tag list`). Falling back to "
+                "this seat's own history.]")
+        tag = ""
+
     n = inject_count(cfg, agent, submode)
-    if n > 0:
+    if tag:
+        depth = n if n > 0 else 10
+        carry_tag(tag, str(payload.get("session_id") or "").strip())
+        # Always emitted, even empty: a session that does not know it is
+        # pinned frames its work as the seat's, and the first sitting on a
+        # fresh subject is exactly when that framing matters.
+        entries = tail(None, depth, tag=tag) or \
+            "(nothing recorded on this subject yet — this is its first sitting.)"
+        blocks.append(build_tag_context(tag, seat, entries, depth))
+    elif n > 0:
         entries = tail(seat, n)
         if entries:
-            blocks.append(build_context(agent, submode, entries, n))
+            blocks.append(build_context(agent, submode, entries, n, note=note))
+            note = ""
+    if note:
+        # The fallback had nothing to say either — the bad pin is still the
+        # most useful thing this session can be told.
+        blocks.insert(0, f"<jstack-timeline>\n{note}\n</jstack-timeline>")
 
     # Updates last, and only if consuming them succeeded. They are news from
     # other seats, not work — so they sit below this seat's own history rather

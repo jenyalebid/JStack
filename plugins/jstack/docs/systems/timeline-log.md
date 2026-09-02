@@ -35,6 +35,7 @@ log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
 
 ```bash
 log_event tail <agent[/submode]> [-n N] [--json]     # seat history, oldest→newest; bare agent = all seats
+log_event tail --tag <name> [-n N] [--json]          # SEATLESS: one subject across every seat, each line naming who worked it
 log_event grep "<substring>" [--seat <seat>] [--since YYYY-MM-DD] [--json]   # keyword recall: case-insensitive over headline+details+context; exit 1 = no match
 log_event recall <YYYY-MM-DD[..YYYY-MM-DD]> [<seat>|all] [--full] [--json]   # date recall: a day or range replayed, optionally one seat; --full rides context blobs
 log_event show <id>                                  # everything one entry holds, incl. context (id from grep / recall / tail --json)
@@ -63,6 +64,23 @@ hooks/session-start-inject.py --explain <agent[/submode]>
 
 Assignment happens at write time, by the writer that still knows what the session was — the session-end self-write and the review skill both read `tag list` and `tag set` the best match. Two gates keep the vocabulary small enough to be worth sharing: `tag new` requires a `--description`, and `tag set` refuses a name it doesn't know rather than minting it. Reads (`tail`, `grep`, `recall`) take `--tag <name>` and error on an undefined one — silence there would read as "that never happened", a different and more misleading answer than "no such tag". `tag show <name>` is the cross-seat surface: one subject, every seat that touched it.
 
+### Opening a session ON a subject
+
+A seat can be opened on a tag instead of on itself. Export `JSTACK_TIMELINE_TAG=<name>` for the session and the injector **swaps the seat window for the subject window**: the last N sittings *any* seat had on that tag, oldest first, each line naming who worked it.
+
+```bash
+JSTACK_TIMELINE_TAG=jremote claude     # the seat's terminal, the subject's history
+```
+
+Replacement, not addition. A pinned session is one sitting with one subject, and the seat's other threads are noise against it — the same seat opened on two tags is two cockpits, and the point of opening one is not to read the other. The seat still decides *where* the terminal runs, because a tag has no workspace; it stops deciding what gets read.
+
+Two properties make the pin hold rather than decay:
+
+- **The session tags itself**, at its first instant (`INSERT OR IGNORE`, never minting). Without it a pinned session files untagged and the *next* session on the same pin cannot see what it did.
+- **An unknown tag falls back and says so.** Injection refuses a name outside the vocabulary and prints a visible note under the seat's own history, rather than booting a session blind on a subject that does not exist — the same refusal `tag set` and the `--tag` reads make, for the same reason.
+
+Any spawner can set the variable; nothing else is required of it. jRemote's Home board pins a (tag, seat) pair and exports it into the pane, which is one caller of a contract that is just an env var.
+
 ## The store
 
 - Sqlite, WAL — concurrent session-ends write safely.
@@ -75,6 +93,7 @@ Assignment happens at write time, by the writer that still knows what the sessio
 |------|---------|---------|
 | `JSTACK_TIMELINE_DIR` | `~/Logs/Timeline` | Directory holding `timeline.db` |
 | `JSTACK_TIMELINE_ORIGIN` | unset (→ direct) | Default origin for writes in this process tree — spawn plumbing sets `indirect` on unattended sessions |
+| `JSTACK_TIMELINE_TAG` | unset (→ seat history) | Open this session **on a subject**: the injector serves the tag's cross-seat window instead of the seat's own, and the session tags itself so the thread continues (see Opening a session ON a subject) |
 | `timeline_inject` (review config) | none | `{"*/*": N, "agent/submode": N, "*/submode": N}` — fleet default plus optional exact/family overrides; nearest match wins. A new seat inherits `*/*` automatically. N = **sessions** deep |
 
 Self-contained python3 stdlib — no venv, no host imports. Safe to call from hooks, crons, spawned reviews, or interactively.

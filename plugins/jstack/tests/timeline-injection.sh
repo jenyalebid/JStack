@@ -282,6 +282,77 @@ fi
   && pass "--explain: review seat answers sessions=0" \
   || fail "--explain: review seat answers sessions=0"
 
+# (n) pinned tag: a session opened ON a subject boots on the subject, not the
+#     seat. The seat is only where the terminal runs — the thread it joins
+#     spans every agent that worked the tag, and the session is tagged at its
+#     first instant so its own work continues that thread instead of falling
+#     out of it.
+mkdir -p "$ROOT/Zeta/chat"; printf '# Zeta\n' > "$ROOT/Zeta/CLAUDE.md"
+"$LOG_EVENT" tag new remote --description "the phone app and its host" >/dev/null
+"$LOG_EVENT" gamma/chat --at 07:00 --date "$DAY" --session pin-s1 "Gamma worked the remote" >/dev/null
+"$LOG_EVENT" zeta/chat  --at 07:30 --date "$DAY" --session pin-s2 "Zeta worked the remote too" >/dev/null
+"$LOG_EVENT" tag set remote --session pin-s1 >/dev/null
+"$LOG_EVENT" tag set remote --session pin-s2 >/dev/null
+
+# Same helper as ctx(), plus the pin env and a session id to tag.
+ctx_tag() { printf '{"hook_event_name":"SessionStart","cwd":"%s","source":"startup","session_id":"%s"}' "$1" "$3" \
+              | JSTACK_REVIEW_CONFIG="${4:-$CFG}" JSTACK_ASSUME_INTERACTIVE=1 \
+                JSTACK_TIMELINE_TAG="$2" python3 "$HOOK" \
+              | python3 -c 'import json,sys
+raw=sys.stdin.read().strip()
+print(json.loads(raw)["hookSpecificOutput"]["additionalContext"] if raw else "")'; }
+
+n_out=$(ctx_tag "$ROOT/Gamma/chat" remote pinned-sess-1)
+# The subject replaces the seat: gamma/chat's own untagged rows must be gone.
+if echo "$n_out" | grep -q "Chat entry four"; then
+  fail "pinned tag replaces the seat window (seat rows leaked)"
+else
+  pass "pinned tag replaces the seat window"
+fi
+echo "$n_out" | grep -q "Gamma worked the remote" \
+  && echo "$n_out" | grep -q "Zeta worked the remote too" \
+  && pass "pinned tag spans agents (zeta rides gamma's seat)" \
+  || fail "pinned tag spans agents ($n_out)"
+echo "$n_out" | grep -q "\[zeta/chat\]" \
+  && pass "pinned block names who worked each row" || fail "pinned block seat labels"
+echo "$n_out" | grep -q "pinned to \*\*remote\*\*" \
+  && pass "pinned block says what it is pinned to" || fail "pinned block header"
+
+# The session joins the thread it was opened on, or the next session opened on
+# this pin cannot see what this one did.
+tagged=$(python3 - "$JSTACK_TIMELINE_DIR/timeline.db" <<'PYEOF'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+print(con.execute("SELECT COUNT(*) FROM session_tags st JOIN tags t ON t.id=st.tag_id"
+                  " WHERE t.name='remote' AND st.session_id='pinned-sess-1'").fetchone()[0])
+PYEOF
+)
+[[ "$tagged" == "1" ]] && pass "pinned session carries its tag from the first instant" \
+  || fail "pinned session carries its tag ($tagged)"
+# Re-running the hook (a resume) must not double-attach or error.
+ctx_tag "$ROOT/Gamma/chat" remote pinned-sess-1 >/dev/null
+[[ "$(python3 - "$JSTACK_TIMELINE_DIR/timeline.db" <<'PYEOF'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+print(con.execute("SELECT COUNT(*) FROM session_tags WHERE session_id='pinned-sess-1'").fetchone()[0])
+PYEOF
+)" == "1" ]] && pass "re-running the hook re-tags idempotently" || fail "tag carry not idempotent"
+
+# A tag nobody minted is a typo'd pin, not an empty subject. Booting the
+# session blind and silent is the one unacceptable answer.
+bad_out=$(ctx_tag "$ROOT/Gamma/chat" ghosttag pinned-sess-2)
+echo "$bad_out" | grep -q "not in the timeline vocabulary" \
+  && echo "$bad_out" | grep -q "Chat entry four" \
+  && pass "unknown pin falls back to the seat and says so" \
+  || fail "unknown pin fallback ($bad_out)"
+
+# A real subject with nothing recorded yet still announces itself — a session
+# that doesn't know it's pinned frames its work as the seat's.
+"$LOG_EVENT" tag new greenfield --description "a subject nobody has worked yet" >/dev/null
+new_out=$(ctx_tag "$ROOT/Gamma/chat" greenfield pinned-sess-3)
+echo "$new_out" | grep -q "first sitting" \
+  && pass "empty subject still announces the pin" || fail "empty subject pin ($new_out)"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "timeline-injection: $fails FAILED" >&2

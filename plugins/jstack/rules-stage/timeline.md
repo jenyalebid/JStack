@@ -129,6 +129,12 @@ log_event recall 2026-08-01..2026-08-31 all --tag jremote
 An undefined tag is an error on every read, not an empty list — silence there
 would read as "we never worked on it", which is a different answer.
 
+A session can also be **opened on** a tag: `JSTACK_TIMELINE_TAG=<name>` swaps
+the seat's injected history for that subject's, across every seat that worked
+it, and the session tags itself so the thread continues. Replacement, not
+addition — the seat still says where the terminal runs, and stops saying what
+gets read. Any spawner can set it; jRemote's Home pins are one caller.
+
 A tag can only reach entries that carry a `session_id`, so a write with no
 `--session` falls back to `$CLAUDE_CODE_SESSION_ID`. Pass `--session`
 explicitly only when writing on another session's behalf.

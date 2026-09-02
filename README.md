@@ -16,7 +16,7 @@ Slash commands (all namespaced as `/jstack:*`):
 | `/report` | Close out a task: settle every finding as its own commit or a filed GitHub issue, then report |
 | `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
 | `/recall` | Replay what was done on a day or period, scoped to an agent or the whole op |
-| `/tag` | File this session under a timeline subject — pick from the existing vocabulary, or mint through the "Other" branch |
+| `/tag` | File this session under a timeline subject — answered by a hook, so listing, attaching and minting cost no model turn |
 | `/showme` | Surface the result of the current topic in its real viewer instead of describing it |
 | `/print` | Print the absolute path of this session's JSONL transcript |
 | `/install-rules` | Symlink the 17 bundled rules into `~/.claude/rules/` |

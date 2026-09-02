@@ -884,7 +884,8 @@ def _env_session() -> str:
 
 
 def _tag_usage() -> str:
-    return ('usage: log_event tag list [--json]\n'
+    return ('usage: log_event tag list [--session <id>] [--json]\n'
+            '       (with a session, `●` marks what that session carries)\n'
             '   or: log_event tag show <name> [--since YYYY-MM-DD] [--json]\n'
             '   or: log_event tag new <name> --description "what belongs here"\n'
             '   or: log_event tag set <name> [<name>...] [--session <id>]\n'

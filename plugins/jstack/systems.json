@@ -67,10 +67,11 @@
       "kind": "skill",
       "name": "Install Rules",
       "status": "live",
-      "description": "Symlinks (or copies, with --copy) every rule under rules-stage/ into ~/.claude/rules/ so the rule bodies auto-load by glob match on every Claude Code session.",
+      "description": "Symlinks (or copies, with --copy) both user-scope stages a plugin cannot ship itself: rules-stage/ into ~/.claude/rules/ so bodies auto-load by glob match, and commands-stage/ into ~/.claude/commands/ so bare slash commands exist unnamespaced.",
       "code": [
         "skills/install-rules/SKILL.md",
-        "rules-stage/"
+        "rules-stage/",
+        "commands-stage/"
       ],
       "config": [],
       "docs": [],
@@ -80,7 +81,7 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
       },
       "subsystems": [],
-      "notes": "Default mode symlinks (auto-track plugin updates); --copy snapshots for offline edit; --force overwrites existing files. Symlinks point into the plugin cache, so a version bump invalidates the link target — re-run with --force after major updates. /jstack:install-rules."
+      "notes": "Default mode symlinks, --copy snapshots for offline edit, --force overwrites. Links point at the checkout rather than the versioned cache path, which is reaped on update. /jstack:install-rules."
     },
     {
       "id": "work",
@@ -166,8 +167,10 @@
       "kind": "skill",
       "name": "Tag",
       "status": "live",
-      "description": "Files the session under a timeline subject by hand: reads the vocabulary through bin/log_event (with the marker saying what this session already carries), offers the fitting names as a pick, and mints only through the 'Other' branch. The same assignment the session-end self-write makes automatically, available mid-session and correctable.",
+      "description": "Files a session under a timeline subject. Typed by the user, `/tag` never reaches the model: hooks/tag-command.py answers it at UserPromptSubmit and blocks the prompt, so listing, attaching, minting and detaching all cost zero turns. The SKILL.md remains for the model tagging a session mid-turn in light of the work it has been doing.",
       "code": [
+        "hooks/tag-command.py",
+        "commands-stage/tag.md",
         "skills/tag/SKILL.md",
         "bin/log_event"
       ],
@@ -177,11 +180,11 @@
       ],
       "test": {
         "type": "script",
-        "path": "tests/skills.sh",
-        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/log_event adapter is executable."
+        "path": "tests/tag-command.sh",
+        "description": "Pipes fixture UserPromptSubmit payloads through the real hook against a temp JSTACK_TIMELINE_DIR; asserts every branch's text AND its exit code, since an answer on exit 0 has spent the turn the hook exists to save."
       },
       "subsystems": [],
-      "notes": "Args: [tag] to set, -[tag] to detach, --session <id> to retarget; empty offers the vocabulary as a pick. The gates live in the CLI, not here — `tag new` requires a description and `tag set` refuses an unknown name, so the skill can never mint by accident. /jstack:tag."
+      "notes": "Grammar is one tag per call: bare lists the vocabulary with a marker on what the session carries; a carried name toggles off; a known name attaches; an unknown name needs trailing words to mint with, and is refused without them. Recognized as /tag, /jstack:tag, and the JSTACK_TAG_CMD sentinel the installed stub expands to, so it works whichever way the harness routes a command. The gates live in the CLI, not the caller."
     },
     {
       "id": "splitoff",

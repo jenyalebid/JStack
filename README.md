@@ -4,23 +4,27 @@ Cross-machine Claude Code skills for agent workflows. Built around the `{agent_r
 
 ## What this gives you
 
-Slash commands (all namespaced as `/jstack:*`):
+Slash commands, namespaced as `/jstack:*`:
 
 | Command | What it does |
 |---|---|
 | `/work` | Get battle-ready on a topic — orient, load every relevant skill, survey recent changes, read the core files, report a grounded lay of the land. `[@project] <topic>` |
 | `/handoff` | Hand off the session to a fresh terminal with context preserved |
-| `/splitoff` | Dub the session into a new terminal — a verbatim copy under a fresh id, diverging forward |
+| `/splitoff` † | Dub the session into a new terminal — a verbatim copy under a fresh id, diverging forward. Words name the copy; it never narrows |
 | `/audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
 | `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
 | `/report` | Close out a task: settle every finding as its own commit or a filed GitHub issue, then report |
+| `/issue` | Work a GitHub issue end to end — read it, board it, build the fix in a worktree, open the PR, answer on the issue |
 | `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
 | `/recall` | Replay what was done on a day or period, scoped to an agent or the whole op |
-| `/tag` | File this session under a timeline subject — answered by a hook, so listing, attaching and minting cost no model turn |
+| `/tag` † | File this session under a timeline subject — list, attach, mint, detach |
+| `/pict` † | Render everything a session started in a directory is injected with, in wire order, and put it on screen |
 | `/showme` | Surface the result of the current topic in its real viewer instead of describing it |
-| `/print` | Print the absolute path of this session's JSONL transcript |
-| `/install-rules` | Symlink the 17 bundled rules into `~/.claude/rules/` |
+| `/print` † | Print the absolute path of this session's JSONL transcript |
+| `/install-rules` | Symlink the 17 bundled rules into `~/.claude/rules/`, and the bare `/tag`, `/pict`, `/print`, `/splitoff` stubs into `~/.claude/commands/` |
 | `/post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
+
+**†  Zero-turn commands.** A `UserPromptSubmit` hook intercepts these four, does the work in-process and blocks the prompt — the answer lands on screen without a model call, the way Claude Code's own `/color` does. Bookkeeping, a path lookup, a render and a file copy have no judgement in them, and routing them through the model bought a turn to reach a foregone conclusion. After `/install-rules` they also answer to the bare `/tag`, `/pict`, `/print`, `/splitoff`. Each keeps a `SKILL.md` carrying the same work by hand, for a harness that does not fire hooks on slash commands.
 
 Plus four **whole systems** that run themselves once installed:
 
@@ -310,7 +314,7 @@ JStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
 │   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
-│   ├── skills/                            # the 12 slash commands
+│   ├── skills/                            # the 15 slash commands
 │   │   ├── work/SKILL.md
 │   │   ├── handoff/SKILL.md
 │   │   ├── splitoff/SKILL.md
@@ -319,24 +323,34 @@ JStack/
 │   │   ├── recall/SKILL.md
 │   │   ├── showme/SKILL.md
 │   │   ├── print/SKILL.md
+│   │   ├── pict/SKILL.md
+│   │   ├── tag/SKILL.md
+│   │   ├── issue/SKILL.md
 │   │   ├── push/SKILL.md
 │   │   ├── report/SKILL.md
 │   │   ├── install-rules/SKILL.md
 │   │   └── post-session-review/SKILL.md
+│   ├── commands-stage/                    # bare /name stubs installed via /install-rules
+│   │   ├── tag.md  ├── pict.md  ├── print.md  └── splitoff.md
 │   ├── hooks/
-│   │   ├── hooks.json                     # PreToolUse + SessionStart + SessionEnd + Stop
+│   │   ├── hooks.json                     # PreToolUse + SessionStart + UserPromptSubmit + Stop + SessionEnd
 │   │   ├── inject-path-rules.py           # cross-tree rule injection
 │   │   ├── session-start-inject.py        # seat timeline injection
+│   │   ├── tag-command.py                 # /tag, answered without a turn
+│   │   ├── pict-command.py                # /pict, answered without a turn
+│   │   ├── print-command.py               # /print, answered without a turn
+│   │   ├── splitoff-command.py            # /splitoff, answered without a turn
 │   │   ├── stop-inbox-guard.py            # an open inbox message cannot be walked past
 │   │   ├── stop-timeline-remind.py        # timeline write reminder
 │   │   └── session-end-review.sh          # spawns the review engine, detached
 │   ├── bin/                               # bundled adapters (auto-added to PATH)
 │   │   ├── open-terminal-here             # /handoff, /audit, /splitoff
 │   │   ├── dub-session                    # /splitoff
-│   │   ├── open-artifact                  # /showme
-│   │   ├── pict                           # image capture/convert
+│   │   ├── open-artifact                  # /showme, /pict
+│   │   ├── pict                           # injected-context renderer
 │   │   ├── session-files                  # /push stage list
 │   │   ├── file-issue                     # /report issue filing + board placement
+│   │   ├── place-issue                    # /issue board placement
 │   │   ├── file-followup                  # review follow-ups
 │   │   ├── log_event                      # timeline writer
 │   │   ├── msg                            # agent inbox

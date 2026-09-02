@@ -195,6 +195,7 @@
       "code": [
         "hooks/pict-command.py",
         "commands-stage/pict.md",
+        "skills/pict/SKILL.md",
         "bin/pict",
         "bin/open-artifact"
       ],
@@ -206,15 +207,17 @@
         "description": "Pipes fixture UserPromptSubmit payloads through the real hook against a temp tree with a faked renderer and faked openers; asserts placement, view selection, opener precedence and every failure branch's exit code \u2014 an answer on exit 0 has spent the turn the hook exists to save."
       },
       "subsystems": [],
-      "notes": "Bare is the default: the injection itself, no weights and no on-demand layer, because rules that fire when a file is touched are not what a session opens with. `--full` is the hook's own flag and drops --bare rather than forwarding one; a leading directory argument renders that instead of the session's cwd, and everything after it goes to pict untouched. The render lands in the workspace's pad when there is one, else CLAUDE_CONFIG_DIR/jstack/pict, under a name stable per directory so a second ask refreshes one document. Opening delegates to show-doc where the host has one (it knows which screen drives the session), open-artifact otherwise; with neither, the file is still written and its path is the answer."
+      "notes": "Bare is the default: the injection itself, no weights and no on-demand layer, because rules that fire when a file is touched are not what a session opens with. `--full` is the hook's own flag and drops --bare rather than forwarding one; a leading directory argument renders that instead of the session's cwd, and everything after it goes to pict untouched. The render lands in the workspace's pad when there is one, else CLAUDE_CONFIG_DIR/jstack/pict, under a name stable per directory so a second ask refreshes one document. Opening delegates to show-doc where the host has one (it knows which screen drives the session), open-artifact otherwise; with neither, the file is still written and its path is the answer. The SKILL.md carries no work the hook does not do; it exists so pict is reachable as /jstack:pict on a plain plugin install \u2014 the bare /pict stub only lands once /jstack:install-rules has run \u2014 and as the by-hand fallback for a harness that does not fire UserPromptSubmit on commands."
     },
     {
       "id": "splitoff",
       "kind": "skill",
       "name": "Split Off",
       "status": "live",
-      "description": "Dubs the current session into a new terminal via bin/dub-session \u2014 a verbatim copy of the conversation under a fresh id, opened in its own window and diverging forward. Where handoff distills to a brief, this keeps the whole transcript.",
+      "description": "Dubs the current session into a new terminal via bin/dub-session \u2014 a verbatim copy of the conversation under a fresh id, opened in its own window and diverging forward. Typed by the user, `/splitoff` never reaches the model: hooks/splitoff-command.py answers it at UserPromptSubmit and blocks the prompt. Where handoff distills to a brief, this keeps the whole transcript.",
       "code": [
+        "hooks/splitoff-command.py",
+        "commands-stage/splitoff.md",
         "skills/splitoff/SKILL.md",
         "bin/dub-session",
         "bin/open-terminal-here"
@@ -223,30 +226,32 @@
       "docs": [],
       "test": {
         "type": "script",
-        "path": "tests/skills.sh",
-        "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/dub-session and bin/open-terminal-here adapters are executable."
+        "path": "tests/splitoff-command.sh",
+        "description": "Pipes fixture UserPromptSubmit payloads through the real hook and the real dubber against a temp project tree with a faked terminal adapter; asserts the copy is a new id, the source is byte-identical after it, --resume is used and --session-id never, and that a refusal dubs nothing."
       },
       "subsystems": [],
-      "notes": "No args. The copy carries the full transcript, so the fork costs a session's context rather than a summary of it \u2014 use when the exploration itself is the thing worth branching. /jstack:splitoff."
+      "notes": "Words are the copy's NAME, appended to the source title so the resume picker tells two forks apart \u2014 never a scope, since splitoff dubs the whole transcript and never narrows (/jstack:handoff is the scoped restart). Blocking at UserPromptSubmit also cuts at the last completed turn, so the branch does not carry the turn that made it. The fork is built from the payload's transcript_path, not reconstructed from id + cwd. A terminal that will not open is a missing convenience, not a lost fork: the id and the resume line go out either way. Recognized as /splitoff, /jstack:splitoff, and the JSTACK_SPLITOFF_CMD sentinel."
     },
     {
       "id": "print",
       "kind": "skill",
       "name": "Print Transcript Path",
       "status": "live",
-      "description": "Prints the absolute path of the session's local JSONL transcript file \u2014 the answer to \"where is this conversation stored on disk\".",
+      "description": "Prints the absolute path of the session's local JSONL transcript file \u2014 the answer to \"where is this conversation stored on disk\". Typed by the user, `/print` never reaches the model: hooks/print-command.py answers it at UserPromptSubmit from the payload's own transcript_path and blocks the prompt.",
       "code": [
+        "hooks/print-command.py",
+        "commands-stage/print.md",
         "skills/print/SKILL.md"
       ],
       "config": [],
       "docs": [],
       "test": {
         "type": "script",
-        "path": "tests/skills.sh",
-        "description": "Validates SKILL.md exists and frontmatter is well-formed."
+        "path": "tests/print-command.sh",
+        "description": "Pipes fixture UserPromptSubmit payloads through the real hook against a fixture CLAUDE_CONFIG_DIR; asserts the payload path is the answer verbatim, that the id glob never degrades to the newest file in a shared project dir, and every branch's exit code \u2014 an answer on exit 0 has spent the turn the hook exists to save."
       },
       "subsystems": [],
-      "notes": "No args. No adapter \u2014 resolves the path from the session's own environment. /jstack:print."
+      "notes": "No args; trailing words are ignored rather than refused. The harness hands every hook the file it is writing to, so the answer needs no glob and no path-encoding guess \u2014 the session-id glob remains only as the fallback for a payload without transcript_path, and never degrades to the newest .jsonl in the project dir, which is another session's conversation. Recognized as /print, /jstack:print, and the JSTACK_PRINT_CMD sentinel the installed stub expands to. The SKILL.md is the by-hand fallback for a harness that does not fire UserPromptSubmit on commands."
     },
     {
       "id": "pict",

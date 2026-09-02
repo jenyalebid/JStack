@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # JStack adapter — dub (verbatim-fork) a Claude Code session into a new id.
 #
-# Contract:  dub-session [src-session-id] [project-key] [title-suffix]
+# Contract:  dub-session [src-session-id | src-transcript-path] [project-key] [title-suffix]
 # Behavior:  copies the source session's .jsonl to a fresh UUID in the same
 #            project dir, rewriting every line's internal sessionId to the new
 #            id so the copy is self-consistent. The original file is untouched;
@@ -12,23 +12,38 @@
 #            key    = $PWD with '/' -> '-'    (the project dir under ~/.claude/projects)
 #            suffix = " - copy"               (appended to the copy's picker title)
 #
+# A first argument that ends in `.jsonl` is taken as the transcript ITSELF, and
+# the project dir is read off its parent — the exact answer a hook payload's
+# `transcript_path` already carries. That path beats id + key reconstruction:
+# the key is $PWD with the slashes swapped, which is wrong the moment the cwd is
+# a symlink (macOS /tmp encodes as -private-tmp), and the root is only ~/.claude
+# when CLAUDE_CONFIG_DIR says nothing else.
+#
 # Resume the result with:  claude --resume <new-id>   (NOT --session-id, which
 # forces a fresh empty session and errors when the file exists).
 #
 # Shipped in the plugin's bin/ (auto-added to PATH while jstack is enabled).
 set -euo pipefail
 
-SRC_ID="${1:-${CLAUDE_CODE_SESSION_ID:-}}"
+SRC="${1:-${CLAUDE_CODE_SESSION_ID:-}}"
 KEY="${2:-$(printf '%s' "$PWD" | sed 's#/#-#g')}"
 TITLE_SUFFIX="${3:- - copy}"
 
-if [ -z "$SRC_ID" ]; then
-  echo "dub-session: no source session id (pass one or set CLAUDE_CODE_SESSION_ID)" >&2
+if [ -z "$SRC" ]; then
+  echo "dub-session: no source session (pass an id or transcript path, or set CLAUDE_CODE_SESSION_ID)" >&2
   exit 64
 fi
 
-PROJ_DIR="$HOME/.claude/projects/$KEY"
-SRC_FILE="$PROJ_DIR/$SRC_ID.jsonl"
+case "$SRC" in
+  *.jsonl)
+    SRC_FILE="$SRC"
+    PROJ_DIR="$(dirname "$SRC_FILE")"
+    ;;
+  *)
+    PROJ_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$KEY"
+    SRC_FILE="$PROJ_DIR/$SRC.jsonl"
+    ;;
+esac
 
 if [ ! -f "$SRC_FILE" ]; then
   echo "dub-session: source transcript not found: $SRC_FILE" >&2

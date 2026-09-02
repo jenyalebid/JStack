@@ -1,18 +1,18 @@
 {
-  "_doc": "JStack systems registry — every system bundled by the JStack plugin (hooks, skills, runtime mechanisms) that must be tracked, documented, and live-testable. A host machine may federate this file into its own systems registry via an `imports:` field and stamps each entry with `origin: \"jstack\"` + the resolved plugin version at read time. Maintenance rule: every entry lives where its code lives — edit JStack systems in JStack, host systems in the host registry, never both. Every entry MUST declare a `test` so verification is callable on demand from any surface (CLI, dashboard, work-Claude debugging).",
+  "_doc": "JStack systems registry \u2014 every system bundled by the JStack plugin (hooks, skills, runtime mechanisms) that must be tracked, documented, and live-testable. A host machine may federate this file into its own systems registry via an `imports:` field and stamps each entry with `origin: \"jstack\"` + the resolved plugin version at read time. Maintenance rule: every entry lives where its code lives \u2014 edit JStack systems in JStack, host systems in the host registry, never both. Every entry MUST declare a `test` so verification is callable on demand from any surface (CLI, dashboard, work-Claude debugging).",
   "_schema": {
-    "kind": "hook | skill | system | subsystem — 'hook' = Claude Code lifecycle hook (PreToolUse, SessionStart, etc.). 'skill' = invocable slash-command skill shipped under skills/. 'system' = composite mechanism (rules-injection pipeline, install flow). 'subsystem' = nested sub-feature inside a parent.",
-    "id": "string — stable identifier, kebab-case",
-    "name": "string — display name",
+    "kind": "hook | skill | system | subsystem \u2014 'hook' = Claude Code lifecycle hook (PreToolUse, SessionStart, etc.). 'skill' = invocable slash-command skill shipped under skills/. 'system' = composite mechanism (rules-injection pipeline, install flow). 'subsystem' = nested sub-feature inside a parent.",
+    "id": "string \u2014 stable identifier, kebab-case",
+    "name": "string \u2014 display name",
     "status": "live | partial | down | deprecated",
     "description": "one-line summary",
     "code": "array of code paths (relative to plugin root)",
     "config": "array of config paths (relative to plugin root unless ~/-prefixed)",
     "docs": "array of doc paths inside the plugin (typically docs/systems/{id}.md)",
     "test": {
-      "type": "script | endpoint — 'script' = CLI executable, runs in-place, exit 0 = pass. 'endpoint' = HTTP POST handled by a host process (reserved for host-side wrappers).",
-      "path": "string — for type=script, path relative to plugin root. for type=endpoint, URL path.",
-      "description": "string — one-line description of what the test verifies"
+      "type": "script | endpoint \u2014 'script' = CLI executable, runs in-place, exit 0 = pass. 'endpoint' = HTTP POST handled by a host process (reserved for host-side wrappers).",
+      "path": "string \u2014 for type=script, path relative to plugin root. for type=endpoint, URL path.",
+      "description": "string \u2014 one-line description of what the test verifies"
     },
     "subsystems": "array of nested entries",
     "notes": "free-form operator notes"
@@ -23,7 +23,7 @@
       "kind": "hook",
       "name": "Cross-Tree Rule Injection",
       "status": "live",
-      "description": "PreToolUse hook that injects path-matched ~/.claude/rules/*.md bodies into Edit/Write/MultiEdit/NotebookEdit calls — works regardless of session launch CWD, so cross-tree agents pick up the right conventions on every file mutation.",
+      "description": "PreToolUse hook that injects path-matched ~/.claude/rules/*.md bodies into Edit/Write/MultiEdit/NotebookEdit calls \u2014 works regardless of session launch CWD, so cross-tree agents pick up the right conventions on every file mutation.",
       "code": [
         "hooks/inject-path-rules.py",
         "hooks/hooks.json"
@@ -35,17 +35,17 @@
       "test": {
         "type": "script",
         "path": "tests/path-rule-injection.sh",
-        "description": "Live test of the real hook script via its PreToolUse JSON stdin contract: cold-fire (matches rule + emits additionalContext on first call), consecutive-dedup (same session, no transcript growth → no re-inject), threshold re-fire (transcript grown past JSTACK_RULE_REINJECT_BYTES → re-inject). Runs hermetically against a temp fixture via JSTACK_RULES_DIR + JSTACK_CACHE_ROOT overrides — never touches real markers or shipped rules."
+        "description": "Live test of the real hook script via its PreToolUse JSON stdin contract: cold-fire (matches rule + emits additionalContext on first call), consecutive-dedup (same session, no transcript growth \u2192 no re-inject), threshold re-fire (transcript grown past JSTACK_RULE_REINJECT_BYTES \u2192 re-inject). Runs hermetically against a temp fixture via JSTACK_RULES_DIR + JSTACK_CACHE_ROOT overrides \u2014 never touches real markers or shipped rules."
       },
       "subsystems": [],
-      "notes": "Registered in hooks/hooks.json — Claude Code auto-loads when the plugin is installed. Kill switch: JSTACK_PATH_RULES_DISABLED=1. Re-fire threshold: JSTACK_RULE_REINJECT_BYTES (default 400000 ≈ 100K tokens). Defensive: any exception → silent exit 0, never blocks the tool. Marker files live at /tmp/jstack-rule-cache/<session_id>/<rule>.marker storing the transcript byte offset at last injection."
+      "notes": "Registered in hooks/hooks.json \u2014 Claude Code auto-loads when the plugin is installed. Kill switch: JSTACK_PATH_RULES_DISABLED=1. Re-fire threshold: JSTACK_RULE_REINJECT_BYTES (default 400000 \u2248 100K tokens). Defensive: any exception \u2192 silent exit 0, never blocks the tool. Marker files live at /tmp/jstack-rule-cache/<session_id>/<rule>.marker storing the transcript byte offset at last injection."
     },
     {
       "id": "timeline-injection",
       "kind": "hook",
       "name": "SessionStart Timeline Injection",
       "status": "live",
-      "description": "SessionStart hook that injects the seat's last N timeline entries (via bin/log_event tail) into every new session as additionalContext — the READ half of the running-memory loop (the WRITE half is the session-end self-write / Stop-hook line). Which seats get injected and how many entries is the timeline_inject map in the review config ({\"agent/submode\": N, \"*/submode\": N}); unlisted seats get nothing. Sub-mode resolves from cwd: first segment under {agent_root}/{Name}, else 'chat' (cockpit sessions stay at the agent root, so the project-dir key / memory is never moved); 'review' is skipped.",
+      "description": "SessionStart hook that injects the seat's last N timeline entries (via bin/log_event tail) into every new session as additionalContext \u2014 the READ half of the running-memory loop (the WRITE half is the session-end self-write / Stop-hook line). Which seats get injected and how many entries is the timeline_inject map in the review config ({\"agent/submode\": N, \"*/submode\": N}); unlisted seats get nothing. Sub-mode resolves from cwd: first segment under {agent_root}/{Name}, else 'chat' (cockpit sessions stay at the agent root, so the project-dir key / memory is never moved); 'review' is skipped.",
       "code": [
         "hooks/session-start-inject.py",
         "hooks/hooks.json"
@@ -57,10 +57,10 @@
       "test": {
         "type": "script",
         "path": "tests/timeline-injection.sh",
-        "description": "Live test of the real hook via its SessionStart JSON stdin contract against a hermetic temp agents tree (JSTACK_REVIEW_CONFIG override): agent-root cwd → 'chat' seat injected; explicit submode cwd → that seat's entries; 'review' submode → no output; non-workspace cwd → no-op; unlisted seat → nothing; interactive_only honored (headless spawn gets nothing, pty session injected); kill switch honored; emitted payload is valid SessionStart hook JSON."
+        "description": "Live test of the real hook via its SessionStart JSON stdin contract against a hermetic temp agents tree (JSTACK_REVIEW_CONFIG override): agent-root cwd \u2192 'chat' seat injected; explicit submode cwd \u2192 that seat's entries; 'review' submode \u2192 no output; non-workspace cwd \u2192 no-op; unlisted seat \u2192 nothing; interactive_only honored (headless spawn gets nothing, pty session injected); kill switch honored; emitted payload is valid SessionStart hook JSON."
       },
       "subsystems": [],
-      "notes": "Registered in hooks/hooks.json — auto-loads when the plugin is installed. Kill switch: JSTACK_TIMELINE_INJECT_DISABLED=1 (legacy JSTACK_CONTINUITY_INJECT_DISABLED honored). Reads agent_root + timeline_inject from JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json), same as the engine. Defensive: any error → exit 0, never blocks a session. Sub-mode resolution is kept identical to bin/session-review-spawn resolve_submode and the Stop hook's agent_source — if they drift, a seat reads back entries it never wrote."
+      "notes": "Registered in hooks/hooks.json \u2014 auto-loads when the plugin is installed. Kill switch: JSTACK_TIMELINE_INJECT_DISABLED=1 (legacy JSTACK_CONTINUITY_INJECT_DISABLED honored). Reads agent_root + timeline_inject from JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json), same as the engine. Defensive: any error \u2192 exit 0, never blocks a session. Sub-mode resolution is kept identical to bin/session-review-spawn resolve_submode and the Stop hook's agent_source \u2014 if they drift, a seat reads back entries it never wrote."
     },
     {
       "id": "install-rules",
@@ -88,7 +88,7 @@
       "kind": "skill",
       "name": "Work",
       "status": "live",
-      "description": "Gets the agent battle-ready on a topic before doing the work: orient (date + injected seat timeline), resolve project → repo, determine stack, load every relevant skill via the Skill tool, survey recent changes (git log/status + topic file search), read the core files, and report a grounded lay of the land. Preparation only — no code changes, no state writes, no PR.",
+      "description": "Gets the agent battle-ready on a topic before doing the work: orient (date + injected seat timeline), resolve project \u2192 repo, determine stack, load every relevant skill via the Skill tool, survey recent changes (git log/status + topic file search), read the core files, and report a grounded lay of the land. Preparation only \u2014 no code changes, no state writes, no PR.",
       "code": [
         "skills/work/SKILL.md"
       ],
@@ -100,14 +100,14 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory."
       },
       "subsystems": [],
-      "notes": "Args: [@project] <topic>. No registry read — leans on the agent's own loaded identity for project + stack. @project resolves a repo name case-insensitively under userConfig.repo_root (default parent of agent_root); unknown → list candidates and stop. No @project → own project; multi-project agent + ambiguous topic → infer from topic, else ask one question. Skill selection matches stack+topic against live skill descriptions (no hardcoded table), loads inclusive. /jstack:work."
+      "notes": "Args: [@project] <topic>. No registry read \u2014 leans on the agent's own loaded identity for project + stack. @project resolves a repo name case-insensitively under userConfig.repo_root (default parent of agent_root); unknown \u2192 list candidates and stop. No @project \u2192 own project; multi-project agent + ambiguous topic \u2192 infer from topic, else ask one question. Skill selection matches stack+topic against live skill descriptions (no hardcoded table), loads inclusive. /jstack:work."
     },
     {
       "id": "handoff",
       "kind": "skill",
       "name": "Handoff",
       "status": "live",
-      "description": "Generates a concise session handoff doc and opens a fresh Claude Code terminal preloaded with it via bin/open-terminal-here. Supports @agent targeting: resolves another agent's workspace under user_config.agent_root and boots the new session there — walk-up does the identity switch.",
+      "description": "Generates a concise session handoff doc and opens a fresh Claude Code terminal preloaded with it via bin/open-terminal-here. Supports @agent targeting: resolves another agent's workspace under user_config.agent_root and boots the new session there \u2014 walk-up does the identity switch.",
       "code": [
         "skills/handoff/SKILL.md",
         "bin/open-terminal-here"
@@ -120,14 +120,14 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/open-terminal-here adapter is executable."
       },
       "subsystems": [],
-      "notes": "Args: [@agent] [focus]. @agent resolves {Name} case-insensitively under agent_root; target cwd = chat/ subdir if present else agent root; unknown name → list available agents and stop. Focus narrows scope. Writes handoff-context.md to the TARGET cwd, then open-terminal-here with --append-system-prompt-file. Cross-agent docs are briefings: name who hands off, mark user-locked decisions. Adapter overridable earlier in PATH. /jstack:handoff."
+      "notes": "Args: [@agent] [focus]. @agent resolves {Name} case-insensitively under agent_root; target cwd = chat/ subdir if present else agent root; unknown name \u2192 list available agents and stop. Focus narrows scope. Writes handoff-context.md to the TARGET cwd, then open-terminal-here with --append-system-prompt-file. Cross-agent docs are briefings: name who hands off, mark user-locked decisions. Adapter overridable earlier in PATH. /jstack:handoff."
     },
     {
       "id": "audit",
       "kind": "skill",
       "name": "Audit",
       "status": "live",
-      "description": "Writes a claims document (audit-brief.md: protocol + Original Issue / What Was Done / Claimed Verifications / Caution Flags / Blast Radius / Pitfalls) and opens a fresh terminal via bin/open-terminal-here where a trust-nothing auditor verifies every claim from source and reports CONFIRMED/REFUTED/UNVERIFIABLE. Report-only — the auditor changes nothing.",
+      "description": "Writes a claims document (audit-brief.md: protocol + Original Issue / What Was Done / Claimed Verifications / Caution Flags / Blast Radius / Pitfalls) and opens a fresh terminal via bin/open-terminal-here where a trust-nothing auditor verifies every claim from source and reports CONFIRMED/REFUTED/UNVERIFIABLE. Report-only \u2014 the auditor changes nothing.",
       "code": [
         "skills/audit/SKILL.md",
         "bin/open-terminal-here"
@@ -140,14 +140,14 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/open-terminal-here adapter is executable."
       },
       "subsystems": [],
-      "notes": "Args: [focus] [@agent], order-agnostic. @agent resolves like handoff under agent_root (auditor boots under that agent's identity). Caution Flags section is mandatory — user-stated 'don't break X' constraints verbatim, verified first. Auto-start: kickoff prompt passed as a pre-quoted positional claude arg (adapter flattens args via $*). Auditor asks first only if genuinely blocked, else begins immediately. /jstack:audit."
+      "notes": "Args: [focus] [@agent], order-agnostic. @agent resolves like handoff under agent_root (auditor boots under that agent's identity). Caution Flags section is mandatory \u2014 user-stated 'don't break X' constraints verbatim, verified first. Auto-start: kickoff prompt passed as a pre-quoted positional claude arg (adapter flattens args via $*). Auditor asks first only if genuinely blocked, else begins immediately. /jstack:audit."
     },
     {
       "id": "recall",
       "kind": "skill",
       "name": "Recall",
       "status": "live",
-      "description": "Replays the timeline for a date or period and outlines what happened, scoped to an agent/submode or all seats. Reads through bin/log_event — the store is the only source, never a summary of it.",
+      "description": "Replays the timeline for a date or period and outlines what happened, scoped to an agent/submode or all seats. Reads through bin/log_event \u2014 the store is the only source, never a summary of it.",
       "code": [
         "skills/recall/SKILL.md",
         "bin/log_event"
@@ -160,7 +160,7 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/log_event adapter is executable."
       },
       "subsystems": [],
-      "notes": "Args: [yesterday|monday|jan 24|YYYY-MM-DD[..YYYY-MM-DD]] [agent[/submode]|all] [detailed]. Date-or-period questions only — a keyword question (\"when did we ship X?\") is a log_event grep, not this. /jstack:recall."
+      "notes": "Args: [yesterday|monday|jan 24|YYYY-MM-DD[..YYYY-MM-DD]] [agent[/submode]|all] [detailed]. Date-or-period questions only \u2014 a keyword question (\"when did we ship X?\") is a log_event grep, not this. /jstack:recall."
     },
     {
       "id": "tag",
@@ -187,11 +187,33 @@
       "notes": "Grammar is one tag per call: bare lists the vocabulary with a marker on what the session carries; a carried name toggles off; a known name attaches; an unknown name needs trailing words to mint with, and is refused without them. Recognized as /tag, /jstack:tag, and the JSTACK_TAG_CMD sentinel the installed stub expands to, so it works whichever way the harness routes a command. The gates live in the CLI, not the caller."
     },
     {
+      "id": "pict",
+      "kind": "skill",
+      "name": "Pict",
+      "status": "live",
+      "description": "Renders everything a session spawned from a directory is injected with, in wire order, and puts it on screen. Typed by the user, `/pict` never reaches the model: hooks/pict-command.py answers it at UserPromptSubmit and blocks the prompt. Render, place, open \u2014 three fixed steps, none of them a judgement, and a session asked to describe its own context describes what it believes is there, which is the guess the tool exists to replace.",
+      "code": [
+        "hooks/pict-command.py",
+        "commands-stage/pict.md",
+        "bin/pict",
+        "bin/open-artifact"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/pict-command.sh",
+        "description": "Pipes fixture UserPromptSubmit payloads through the real hook against a temp tree with a faked renderer and faked openers; asserts placement, view selection, opener precedence and every failure branch's exit code \u2014 an answer on exit 0 has spent the turn the hook exists to save."
+      },
+      "subsystems": [],
+      "notes": "Bare is the default: the injection itself, no weights and no on-demand layer, because rules that fire when a file is touched are not what a session opens with. `--full` is the hook's own flag and drops --bare rather than forwarding one; a leading directory argument renders that instead of the session's cwd, and everything after it goes to pict untouched. The render lands in the workspace's pad when there is one, else CLAUDE_CONFIG_DIR/jstack/pict, under a name stable per directory so a second ask refreshes one document. Opening delegates to show-doc where the host has one (it knows which screen drives the session), open-artifact otherwise; with neither, the file is still written and its path is the answer."
+    },
+    {
       "id": "splitoff",
       "kind": "skill",
       "name": "Split Off",
       "status": "live",
-      "description": "Dubs the current session into a new terminal via bin/dub-session — a verbatim copy of the conversation under a fresh id, opened in its own window and diverging forward. Where handoff distills to a brief, this keeps the whole transcript.",
+      "description": "Dubs the current session into a new terminal via bin/dub-session \u2014 a verbatim copy of the conversation under a fresh id, opened in its own window and diverging forward. Where handoff distills to a brief, this keeps the whole transcript.",
       "code": [
         "skills/splitoff/SKILL.md",
         "bin/dub-session",
@@ -205,14 +227,14 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, bin/dub-session and bin/open-terminal-here adapters are executable."
       },
       "subsystems": [],
-      "notes": "No args. The copy carries the full transcript, so the fork costs a session's context rather than a summary of it — use when the exploration itself is the thing worth branching. /jstack:splitoff."
+      "notes": "No args. The copy carries the full transcript, so the fork costs a session's context rather than a summary of it \u2014 use when the exploration itself is the thing worth branching. /jstack:splitoff."
     },
     {
       "id": "print",
       "kind": "skill",
       "name": "Print Transcript Path",
       "status": "live",
-      "description": "Prints the absolute path of the session's local JSONL transcript file — the answer to \"where is this conversation stored on disk\".",
+      "description": "Prints the absolute path of the session's local JSONL transcript file \u2014 the answer to \"where is this conversation stored on disk\".",
       "code": [
         "skills/print/SKILL.md"
       ],
@@ -224,14 +246,14 @@
         "description": "Validates SKILL.md exists and frontmatter is well-formed."
       },
       "subsystems": [],
-      "notes": "No args. No adapter — resolves the path from the session's own environment. /jstack:print."
+      "notes": "No args. No adapter \u2014 resolves the path from the session's own environment. /jstack:print."
     },
     {
       "id": "pict",
       "kind": "system",
       "name": "Prompt Injection Check (pict)",
       "status": "live",
-      "description": "bin/pict renders everything a session spawned from a given directory would actually receive — globals, CLAUDE.md walk-up, auto-memory, timeline injection, anchored path rules, hook injectors — as one ordered markdown document with per-source token weights. The way to see a seat's real context budget instead of reasoning about it. Two views: the default answers why each file is in the context and what it costs; --bare answers what the context IS — the injected bodies in wire order, no weights, no notes, no on-demand layer.",
+      "description": "bin/pict renders everything a session spawned from a given directory would actually receive \u2014 globals, CLAUDE.md walk-up, auto-memory, timeline injection, anchored path rules, hook injectors \u2014 as one ordered markdown document with per-source token weights. The way to see a seat's real context budget instead of reasoning about it. Two views: the default answers why each file is in the context and what it costs; --bare answers what the context IS \u2014 the injected bodies in wire order, no weights, no notes, no on-demand layer.",
       "code": [
         "bin/pict"
       ],
@@ -240,17 +262,17 @@
       "test": {
         "type": "script",
         "path": "tests/pict.sh",
-        "description": "Hermetic run against a fixture home tree, fixture rules, fixture review config and a stub log_event — no real ~/.claude or timeline touched."
+        "description": "Hermetic run against a fixture home tree, fixture rules, fixture review config and a stub log_event \u2014 no real ~/.claude or timeline touched."
       },
       "subsystems": [],
-      "notes": "Answers \"what does this seat actually load\" from the real injectors rather than from what the mds claim. Resolves symlinks (macOS /var → /private/var) when keying a directory."
+      "notes": "Answers \"what does this seat actually load\" from the real injectors rather than from what the mds claim. Resolves symlinks (macOS /var \u2192 /private/var) when keying a directory."
     },
     {
       "id": "timeline-log",
       "kind": "system",
       "name": "Timeline Log",
       "status": "live",
-      "description": "Timeline sqlite store ({timeline_dir}/timeline.db) written and read by bin/log_event — block format, chronological order, pipeline-task consolidation, direct/indirect origin, and a session→tag relation naming the subject a stretch of work was about. The day's spine: feeds daily briefs, nightly reviews, and seat injection.",
+      "description": "Timeline sqlite store ({timeline_dir}/timeline.db) written and read by bin/log_event \u2014 block format, chronological order, pipeline-task consolidation, direct/indirect origin, and a session\u2192tag relation naming the subject a stretch of work was about. The day's spine: feeds daily briefs, nightly reviews, and seat injection.",
       "code": [
         "bin/log_event",
         "rules-stage/timeline.md"
@@ -282,17 +304,17 @@
             "description": "Pipes fixture Stop-hook JSON through the real hook: auto session blocks once then passes, stop_hook_active honored, user-engaged and tiny transcripts never block, SKIP_SESSION_HOOK=1 never blocks."
           },
           "subsystems": [],
-          "notes": "Only auto sessions are in scope — a typed/TUI transcript is never blocked, since a human ending a session is not a session skipping its record."
+          "notes": "Only auto sessions are in scope \u2014 a typed/TUI transcript is never blocked, since a human ending a session is not a session skipping its record."
         }
       ],
-      "notes": "Self-contained python3 stdlib — no venv, no host imports. Timeline dir override: JSTACK_TIMELINE_DIR (default ~/Logs/Timeline). Format spec is the rules-stage/timeline.md rule (install via /jstack:install-rules). Hosts with an in-process timeline writer must keep format parity — pin it with a host-side parity test against this bin."
+      "notes": "Self-contained python3 stdlib \u2014 no venv, no host imports. Timeline dir override: JSTACK_TIMELINE_DIR (default ~/Logs/Timeline). Format spec is the rules-stage/timeline.md rule (install via /jstack:install-rules). Hosts with an in-process timeline writer must keep format parity \u2014 pin it with a host-side parity test against this bin."
     },
     {
       "id": "post-session-review",
       "kind": "system",
       "name": "Session-End Engine",
       "status": "live",
-      "description": "SessionEnd hook → bin/session-review-spawn engine → session_end_action. Default 'selfwrite': resume a disposable DUB of the just-ended session (bin/dub-session) for ONE turn to write its own seat-tagged timeline entry and pick the session's subject tag from the shared vocabulary, then delete the dub — the primary transcript never grows a self-write turn (clean future resume, clean picker; stale dubs pid-swept every engine run). A resumed session that ends again gets the engine-computed last-reviewed boundary injected, scoping the entry to the delta since the resume point. Legacy 'review': claude --print from {agent_root}/{Name}/review/ running the review skill → output parser-validated → retry → escalate (thread extraction + doc reconciliation). Keeps the timeline truthful after every session.",
+      "description": "SessionEnd hook \u2192 bin/session-review-spawn engine \u2192 session_end_action. Default 'selfwrite': resume a disposable DUB of the just-ended session (bin/dub-session) for ONE turn to write its own seat-tagged timeline entry and pick the session's subject tag from the shared vocabulary, then delete the dub \u2014 the primary transcript never grows a self-write turn (clean future resume, clean picker; stale dubs pid-swept every engine run). A resumed session that ends again gets the engine-computed last-reviewed boundary injected, scoping the entry to the delta since the resume point. Legacy 'review': claude --print from {agent_root}/{Name}/review/ running the review skill \u2192 output parser-validated \u2192 retry \u2192 escalate (thread extraction + doc reconciliation). Keeps the timeline truthful after every session.",
       "code": [
         "bin/session-review-spawn",
         "hooks/session-end-review.sh",
@@ -308,17 +330,17 @@
       "test": {
         "type": "script",
         "path": "tests/session-review.sh",
-        "description": "Imports the real engine under a hermetic temp config: output validator (good passes; missing section / evidence-free walk / log_event-claimed-but-timeline-didn't-grow reject; 'no user turns' + cron paraphrases accepted; host-extended section lists enforced), agent resolution (umbrella dirs, project_dir_map, $HOME → default_agent, review/-dir reviewable convention), atomic claim dedup (live pid loses, stale pid taken over), SPAWN log-line dashboard contract, and the selfwrite prompt itself (formats with every placeholder, names the seat source, links and tags the ORIGINAL session, reads the tag vocabulary before writing to it, steps numbered once each, host-only stamp step omitted where the tool doesn't exist, resume-delta boundary injected only when there is one)."
+        "description": "Imports the real engine under a hermetic temp config: output validator (good passes; missing section / evidence-free walk / log_event-claimed-but-timeline-didn't-grow reject; 'no user turns' + cron paraphrases accepted; host-extended section lists enforced), agent resolution (umbrella dirs, project_dir_map, $HOME \u2192 default_agent, review/-dir reviewable convention), atomic claim dedup (live pid loses, stale pid taken over), SPAWN log-line dashboard contract, and the selfwrite prompt itself (formats with every placeholder, names the seat source, links and tags the ORIGINAL session, reads the tag vocabulary before writing to it, steps numbered once each, host-only stamp step omitted where the tool doesn't exist, resume-delta boundary injected only when there is one)."
       },
       "subsystems": [],
-      "notes": "session_end_action selects the behavior: 'selfwrite' (default) resumes the ended session (bin/log_event on the spawned PATH, selfwrite_model/selfwrite_max_turns/selfwrite_timeout_secs) and re-records the reviewed offset past the appended write so a reopen doesn't re-fire; 'review' runs the fresh review/ session (skill_invocation, required_sections, model, max_turns, timeout_secs, tg_classify_cmd, escalate_cmd); 'off' does nothing. Stack requirements: agent workspaces under agent_root with {Name}/review/ (reviewable convention). Config: JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json) — agent_root, default_agent, project_dir_map, extra_path, log_file, plus the action-specific keys above. Kill switch: JSTACK_REVIEW_DISABLED=1. Loop guard: SKIP_SESSION_HOOK=1 on every spawn. Multi-entry-point safe: per-session atomic claim means a host SessionEnd hook and the plugin hook never double-act."
+      "notes": "session_end_action selects the behavior: 'selfwrite' (default) resumes the ended session (bin/log_event on the spawned PATH, selfwrite_model/selfwrite_max_turns/selfwrite_timeout_secs) and re-records the reviewed offset past the appended write so a reopen doesn't re-fire; 'review' runs the fresh review/ session (skill_invocation, required_sections, model, max_turns, timeout_secs, tg_classify_cmd, escalate_cmd); 'off' does nothing. Stack requirements: agent workspaces under agent_root with {Name}/review/ (reviewable convention). Config: JSTACK_REVIEW_CONFIG (default ~/.claude/jstack/review.json) \u2014 agent_root, default_agent, project_dir_map, extra_path, log_file, plus the action-specific keys above. Kill switch: JSTACK_REVIEW_DISABLED=1. Loop guard: SKIP_SESSION_HOOK=1 on every spawn. Multi-entry-point safe: per-session atomic claim means a host SessionEnd hook and the plugin hook never double-act."
     },
     {
       "id": "push",
       "kind": "skill",
       "name": "Push",
       "status": "live",
-      "description": "Commits and pushes the work touched in the current session to whatever repo(s) those files live in — supports session-scoped (default) or all-pending (`all`) modes, and `0` to commit without pushing.",
+      "description": "Commits and pushes the work touched in the current session to whatever repo(s) those files live in \u2014 supports session-scoped (default) or all-pending (`all`) modes, and `0` to commit without pushing.",
       "code": [
         "skills/push/SKILL.md",
         "bin/session-files"
@@ -335,7 +357,7 @@
           "id": "session-files",
           "kind": "subsystem",
           "name": "Session File List",
-          "description": "Prints the paths a session wrote, read from its own transcript — the stage list for /push, so which files are mine is never inferred from a shared working tree.",
+          "description": "Prints the paths a session wrote, read from its own transcript \u2014 the stage list for /push, so which files are mine is never inferred from a shared working tree.",
           "code": [
             "bin/session-files"
           ],
@@ -344,10 +366,10 @@
           "test": {
             "type": "script",
             "path": "tests/session-files.sh",
-            "description": "Drives the real binary against a fixture HOME, a synthetic transcript and a throwaway repo: the stage list is written-paths intersected with what git still sees a change at, in first-write order, deduped; subagent (sidechain) writes are included and Read/Bash calls are not; unchanged, gitignored and non-repo paths stay out of the stage list while remaining in --all and --json; a tracked file deleted on disk still stages; a torn final transcript line is skipped rather than fatal; a file another session left dirty is structurally unlistable. Every blind case — no session id, no transcript, one id matching two transcripts — exits nonzero instead of returning an empty list."
+            "description": "Drives the real binary against a fixture HOME, a synthetic transcript and a throwaway repo: the stage list is written-paths intersected with what git still sees a change at, in first-write order, deduped; subagent (sidechain) writes are included and Read/Bash calls are not; unchanged, gitignored and non-repo paths stay out of the stage list while remaining in --all and --json; a tracked file deleted on disk still stages; a torn final transcript line is skipped rather than fatal; a file another session left dirty is structurally unlistable. Every blind case \u2014 no session id, no transcript, one id matching two transcripts \u2014 exits nonzero instead of returning an empty list."
           },
           "subsystems": [],
-          "notes": "The list comes from the transcript and never from `git status` — that is what stops a dirty shared tree from being a judgment call, and why an agent can stage all of it without deciding anything. Blind spot by design: writes made through Bash (mv, sed -i, a script emitting files) never become tool calls, so /push still adds those by hand. Transcript resolution matches the print skill — id-globbed across project dirs, never newest-by-mtime, which under concurrent sessions hands back another session's file. Also answers for a dead session (--session <id>), which is how orphaned work gets attributed to whoever actually wrote it."
+          "notes": "The list comes from the transcript and never from `git status` \u2014 that is what stops a dirty shared tree from being a judgment call, and why an agent can stage all of it without deciding anything. Blind spot by design: writes made through Bash (mv, sed -i, a script emitting files) never become tool calls, so /push still adds those by hand. Transcript resolution matches the print skill \u2014 id-globbed across project dirs, never newest-by-mtime, which under concurrent sessions hands back another session's file. Also answers for a dead session (--session <id>), which is how orphaned work gets attributed to whoever actually wrote it."
         }
       ],
       "notes": "Authorization gate: only runs if the user explicitly said push/commit/ship/land in this session. Resolves repos from the touched-file list (works from a non-repo cockpit). Hard rules: no --no-verify, no --amend, no Co-Authored-By, no `git add -A`, sensitive paths skipped, never force-push main/master. `all` mode groups pending changes into per-unit-of-work commits with a one-line plan up front. /jstack:push."
@@ -467,14 +489,14 @@
         "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory, bin/log_event is executable."
       },
       "subsystems": [],
-      "notes": "Args: [today|yesterday|<date>], date normalized in python3 (defaults today). Portable repo discovery: repo_root userConfig, else parent of agent_root, scanned for */.git. Ownership: agent_registry userConfig (else {agent_root}/agents.json) — each agent entry's {workspace, repos}; repo<->registry matched by normalized name (case + _/- folded) against BOTH local dir basename and git origin, so WBIS_iOS==WBIS-iOS. Owning-agent context delivered by instructing the auditor to read {workspace}/CLAUDE.md + {repo}/CLAUDE.md first (in-process subagents don't inherit a foreign CLAUDE.md via cwd); unowned repo -> generic auditor, coverage never drops. Per-day commits via `git log --all --no-merges --since/--until --date=local` so develop/feature/pushed work is covered. Verdict logged to the AUDITED day's file: `log_event day-audit --at <now> --date <DAY> --pipeline-task day-audit#<DAY>` — one block per day, replaced on re-run. Report-only on repos (never edits code); high-severity findings re-verified by the parent before repeating. /jstack:day-audit."
+      "notes": "Args: [today|yesterday|<date>], date normalized in python3 (defaults today). Portable repo discovery: repo_root userConfig, else parent of agent_root, scanned for */.git. Ownership: agent_registry userConfig (else {agent_root}/agents.json) \u2014 each agent entry's {workspace, repos}; repo<->registry matched by normalized name (case + _/- folded) against BOTH local dir basename and git origin, so WBIS_iOS==WBIS-iOS. Owning-agent context delivered by instructing the auditor to read {workspace}/CLAUDE.md + {repo}/CLAUDE.md first (in-process subagents don't inherit a foreign CLAUDE.md via cwd); unowned repo -> generic auditor, coverage never drops. Per-day commits via `git log --all --no-merges --since/--until --date=local` so develop/feature/pushed work is covered. Verdict logged to the AUDITED day's file: `log_event day-audit --at <now> --date <DAY> --pipeline-task day-audit#<DAY>` \u2014 one block per day, replaced on re-run. Report-only on repos (never edits code); high-severity findings re-verified by the parent before repeating. /jstack:day-audit."
     },
     {
       "id": "scheduler",
       "kind": "system",
       "name": "Scheduler",
       "status": "live",
-      "description": "Deterministic daemon that fires one-time and recurring agent runs on RFC-5545 RRULE schedules — the piece that lets JStack START a session, not just review and remember one. Timeout counts from spawn, the daemon owns child pgids, TTFT/stall watchdogs kill hung turns, catch-up covers downtime.",
+      "description": "Deterministic daemon that fires one-time and recurring agent runs on RFC-5545 RRULE schedules \u2014 the piece that lets JStack START a session, not just review and remember one. Timeout counts from spawn, the daemon owns child pgids, TTFT/stall watchdogs kill hung turns, catch-up covers downtime.",
       "code": [
         "scheduler/"
       ],
@@ -491,14 +513,14 @@
         "description": "Runs the real package against a hermetic temp SCHEDULER_HOME: install config drives timezone/spawn env/spawn PATH; workspace resolution (override > resolver hook > registry > agent_root) with seat_rules applied only when the seat is real; a broken resolver spec raises rather than silently relocating every run; permission_mode defaults to bypassPermissions and resolves job>category>default; VTIMEZONE derived for US-DST, last-Sunday and no-DST zones; registry add/list/remove round-trip through the CLI; and a real daemon boot serving /health. Skips with a clear message when the host python lacks python-dateutil. Never touches a real registry, state dir, or running daemon."
       },
       "subsystems": [],
-      "notes": "One package, every machine — nothing about a host is written into it. A host declares itself in {install}/config/scheduler.json: timezone, spawn_env, spawn_path_prepend, spawn_dirs, workspace_resolver ('module:function') + python_path, agent_root / agent_registry, seat_rules. SCHEDULER_HOME roots config/ and state/ (default: the package's parent); SCHEDULER_CONFIG_DIR / STATE_DIR / CREDENTIALS_DIR / API_PORT / INSTALL_FILE override individually. Requires python-dateutil and the claude CLI. Runs under launchd/systemd as `python3 -m scheduler`; mutations go through `python3 -m scheduler.cli`. permission_mode defaults to bypassPermissions because an unattended run has nobody to answer a prompt — narrowing it per job or per category is deliberate, not a default to reach for. Control API binds 127.0.0.1 only, no auth."
+      "notes": "One package, every machine \u2014 nothing about a host is written into it. A host declares itself in {install}/config/scheduler.json: timezone, spawn_env, spawn_path_prepend, spawn_dirs, workspace_resolver ('module:function') + python_path, agent_root / agent_registry, seat_rules. SCHEDULER_HOME roots config/ and state/ (default: the package's parent); SCHEDULER_CONFIG_DIR / STATE_DIR / CREDENTIALS_DIR / API_PORT / INSTALL_FILE override individually. Requires python-dateutil and the claude CLI. Runs under launchd/systemd as `python3 -m scheduler`; mutations go through `python3 -m scheduler.cli`. permission_mode defaults to bypassPermissions because an unattended run has nobody to answer a prompt \u2014 narrowing it per job or per category is deliberate, not a default to reach for. Control API binds 127.0.0.1 only, no auth."
     },
     {
       "id": "agent-inbox",
       "kind": "system",
       "name": "Agent Inbox",
       "status": "live",
-      "description": "Addressed messaging in two forms — an UPDATE to a seat, delivered once at its next SessionStart; a TASK to a session, which spawns one, ties it to the sender's, and opens a two-way channel enforced at Stop. bin/msg writes a `messages` table alongside the timeline and is its only sanctioned writer.",
+      "description": "Addressed messaging in two forms \u2014 an UPDATE to a seat, delivered once at its next SessionStart; a TASK to a session, which spawns one, ties it to the sender's, and opens a two-way channel enforced at Stop. bin/msg writes a `messages` table alongside the timeline and is its only sanctioned writer.",
       "code": [
         "bin/msg",
         "hooks/stop-inbox-guard.py",
@@ -511,14 +533,14 @@
       "test": {
         "type": "script",
         "path": "tests/msg.sh",
-        "description": "Runs the real bin/msg against a temp timeline dir, temp agent tree and its own HOME: seat addressing (cockpit descent, hyphenated seat dirs, @self), refusal of non-seat dirs / unknown agents / @boss, send-read-reply-thread roundtrip, attachments copied into the receiver's pad (and recorded in place when already there), a task that cannot be delivered filing nothing at all, and THE CHANNEL — the sender's session on the row with no receiver until one claims it, the stamp a woken run leaves, the reply binding to the session that asked rather than to its seat, the resume wake booked against that session's own workspace, delivery consuming the answer and cancelling the wake it beat, a runaway channel that stops waking anyone, and one timeline entry per seat at close."
+        "description": "Runs the real bin/msg against a temp timeline dir, temp agent tree and its own HOME: seat addressing (cockpit descent, hyphenated seat dirs, @self), refusal of non-seat dirs / unknown agents / @boss, send-read-reply-thread roundtrip, attachments copied into the receiver's pad (and recorded in place when already there), a task that cannot be delivered filing nothing at all, and THE CHANNEL \u2014 the sender's session on the row with no receiver until one claims it, the stamp a woken run leaves, the reply binding to the session that asked rather than to its seat, the resume wake booked against that session's own workspace, delivery consuming the answer and cancelling the wake it beat, a runaway channel that stops waking anyone, and one timeline entry per seat at close."
       },
       "subsystems": [
         {
           "id": "inbox-guard",
           "kind": "subsystem",
           "name": "Inbox Stop Guard",
-          "description": "Serves both ends of a channel, once per (session, message) — blocks a session that owes an answer, and hands a session the answer it asked for. Binds only what is addressed to that exact session: the [inbox:N] its own first prompt was woken with, or a row bound to its session id.",
+          "description": "Serves both ends of a channel, once per (session, message) \u2014 blocks a session that owes an answer, and hands a session the answer it asked for. Binds only what is addressed to that exact session: the [inbox:N] its own first prompt was woken with, or a row bound to its session id.",
           "code": [
             "hooks/stop-inbox-guard.py"
           ],
@@ -533,7 +555,7 @@
           "notes": "Marker dir: {JSTACK_REVIEW_STATE}/inbox-guarded/<session_id>, holding the message ids already blocked on."
         }
       ],
-      "notes": "Self-contained python3 stdlib. Store is the `messages` table in {timeline_dir}/timeline.db — bin/msg is its only sanctioned writer, same law log_event holds for `entries`; the one crossing is at close, where an answered task writes one timeline entry per seat. An UPDATE is addressed to a seat and rides SessionStart injection. A TASK is addressed to a session: origin_session is the far end, bound_session is NULL until the spawned session claims it (naming one before it boots is a guess, in the column the whole anti-ambush rule reads), wake_job is the one-shot booked to carry it. A reply goes back to origin_session by whichever of two racing paths gets there first — that session's next Stop, or a fork-resume wake booked against the workspace it started in — so no liveness guess is needed anywhere. A task is NEVER typed into a session already running: a rung that did that (mail.deliver_live) was removed 2026-08-27 because mail addresses a seat and a seat is a chat dir, so every session it could resolve was a conversation, and it picked the most recently active one, which is by construction the one a person is typing in. A stop stays safe — it is the harness's own continuation channel and touches no composer. The scheduler rung is optional; with no `mail` config the inbox still files, injects and enforces, but a task cannot be delivered. Hosts adding entrances (share-sheet drops, dashboard forms) shell out to bin/msg rather than writing the table."
+      "notes": "Self-contained python3 stdlib. Store is the `messages` table in {timeline_dir}/timeline.db \u2014 bin/msg is its only sanctioned writer, same law log_event holds for `entries`; the one crossing is at close, where an answered task writes one timeline entry per seat. An UPDATE is addressed to a seat and rides SessionStart injection. A TASK is addressed to a session: origin_session is the far end, bound_session is NULL until the spawned session claims it (naming one before it boots is a guess, in the column the whole anti-ambush rule reads), wake_job is the one-shot booked to carry it. A reply goes back to origin_session by whichever of two racing paths gets there first \u2014 that session's next Stop, or a fork-resume wake booked against the workspace it started in \u2014 so no liveness guess is needed anywhere. A task is NEVER typed into a session already running: a rung that did that (mail.deliver_live) was removed 2026-08-27 because mail addresses a seat and a seat is a chat dir, so every session it could resolve was a conversation, and it picked the most recently active one, which is by construction the one a person is typing in. A stop stays safe \u2014 it is the harness's own continuation channel and touches no composer. The scheduler rung is optional; with no `mail` config the inbox still files, injects and enforces, but a task cannot be delivered. Hosts adding entrances (share-sheet drops, dashboard forms) shell out to bin/msg rather than writing the table."
     }
   ]
 }

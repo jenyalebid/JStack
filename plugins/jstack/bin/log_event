@@ -603,6 +603,85 @@ def create_tag(name: str, description: str) -> str | None:
     return None
 
 
+def describe_tag(name: str, description: str) -> str | None:
+    """Rewrite what a tag is for. Returns an error string, or None.
+
+    The description is the part of a tag that was always meant to move. A
+    subject's boundary is learned by working it, so the sentence written at
+    mint time is a first guess — and leaving a wrong one standing costs more
+    than a typo, because it is what every later session matches against."""
+    name = normalize_tag(name)
+    description = " ".join(description.split())
+    if not description:
+        return (f"'{name}' needs --description: a tag whose description is "
+                "blank is one nobody can match against")
+    con = connect()
+    with con:
+        changed = con.execute("UPDATE tags SET description = ? WHERE name = ?",
+                              (description, name)).rowcount
+    con.close()
+    return None if changed else f"no tag '{name}'"
+
+
+def rename_tag(old: str, new: str) -> str | None:
+    """Move a tag's name, keeping every session filed under it.
+
+    Sessions reach a tag through `tag_id`, never its name, so the whole
+    relation rides a rename untouched. That is the reason renaming is the
+    safe repair for a misnamed subject and deleting is not — a delete throws
+    the filings away, a rename carries them."""
+    old, new = normalize_tag(old), normalize_tag(new)
+    if not _TAG_RE.fullmatch(new):
+        return (f"'{new}' is not a tag name — lowercase letters, digits and "
+                "hyphens, starting with a letter or digit")
+    if old == new:
+        return None
+    con = connect()
+    try:
+        with con:
+            changed = con.execute("UPDATE tags SET name = ? WHERE name = ?",
+                                  (new, old)).rowcount
+    except sqlite3.IntegrityError:
+        con.close()
+        return f"tag '{new}' already exists"
+    con.close()
+    return None if changed else f"no tag '{old}'"
+
+
+def delete_tag(name: str, force: bool = False) -> tuple[int, str | None]:
+    """Retire a tag. Returns (sessions it unfiles, error string or None).
+
+    This is the one tag edit that destroys something. The sittings filed
+    under it lose the filing and nothing anywhere remembers they carried it,
+    so a carried tag refuses without `force` and reports the count it would
+    unfile — the caller decides holding the number, which is the same bargain
+    a confirmation dialog strikes.
+
+    `session_tags.tag_id` declares ON DELETE CASCADE, but sqlite honors that
+    only under `PRAGMA foreign_keys=ON`, which `connect` does not set.
+    Membership goes explicitly here; trusting the declaration would leave
+    rows pointing at a tag id that no longer exists."""
+    name = normalize_tag(name)
+    con = connect()
+    row = con.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+    if not row:
+        con.close()
+        return 0, f"no tag '{name}'"
+    tag_id = row[0]
+    carried = con.execute("SELECT COUNT(*) FROM session_tags WHERE tag_id = ?",
+                          (tag_id,)).fetchone()[0]
+    if carried and not force:
+        con.close()
+        return carried, (f"tag '{name}' is carried by {carried} session"
+                         f"{'' if carried == 1 else 's'} — pass --force to "
+                         "delete it and unfile them")
+    with con:
+        con.execute("DELETE FROM session_tags WHERE tag_id = ?", (tag_id,))
+        con.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+    con.close()
+    return carried, None
+
+
 def tag_session(session_id: str, names: list[str]) -> tuple[list[str], list[str]]:
     """Attach existing tags to a session. Returns (attached, unknown).
 
@@ -888,6 +967,10 @@ def _tag_usage() -> str:
             '       (with a session, `●` marks what that session carries)\n'
             '   or: log_event tag show <name> [--since YYYY-MM-DD] [--json]\n'
             '   or: log_event tag new <name> --description "what belongs here"\n'
+            '   or: log_event tag describe <name> --description "..."\n'
+            '   or: log_event tag rename <old> <new>   (sessions come along)\n'
+            '   or: log_event tag delete <name> [--force]\n'
+            '       (--force is required once any session carries it)\n'
             '   or: log_event tag set <name> [<name>...] [--session <id>]\n'
             '   or: log_event tag unset <name> [<name>...] [--session <id>]\n'
             '       (--session defaults to $CLAUDE_CODE_SESSION_ID)')
@@ -899,12 +982,15 @@ def _cmd_tag(rest: list[str]) -> int:
         return 2
     verb, rest = rest[0], rest[1:]
     as_json, since, description, session = False, None, "", None
+    force = False
     pos: list[str] = []
     i = 0
     while i < len(rest):
         a = rest[i]
         if a == "--json":
             as_json = True; i += 1
+        elif a == "--force":
+            force = True; i += 1
         elif a == "--since":
             since = rest[i + 1]; i += 2
         elif a in ("--description", "--desc"):
@@ -943,6 +1029,41 @@ def _cmd_tag(rest: list[str]) -> int:
             print(f"log_event tag new: {err}", file=sys.stderr)
             return 2
         print(f"tag '{normalize_tag(pos[0])}' created — {' '.join(description.split())}")
+        return 0
+
+    if verb == "describe":
+        if len(pos) != 1:
+            print(f"log_event tag describe: one name\n{_tag_usage()}", file=sys.stderr)
+            return 2
+        err = describe_tag(pos[0], description)
+        if err:
+            print(f"log_event tag describe: {err}", file=sys.stderr)
+            return 2
+        print(f"tag '{normalize_tag(pos[0])}' — {' '.join(description.split())}")
+        return 0
+
+    if verb == "rename":
+        if len(pos) != 2:
+            print(f"log_event tag rename: <old> <new>\n{_tag_usage()}", file=sys.stderr)
+            return 2
+        err = rename_tag(pos[0], pos[1])
+        if err:
+            print(f"log_event tag rename: {err}", file=sys.stderr)
+            return 2
+        print(f"tag '{normalize_tag(pos[0])}' is now '{normalize_tag(pos[1])}'")
+        return 0
+
+    if verb == "delete":
+        if len(pos) != 1:
+            print(f"log_event tag delete: one name\n{_tag_usage()}", file=sys.stderr)
+            return 2
+        unfiled, err = delete_tag(pos[0], force=force)
+        if err:
+            print(f"log_event tag delete: {err}", file=sys.stderr)
+            return 2
+        tail = (f" — {unfiled} session{'' if unfiled == 1 else 's'} unfiled"
+                if unfiled else "")
+        print(f"tag '{normalize_tag(pos[0])}' deleted{tail}")
         return 0
 
     if verb in ("set", "unset"):

@@ -410,6 +410,79 @@ out=$("$LOG_EVENT" tail kim/chat -n 10 --tag jremote)
 [[ "$out" == *"Kim on the remote"* && "$out" != *"Kim on the daemons"* ]] \
   && pass "tail --tag filters through session_id" || fail "tail --tag ($out)"
 
+# ---- editing the vocabulary: describe, rename, delete ----------------------
+# A vocabulary worth sharing is one that can be corrected. Minting was the only
+# verb for a while, which made every typo permanent and every retired subject a
+# row nobody could remove — these three are the repairs, and the property that
+# matters is which of them keep the filings: describe and rename do, delete is
+# the one that throws them away and therefore the one with a gate.
+# Fresh names throughout, so the read cases above keep the vocabulary they set up.
+"$LOG_EVENT" tag new typoo --description "frist guess" >/dev/null 2>&1
+"$LOG_EVENT" tag set typoo --session tag-edit-s1 >/dev/null 2>&1
+"$LOG_EVENT" kim/chat --at 07:20 --date "$DAY" --session tag-edit-s1 "Kim on the typo" >/dev/null
+
+"$LOG_EVENT" tag describe typoo --description "what actually belongs here" >/dev/null 2>&1
+out=$("$LOG_EVENT" tag list)
+[[ "$out" == *"what actually belongs here"* && "$out" != *"frist guess"* ]] \
+  && pass "tag describe rewrites the sentence the next writer matches on" \
+  || fail "tag describe ($out)"
+
+"$LOG_EVENT" tag describe ghost --description "x" >/dev/null 2>&1
+[[ $? -eq 2 && "$("$LOG_EVENT" tag list)" != *ghost* ]] \
+  && pass "describing an unknown tag fails instead of minting it" \
+  || fail "tag describe unknown-name mint guard"
+
+"$LOG_EVENT" tag describe typoo --description "   " >/dev/null 2>&1
+[[ $? -eq 2 && "$("$LOG_EVENT" tag list)" == *"what actually belongs here"* ]] \
+  && pass "a blank description is refused, the old one stands" \
+  || fail "tag describe blank gate"
+
+# The property the whole rename exists for: sessions reach a tag by id, so a
+# rename must carry every filing with it. A rename that dropped them would look
+# identical in `tag list` and be found only by the read that came up empty.
+"$LOG_EVENT" tag rename typoo typo-fixed >/dev/null 2>&1
+out=$("$LOG_EVENT" tail --tag typo-fixed --sessions 10)
+[[ "$out" == *"Kim on the typo"* ]] \
+  && pass "tag rename carries the sessions filed under it" || fail "tag rename keeps filings ($out)"
+[[ "$("$LOG_EVENT" tag list --session tag-edit-s1)" == *"● typo-fixed"* ]] \
+  && pass "the renamed tag is still carried by its session" || fail "tag rename membership"
+
+"$LOG_EVENT" tag rename typo-fixed infra >/dev/null 2>&1
+[[ $? -eq 2 && "$("$LOG_EVENT" tag list)" == *typo-fixed* ]] \
+  && pass "renaming onto an existing tag is refused, not merged" || fail "tag rename collision gate"
+
+"$LOG_EVENT" tag rename typo-fixed "Not A Tag" >/dev/null 2>&1
+[[ $? -eq 2 && "$("$LOG_EVENT" tag list)" == *typo-fixed* ]] \
+  && pass "rename applies the same name rule as mint" || fail "tag rename name rule"
+
+# Delete: the destructive one. Carried means it takes filings with it, so the
+# count comes back with the refusal — the caller decides holding the number.
+out=$("$LOG_EVENT" tag delete typo-fixed 2>&1)
+[[ $? -eq 2 && "$out" == *"carried by 1 session"* && "$("$LOG_EVENT" tag list)" == *typo-fixed* ]] \
+  && pass "deleting a carried tag refuses and reports what it would unfile" \
+  || fail "tag delete carried gate ($out)"
+
+"$LOG_EVENT" tag new unused-tag --description "nothing carries this" >/dev/null 2>&1
+"$LOG_EVENT" tag delete unused-tag >/dev/null 2>&1
+[[ $? -eq 0 && "$("$LOG_EVENT" tag list)" != *unused-tag* ]] \
+  && pass "an uncarried tag deletes without --force" || fail "tag delete uncarried"
+
+# session_tags declares ON DELETE CASCADE, but connect() sets no
+# `PRAGMA foreign_keys=ON`, so sqlite never fires it. If the delete ever stops
+# clearing membership by hand, these rows survive pointing at a tag id that is
+# gone — invisible to every read, and waiting for an id to be reused.
+"$LOG_EVENT" tag delete typo-fixed --force >/dev/null 2>&1
+orphans=$(python3 -c "
+import sqlite3; c = sqlite3.connect('$TMP/timeline.db')
+print(c.execute('SELECT COUNT(*) FROM session_tags st'
+                ' LEFT JOIN tags t ON t.id = st.tag_id WHERE t.id IS NULL').fetchone()[0])")
+[[ "$("$LOG_EVENT" tag list)" != *typo-fixed* && "$orphans" == 0 ]] \
+  && pass "--force deletes and leaves no membership row behind" \
+  || fail "tag delete --force ($orphans orphan session_tags rows)"
+
+"$LOG_EVENT" tag delete never-existed >/dev/null 2>&1
+[[ $? -eq 2 ]] && pass "deleting an unknown tag fails loudly" || fail "tag delete unknown"
+
 # The subject read: a seatless tail is the window over a TAG instead of a seat,
 # which is what a session pinned to a subject boots on. Two agents on one
 # subject are one thread — so Lee's row must ride Kim's, and the seat has to be

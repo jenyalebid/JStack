@@ -319,4 +319,48 @@ for a, b in zip(lines, lines[1:]):
 # a non-text field on a block (cache_control) is noted, never dropped
 echo "$OUT5" | grep -q "cache_control" || fail5 "non-text block field invisible"
 
+# --- 6. --bare: the injection and nothing else -----------------------------
+# An always-on rule that is genuinely empty — a live slot holding no content.
+# It must render as empty, NOT as "not renderable": that message belongs only
+# to the base prompt, and using it for an empty file would claim a hole where
+# there is none.
+: > "$CLAUDE/rules/empty-gate.md"
+OUT6="$(PICT_CLAUDE_DIR="$CLAUDE" PICT_WALK_ROOT="$FIX" PICT_LOG_EVENT="$TMP/log_event" \
+       JSTACK_REVIEW_CONFIG="$CLAUDE/jstack/review.json" JSTACK_RULES_DIR="$CLAUDE/rules" \
+       "$PICT" "$FIX/Agents/Alpha/chat" --bare)"
+fail6() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT6"; exit 1; }
+
+# everything that actually injects is present, in wire order
+for marker in "Gate body." "Org root law" "Alpha identity" "Alpha chat seat" \
+              "memory index line" "did a thing"; do
+  echo "$OUT6" | grep -q "$marker" || fail6 "--bare dropped an injected body: $marker"
+done
+B_GATE=$(echo "$OUT6" | grep -n "Gate body." | head -1 | cut -d: -f1)
+B_ROOT=$(echo "$OUT6" | grep -n "Org root law" | head -1 | cut -d: -f1)
+B_SEAT=$(echo "$OUT6" | grep -n "Alpha chat seat" | head -1 | cut -d: -f1)
+[ "$B_GATE" -lt "$B_ROOT" ] && [ "$B_ROOT" -lt "$B_SEAT" ] \
+  || fail6 "--bare lost wire order"
+
+# the on-demand layer is the whole point of the flag — it must be gone,
+# body and mention alike
+ON_HITS=$(echo "$OUT6" | grep -c "Chat rule body." || true)
+[ "$ON_HITS" -eq 0 ] || fail6 "--bare included an on-demand rule body"
+echo "$OUT6" | grep -qi "on-demand" && fail6 "--bare still talks about on-demand"
+echo "$OUT6" | grep -q "no matching files here" && fail6 "--bare listed elsewhere rules"
+echo "$OUT6" | grep -q "All registered hooks" && fail6 "--bare listed hooks"
+
+# no commentary: no weight table, no mechanism column, no per-file meta line
+echo "$OUT6" | grep -q "~tokens" && fail6 "--bare kept token weights"
+echo "$OUT6" | grep -q "| # | stage |" && fail6 "--bare kept the summary table"
+echo "$OUT6" | grep -q "rides the first-message" && fail6 "--bare kept mechanism notes"
+
+# the one thing that survives the strip: emulation cannot render the base
+# prompt, and a doc that hid that would read as a complete context
+echo "$OUT6" | grep -q "base system prompt" || fail6 "--bare hid the base prompt"
+
+# empty file vs unrenderable file stay distinct
+echo "$OUT6" | grep -q "(empty)" || fail6 "--bare mislabeled an empty rule"
+NR_HITS=$(echo "$OUT6" | grep -c "not renderable" || true)
+[ "$NR_HITS" -eq 1 ] || fail6 "--bare 'not renderable' should be the base prompt alone"
+
 echo "PASS: pict"

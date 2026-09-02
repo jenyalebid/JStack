@@ -231,7 +231,7 @@
       "kind": "system",
       "name": "Prompt Injection Check (pict)",
       "status": "live",
-      "description": "bin/pict renders everything a session spawned from a given directory would actually receive — globals, CLAUDE.md walk-up, auto-memory, timeline injection, anchored path rules, hook injectors — as one ordered markdown document with per-source token weights. The way to see a seat's real context budget instead of reasoning about it.",
+      "description": "bin/pict renders everything a session spawned from a given directory would actually receive — globals, CLAUDE.md walk-up, auto-memory, timeline injection, anchored path rules, hook injectors — as one ordered markdown document with per-source token weights. The way to see a seat's real context budget instead of reasoning about it. Two views: the default answers why each file is in the context and what it costs; --bare answers what the context IS — the injected bodies in wire order, no weights, no notes, no on-demand layer.",
       "code": [
         "bin/pict"
       ],

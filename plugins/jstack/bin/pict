@@ -10,6 +10,14 @@ drift, and bloat across a walk-up chain become visible.
 
 Contract:  pict [dir] [options]          (default dir: cwd; markdown on stdout)
 
+Options:
+
+  --bare            the injection and nothing else — every loaded body in
+                    wire order, each under its path. No weight table, no
+                    mechanism notes, no on-demand layer, no hook inventory.
+                    The reading copy: what the context IS, where the default
+                    view answers why each file is in it and what it costs.
+
 Options — describe the spawn being previewed:
 
   --headless        preview a headless spawn (`claude --print`): interactive-
@@ -1135,9 +1143,13 @@ def render_request(path: Path, directory: Path | None = None,
 # ------------------------------------------------------------------ document
 
 
-def render(directory: Path, opts: dict) -> str:
+def gather(directory: Path, opts: dict, hooks: list[Hook]) -> list[Source]:
+    """Every source that actually injects, in the order the model gets it.
+
+    The on-demand layer is deliberately NOT here: a path rule fires when a
+    session touches a matching file, which is a different event from a spawn.
+    Anything this returns is in the first request, full stop."""
     sources: list[Source] = []
-    hooks = all_hooks(directory)
     gather_base_note(sources)
     gather_appends(opts["appends"], sources)
     gather_globals(sources)
@@ -1149,6 +1161,53 @@ def render(directory: Path, opts: dict) -> str:
         exec_session_hooks(directory, hooks, sources)
     gather_timeline(directory, sources)
     gather_serves(opts["serves"], sources)
+    return sources
+
+
+BARE_STAGES = {
+    "system": "system prompt",
+    "context": "first user message · project context",
+    "prompt": "first user message · the prompt",
+    "start": "after the first message · hook context",
+    "served": "mid-session tool results",
+}
+
+
+def render_bare(directory: Path, opts: dict) -> str:
+    """The injection and nothing else: every loaded body in wire order,
+    each under its path, with no weights, no mechanism notes, no on-demand
+    layer, no hook inventory.
+
+    The annotated view answers *why* a file is in the context and what it
+    costs. This one answers *what the context is* — the reading copy, for
+    when the question is the content rather than the plumbing. Same
+    `neutral()` body transform, so the bytes are the bytes.
+
+    One thing survives the strip: the base-prompt line. Emulation cannot
+    render the harness's own prompt or the tool schemas, and a document that
+    silently omitted them would read as a complete context while missing its
+    largest block — the exact lie pict exists to kill. It is named, and
+    `--request` is where the real bytes come from."""
+    sources = gather(directory, opts, all_hooks(directory))
+    lines: list[str] = []
+    stage = None
+    for s in sources:
+        if s.stage != stage:
+            stage = s.stage
+            lines.append(f"\n# ── {BARE_STAGES[s.stage]} ──\n")
+        lines.append(f"# {s.label}\n")
+        # `None` is unrenderable, `""` is a file that really is empty — a
+        # distinction worth keeping: an empty always-on rule is a live slot
+        # holding no content, not a hole in the render.
+        lines += (["*(not renderable by emulation — see --request)*"]
+                  if s.body is None else neutral(s.body))
+        lines.append("")
+    return "\n".join(lines).lstrip("\n") + "\n"
+
+
+def render(directory: Path, opts: dict) -> str:
+    hooks = all_hooks(directory)
+    sources = gather(directory, opts, hooks)
     total = len(sources)
 
     candidates: dict[str, tuple[Path, list[str], str]] = {}
@@ -1292,6 +1351,7 @@ def main(argv: list[str]) -> int:
         return 0
     opts = {"no_memory": False, "exec_hooks": False, "appends": [],
             "serves": [], "prompt": "", "sources": []}
+    bare = False
     request: Path | None = None
     positional: list[str] = []
     args = argv[1:]
@@ -1304,6 +1364,8 @@ def main(argv: list[str]) -> int:
             opts["no_memory"] = True
         elif a == "--exec-hooks":
             opts["exec_hooks"] = True
+        elif a == "--bare":
+            bare = True
         elif a in ("--append", "--serve", "--prompt", "--request", "--sources"):
             if i + 1 >= len(args):
                 sys.stderr.write(f"pict: {a} needs a value\n")
@@ -1330,9 +1392,9 @@ def main(argv: list[str]) -> int:
             positional.append(a)
         i += 1
     if len(positional) > 1:
-        sys.stderr.write("usage: pict [dir] [--headless] [--no-memory] [--exec-hooks] "
-                         "[--append FILE]... [--prompt TEXT] [--serve FILE]... "
-                         "[--sources PATH]... [--request FILE]\n")
+        sys.stderr.write("usage: pict [dir] [--bare] [--headless] [--no-memory] "
+                         "[--exec-hooks] [--append FILE]... [--prompt TEXT] "
+                         "[--serve FILE]... [--sources PATH]... [--request FILE]\n")
         return 64
     directory = Path(positional[0]).expanduser().resolve() if positional else Path.cwd()
     if not directory.is_dir():
@@ -1345,7 +1407,8 @@ def main(argv: list[str]) -> int:
             sys.stderr.write(f"pict: {request} is not request JSON: {e}\n")
             return 64
         return 0
-    sys.stdout.write(render(directory, opts))
+    sys.stdout.write(render_bare(directory, opts) if bare
+                     else render(directory, opts))
     return 0
 
 

@@ -56,8 +56,8 @@ log_event "$SEAT" --at "${STAMP#* }" --date "${STAMP%% *}" --session "$SID" "hea
 
 Use `$STAMP` verbatim — timestamps inside the JSONL are UTC and would stamp the entry hours ahead.
 
+Tags are the other axis, and they are **read before the entry is composed**, not only set after it — the seat's ten say what this cockpit did, a tag says what the subject did across every seat. Procedure, both halves: `${CLAUDE_PLUGIN_ROOT}/skills/post-session-review/tags.md`.
+
 `--context` is optional depth, stored but never injected. Use it when the session left state outgrowing three bullets — transcripts get cleaned, so the entry plus its context is all the next session gets.
 
 Timeline-worthy: code shipped, feature live, decision made, problem fixed, a user directive that drove work, significant autonomous work, something durable learned. Not: reviewed-session notes, build or test counts, paths, hashes, UUIDs, cleanup. Detail bullets serve the next run — an open thread, a decision and its why, a do-not-repeat.
-
-Wrote an entry? `log_event tag list --session "$SID"` — always `--session`, or `●` marks your tags, not the reviewed session's. A `●` that still fits ends the step; otherwise `log_event tag set <name> --session "$SID"`. A tag names a subject several sessions share, never the seat, the date, or your headline, and a near match beats a new tag. Only when nothing on the list covers the work, `log_event tag new <name> --description "what belongs under this"`. No entry, no tag.

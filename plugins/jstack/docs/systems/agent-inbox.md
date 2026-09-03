@@ -94,7 +94,7 @@ holds its own `chat/` resolves to that operator seat.
 @mario                -> mario/chat
 @lynda-social         -> lynda/social/chat      (descends into chat/)
 @lynda-pm             -> lynda/pm               (no pm/chat exists)
-@jarvis-service-call  -> jarvis/service-call    (hyphen inside a real dir name)
+@alice-service-call   -> alice/service-call     (hyphen inside a real dir name)
 @self                 -> the sending seat
 ```
 

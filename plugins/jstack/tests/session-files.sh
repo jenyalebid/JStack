@@ -170,7 +170,7 @@ OUT="$(HOME="$FIX" TMPDIR="$TMP" CLAUDE_CODE_SESSION_ID="$SID" "$BIN")"
 # =============================================================================
 # 13. A WRITE THROUGH A SYMLINK POINTING INTO THE REPO.
 #
-# This is not a corner case — it is every J&J session. The scratchpad each one
+# This is not a corner case — it is every stacked seat's session. The scratchpad each one
 # is told to use is a symlink to its seat's pad, and the pad lives inside the
 # home repo. git -C follows the link and discovers that repo, so the file was
 # grouped under it, but the unresolved link path was then handed back as a

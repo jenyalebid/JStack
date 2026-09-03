@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# JStack adapter — file a task issue and hand it to the executor account.
+#
+# Contract:
+#   task-create --title <t> (--body <text> | --body-file <p>)
+#               --label <bug|optimization|feature> [--label L]...
+#               [--repo owner/name]   default Jarvis-and-J/jarvis
+#               [--assign <login>]    default jandj-agent
+#               [--no-assign] [--project N] [--no-board] [--dry-run]
+#
+# A task is an issue with two extras a plain filing does not have:
+#
+#   1. THE CREATOR MARKER. The calling session's id and seat ride in the issue
+#      body as `<!-- jj:task creator-session=<sid> creator-seat=<seat> -->`.
+#      GitHub is the binding store — every later comment on the issue is
+#      delivered back into the creating CLI by the webhook reading this
+#      marker; there is no local creator state to race or lose. No resolvable
+#      session means no marker and a LOUD warning: the issue still files, but
+#      the conversation will not come home.
+#
+#   2. THE ASSIGNMENT. Assigning the executor account IS the spawn — the
+#      issues.assigned webhook starts the worker. It happens last, after the
+#      marker is already in the body, so the loop the worker joins is fully
+#      formed. `--no-assign` files marker-and-all without spawning (the
+#      service-call kill switch, and anything meant for the night auditor to
+#      dispatch).
+#
+# Filing itself — type-label enforcement, label self-healing, live board
+# routing — is `file-issue`'s job and is delegated, not duplicated.
+#
+# Degrades, never blocks:
+#   file-issue refusals      -> its own exit codes (64/3/4/5), nothing filed
+#   no session / no seat     -> filed WITHOUT marker, loud on stderr
+#   assignment fails         -> exit 6, issue EXISTS but nothing spawned —
+#                               the receipt says assigned=none; report it
+#
+# Last stdout line is machine-parseable:
+#   TASK <url> board=<column|none> type=<label|none> assigned=<login|none> creator=<seat|none>
+set -euo pipefail
+
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+REPO="Jarvis-and-J/jarvis" TITLE="" BODY="" BODY_FILE=""
+ASSIGNEE="jandj-agent" NO_ASSIGN=0 PROJECT="" NO_BOARD=0 DRY=0
+LABELS=()
+
+die() { echo "task-create: $*" >&2; exit 64; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo)      REPO="${2:-}"; shift 2 ;;
+    --title)     TITLE="${2:-}"; shift 2 ;;
+    --body)      BODY="${2:-}"; shift 2 ;;
+    --body-file) BODY_FILE="${2:-}"; shift 2 ;;
+    --label)     LABELS+=("${2:-}"); shift 2 ;;
+    --assign)    ASSIGNEE="${2:-}"; shift 2 ;;
+    --no-assign) NO_ASSIGN=1; shift ;;
+    --project)   PROJECT="${2:-}"; shift 2 ;;
+    --no-board)  NO_BOARD=1; shift ;;
+    --dry-run)   DRY=1; shift ;;
+    -h|--help)   sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
+    *)           die "unknown argument '$1'" ;;
+  esac
+done
+
+[[ -n "$TITLE" ]] || die "--title is required"
+[[ "$REPO" == */* ]] || die "--repo must be owner/name, got '$REPO'"
+
+if [[ -n "$BODY_FILE" ]]; then
+  [[ -r "$BODY_FILE" ]] || die "--body-file '$BODY_FILE' is not readable"
+  BODY="$(cat "$BODY_FILE")"
+fi
+[[ -n "$BODY" ]] || die "a body is required (--body or --body-file) — the body is the worker's whole brief"
+
+# ── the creator marker: this session, resolved the way msg resolves it ───────
+# bin/msg owns session->seat resolution (transcript cwd -> seat). Imported,
+# not copied: a second copy of that logic is the thing that rots.
+CREATOR_LINE="$(python3 - "$BIN_DIR/msg" <<'PY' 2>/dev/null || true
+import importlib.util, os, sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+# msg has no .py extension, so the loader must be named explicitly.
+loader = SourceFileLoader("jj_msg", sys.argv[1])
+spec = importlib.util.spec_from_loader("jj_msg", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+sid = mod.session_id()
+if not sid:
+    raise SystemExit(0)
+work = mod._cwd_of_session(sid)
+seat = mod._seat_of(work) or mod._seat_of(Path.cwd())
+if seat:
+    print(f"{sid}\t{seat}")
+PY
+)"
+
+MARKER="" CREATOR_SEAT="none"
+if [[ -n "$CREATOR_LINE" ]]; then
+  SID="${CREATOR_LINE%%$'\t'*}"
+  CREATOR_SEAT="${CREATOR_LINE##*$'\t'}"
+  MARKER="<!-- jj:task creator-session=$SID creator-seat=$CREATOR_SEAT -->"
+  BODY="$BODY
+
+$MARKER"
+else
+  echo "task-create: no creator session resolvable — filing WITHOUT the marker;" >&2
+  echo "task-create: comments on this issue will NOT reach this CLI" >&2
+fi
+
+# ── file it (file-issue owns labels, boards, and every filing degradation) ───
+args=(--repo "$REPO" --title "$TITLE" --body "$BODY")
+for l in ${LABELS+"${LABELS[@]}"}; do args+=(--label "$l"); done
+[[ -n "$PROJECT" ]] && args+=(--project "$PROJECT")
+[[ "$NO_BOARD" == "1" ]] && args+=(--no-board)
+[[ "$DRY" == "1" ]] && args+=(--dry-run)
+
+OUT="$("$BIN_DIR/file-issue" "${args[@]}")" || exit $?
+printf '%s\n' "$OUT" | sed '$d'
+RECEIPT="$(printf '%s\n' "$OUT" | tail -1)"   # ISSUE <url> board=<b> type=<t>
+URL="$(printf '%s' "$RECEIPT" | awk '{print $2}')"
+REST="${RECEIPT#ISSUE "$URL" }"               # board=<b> type=<t>
+
+if [[ "$DRY" == "1" ]]; then
+  if [[ "$NO_ASSIGN" == "1" ]]; then
+    echo "task-create: would NOT assign (--no-assign) — nothing would spawn"
+    echo "TASK <dry-run> $REST assigned=none creator=$CREATOR_SEAT"
+  else
+    echo "task-create: would assign $ASSIGNEE — assignment is the spawn"
+    echo "TASK <dry-run> $REST assigned=$ASSIGNEE creator=$CREATOR_SEAT"
+  fi
+  exit 0
+fi
+
+NUM="${URL##*/}"
+
+# ── assign: this is the spawn ────────────────────────────────────────────────
+if [[ "$NO_ASSIGN" == "1" ]]; then
+  echo "TASK $URL $REST assigned=none creator=$CREATOR_SEAT"
+  exit 0
+fi
+
+if gh issue edit "$NUM" --repo "$REPO" --add-assignee "$ASSIGNEE" >/dev/null 2>&1; then
+  echo "TASK $URL $REST assigned=$ASSIGNEE creator=$CREATOR_SEAT"
+else
+  echo "task-create: issue filed at $URL but assigning $ASSIGNEE FAILED —" >&2
+  echo "task-create: nothing spawned. Assign by hand: gh issue edit $NUM --repo $REPO --add-assignee $ASSIGNEE" >&2
+  echo "TASK $URL $REST assigned=none creator=$CREATOR_SEAT"
+  exit 6
+fi

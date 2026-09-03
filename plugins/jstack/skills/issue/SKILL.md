@@ -22,15 +22,9 @@ Comments matter: a re-assignment or resume means a conversation may already be a
 
 The type label sets the ask: `bug` = restore the claimed behaviour · `optimization` = same behaviour, faster or clearer · `feature` = build what does not exist. A body naming no symptom, surface, or ask is unactionable — go to **Blocked** rather than guessing.
 
-## 2. Board it
+Cards are not your job: In Progress, Review, Blocked, Done all move process-side on the events you fire anyway. Never place a card.
 
-```bash
-place-issue --repo <owner/repo> --issue <N> --status "In Progress"
-```
-
-Defaults to the Auto-Work board; `--list-boards` shows the alternatives when the work clearly belongs elsewhere. Adding is idempotent, so a resumed session does not duplicate its card. A non-zero exit means the card is not where you would say it is — report that rather than claiming a column you did not get.
-
-## 3. Get a worktree
+## 2. Get a worktree
 
 Branch beside the repo's checkout, never inside it:
 
@@ -43,13 +37,15 @@ cd "$WT"
 
 Repo not on this machine → clone it into the pad and work there.
 
-## 4. Do the work
+## 3. Do the work
 
 Ordinary engineering to your own standard: read the code around the change, fix the cause. Run whatever the repo runs and report the real result. A bug fix leaves behind a test that fails without it; where that is genuinely impossible, say why in the comment.
 
+Comment as you go. When the shape of the fix settles, when you change course, when something surprises you — put it on the issue, not in this session's prose. Comment style is a hard rule: digest form — what changed, what's next, what's blocked. A few lines. Boss reads these.
+
 Stay inside the issue. Anything else you trip over goes through `/jstack:report` — its own commit or its own issue, never riding along in this PR.
 
-## 5. Commit and open the PR
+## 4. Commit and open the PR
 
 ```bash
 git add <your files>
@@ -62,16 +58,15 @@ gh pr create --repo <owner/repo> --head issue-<N> --title "<title>" --body "Fixe
 
 `Fixes #<N>` is what ties the PR to the issue in GitHub's own UI. Do not merge and do not close the issue — closing is what merges, and it is not your call.
 
-## 6. Answer on the issue
+## 5. Answer on the issue
 
 ```bash
 gh issue comment <N> --repo <owner/repo> --body "..."
-place-issue --repo <owner/repo> --issue <N> --status "Review"
 ```
 
 Short and specific: what changed as behaviour rather than a file tour, the PR number, the actual test result, and anything you left undone and why.
 
-Then stay at the prompt — do not exit. A comment on the issue comes back into this session, and one that exited cannot receive it.
+Your turn can end here. A later comment on the issue resumes this conversation — read it as the live instruction and answer it on the issue again.
 
 ## Blocked
 

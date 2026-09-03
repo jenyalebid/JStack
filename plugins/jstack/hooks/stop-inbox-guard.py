@@ -11,6 +11,10 @@ A channel has two ends and this hook serves both:
     something, and the answer has come back. It is delivered here because this
     is the conversation that asked — a stop is the one moment a running session
     can be handed something without touching what a person is typing.
+  - An **inject** is the task system's creator leg: a GitHub comment on an
+    issue this session created, riding the reply's delivery. It differs in one
+    thing only — an answer, if owed, goes on the issue (`gh issue comment`),
+    never through `msg reply`; GitHub holds that conversation.
 
 It binds one thing and one thing only: **messages addressed to this exact
 session** — the task this session was spawned for (its first prompt carries
@@ -168,7 +172,8 @@ def build_reason(rows: list, seat: str) -> str:
     """Both ends of the channel, in one block. Answers first — they are what
     this session was already waiting on — then what it owes."""
     replies = [r for r in rows if r.get("state") == "reply"]
-    tasks = [r for r in rows if r.get("state") != "reply"]
+    injects = [r for r in rows if r.get("state") == "inject"]
+    tasks = [r for r in rows if r.get("state") not in ("reply", "inject")]
     lines = []
 
     if replies:
@@ -192,6 +197,26 @@ def build_reason(rows: list, seat: str) -> str:
             "message is traffic, not work. If it does not, the follow-up goes "
             "into the same conversation on their side:",
             f'  {PLUGIN_BIN}/msg reply <id> "the one thing that was missing"',
+            "",
+        ]
+
+    if injects:
+        n = len(injects)
+        lines += [
+            f"{n} comment{'s' if n != 1 else ''} landed on GitHub issue"
+            f"{'s' if n != 1 else ''} this conversation created.",
+            "",
+        ]
+        for r in injects:
+            lines.append(f"[#{r['id']}] from {r['from_seat']}")
+            lines += _body_lines(r)
+            lines.append("")
+        lines += [
+            "You are the issue's creator. If a comment asks you something or "
+            "the work has gone wrong, answer on the issue itself — `gh issue "
+            'comment <N> -R <owner/repo> --body "…"` — digest form, a few '
+            "lines; Boss reads these. A progress note that needs nothing gets "
+            "nothing back.",
             "",
         ]
 

@@ -38,6 +38,13 @@ device, context you cannot get. Work you could do yourself is not a task
 because a doc names someone else as the owner, and a message is never sent to
 correct or withdraw an earlier message.
 
+The task system (~/Systems/tasks) rides the same channel plumbing for its
+creator leg: `msg inject` (plumbing, called by the GitHub webhook) delivers an
+issue comment to the session that created the issue — bound like a reply,
+consumed by being shown, but answered on the issue itself with
+`gh issue comment`, never with `msg reply`. GitHub holds that conversation;
+the row here is only the delivery.
+
 Addressing — `@agent` is the agent's cockpit, hyphens walk down to a sub-seat:
 
     @mario                 -> mario/chat
@@ -441,7 +448,8 @@ def _short(row, width: int = 78) -> str:
 def _row_header(row) -> str:
     bits = [f"[#{row['id']}]", f"from {row['from_seat']}", row["created_at"].replace("T", " ")]
     bits.append({"task": "TASK — unanswered", "answered": "task, answered",
-                 "reply": "reply — not shown yet"}.get(row["state"], "update"))
+                 "reply": "reply — not shown yet",
+                 "inject": "issue comment — not shown yet"}.get(row["state"], "update"))
     if row["reply_to"]:
         bits.append(f"reply to #{row['reply_to']}")
     return " · ".join(bits)
@@ -511,8 +519,10 @@ def mark_seen(con, rows) -> None:
 def for_session(con, sid: str) -> list:
     """Session-addressed messages waiting on THIS session — never any other.
 
-    Two kinds, both ends of one channel: a `task` this session must answer, and
-    a `reply` it asked for and has not been shown yet.
+    Three kinds: a `task` this session must answer, a `reply` it asked for and
+    has not been shown yet, and an `inject` — a GitHub comment on a task issue
+    this session created, riding the reply's delivery but answered on the
+    issue itself.
 
     The whole no-backlog guarantee is this one clause: a message nobody
     addressed to your session is not yours to discover, so no session can ever
@@ -520,7 +530,7 @@ def for_session(con, sid: str) -> list:
     if not sid:
         return []
     return con.execute(
-        "SELECT * FROM messages WHERE state IN ('task', 'reply') "
+        "SELECT * FROM messages WHERE state IN ('task', 'reply', 'inject') "
         "AND bound_session = ? ORDER BY created_at, id", (sid,)).fetchall()
 
 
@@ -623,6 +633,39 @@ def _reply_prompt(row, parent) -> str:
         f'`msg reply {row["id"]} "the one thing that was missing"` puts the '
         "follow-up into the same conversation on their side. This is a channel, "
         "not a one-shot.",
+    ]
+    return "\n".join(parts)
+
+
+def _inject_prompt(row, repo: str, num: str, author: str) -> str:
+    """A GitHub issue comment, as a fork-resume of the session that created
+    the issue.
+
+    Same shape as _reply_prompt and for the same reason: only the wake path
+    uses this — a live creator session takes the comment at its own stop
+    instead. So it addresses a fork of the conversation that filed the issue,
+    and the answer path is the issue itself, not msg: the worker on the other
+    end reads GitHub, not this table."""
+    parts = [
+        f"[inbox:{row['id']}] {author} commented on {repo}#{num} — the task "
+        f"issue this conversation created.",
+        "",
+        "They said:",
+        row["body"] or row["subject"],
+        "",
+        "You are a continuation of the conversation that created that issue, "
+        "woken to receive this comment — not a fresh session, and not "
+        "necessarily the only copy: the conversation you came from may still "
+        "be open in front of somebody. Act only on what the comment needs.",
+        "",
+        "If it asks you something, or the work has gone wrong, answer on the "
+        "issue itself — that is where the worker reads:",
+        f'  gh issue comment {num} -R {repo} --body "…"',
+        "",
+        "Digest form, a few lines — what you decided, what you need, what is "
+        "blocked. Boss reads these. If the comment is a progress note that "
+        "needs nothing, take it and say nothing back — a comment acknowledging "
+        "a comment is traffic, not work.",
     ]
     return "\n".join(parts)
 
@@ -993,6 +1036,103 @@ def cmd_reply(args) -> int:
     return cmd_send(args)
 
 
+def cmd_inject(args) -> int:
+    """Plumbing: deliver a GitHub issue comment into the session that created
+    the issue.
+
+    The task system's creator leg. An issue filed by /task carries its
+    creator's session id in the issue body; when the worker (or Boss)
+    comments, the webhook calls this with that id and the comment. Delivery is
+    the same race a reply runs — the creator session takes it at its next
+    stop, or a wake fork-resumes it — because a comment on your issue is an
+    answer to a question you asked, whatever channel it rode in on.
+
+    Unlike a reply there is no msg thread: GitHub holds the conversation, the
+    answer path is `gh issue comment`, and a dead creator session degrades to
+    seat news instead of failing — the comment is already permanent on the
+    issue, so nothing is lost by landing it in front of the seat's next
+    session instead."""
+    con = connect()
+    sid = (args.session or "").strip()
+    if not sid:
+        _fail("inject: a creator session id is required")
+    ref = (args.issue or "").strip()
+    repo, _, num = ref.partition("#")
+    if not repo or "/" not in repo or not num.isdigit():
+        _fail(f"--issue {ref!r}: expected owner/repo#N")
+    author = (args.author or "").strip() or "someone"
+    content = (args.content or "").strip()
+    if not content:
+        _fail("empty comment")
+
+    work = _cwd_of_session(sid)
+    seat = (_seat_of(work) if work else None) or (args.seat or "").strip()
+    subject = f"{ref} — {author} commented"
+
+    if work is None:
+        # The creating conversation is gone. The comment is already permanent
+        # on the issue, so this degrades to news for the creator's seat —
+        # whoever next sits down there picks the thread up on GitHub.
+        if not seat:
+            _fail(f"session {sid[:8]} has no transcript left and no --seat "
+                  f"was given — nowhere to deliver")
+        cur = con.execute(
+            "INSERT INTO messages (created_at, from_seat, to_agent, to_seat, "
+            "subject, body, state) VALUES (?,?,?,?,?,?,'update')",
+            (now_iso(), f"github:{author}", seat.partition("/")[0], seat,
+             subject, content))
+        con.execute("UPDATE messages SET thread_id = ? WHERE id = ?",
+                    (cur.lastrowid, cur.lastrowid))
+        con.commit()
+        print(f"#{cur.lastrowid} → {seat} — session {sid[:8]} has no "
+              f"transcript left. Filed as an update; the thread lives on {ref}.")
+        return 0
+
+    if not seat:
+        _fail(f"session {sid[:8]} started outside the agent tree ({work}) "
+              f"and no --seat was given — nowhere to book the wake")
+
+    cur = con.execute(
+        "INSERT INTO messages (created_at, from_seat, to_agent, to_seat, "
+        "subject, body, state, bound_session) VALUES (?,?,?,?,?,?,'inject',?)",
+        (now_iso(), f"github:{author}", seat.partition("/")[0], seat,
+         subject, content, sid))
+    mid = cur.lastrowid
+    con.execute("UPDATE messages SET thread_id = ? WHERE id = ?", (mid, mid))
+    con.commit()
+    row = con.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
+
+    # The same ceiling a channel has, per issue per session: past it the
+    # comments still file and still show at that session's next stop, but
+    # nobody is woken — two ends politely commenting back and forth is the
+    # same runaway a msg channel can be, with a spawned session per turn.
+    turns = con.execute(
+        "SELECT COUNT(*) c FROM messages WHERE bound_session = ? "
+        "AND subject LIKE ?", (sid, f"{ref} — %")).fetchone()["c"]
+    if turns > MAX_CHANNEL_TURNS:
+        print(f"#{mid} → {seat} — filed for session {sid[:8]}, but {ref} has "
+              f"sent it {turns} comments, so no wake was booked. They see it "
+              f"if that session stops again; the thread is on the issue.")
+        return 0
+
+    at = (datetime.now() + timedelta(minutes=REPLY_WAKE_MINUTES)).strftime("%Y-%m-%d %H:%M")
+    delivery, job = _book_wake(seat, work, _inject_prompt(row, repo, num, author),
+                               f"issue {ref} → {seat}", at=at, resume=sid)
+    con.execute("UPDATE messages SET delivery = ?, wake_job = ? WHERE id = ?",
+                (delivery, job, mid))
+    con.commit()
+    if delivery:
+        print(f"#{mid} → {seat} — comment bound to session {sid[:8]}. It "
+              f"reaches them at their next stop, or resumes that conversation "
+              f"at {delivery.split(':', 1)[1]} PT, whichever comes first.")
+    else:
+        print(f"#{mid} → {seat} — comment bound to session {sid[:8]}; no "
+              f"resume wake could be booked, so it lands only if that session "
+              f"stops again. The comment itself is safe on {ref}.",
+              file=sys.stderr)
+    return 0
+
+
 def cmd_inbox(args) -> int:
     """Recent traffic for a seat — a report, never a work queue.
 
@@ -1092,9 +1232,10 @@ def cmd_pending(args) -> int:
 def cmd_deliver(args) -> int:
     """Hook helper: record that a session was shown what was addressed to it.
 
-    A `reply` is consumed by being shown — nothing is owed back, so being shown
-    is its whole lifecycle, and the resume wake booked as its fallback is
-    cancelled here because the faster path won the race.
+    A `reply` (and an `inject` — same lifecycle, GitHub-shaped) is consumed by
+    being shown — nothing is owed back, so being shown is its whole lifecycle,
+    and the resume wake booked as its fallback is cancelled here because the
+    faster path won the race.
 
     A `task` is NOT consumed. Only its answer closes it; this just stamps that
     it reached the session, so an unanswered task cannot be mistaken for an
@@ -1108,7 +1249,7 @@ def cmd_deliver(args) -> int:
     for r in rows:
         con.execute("UPDATE messages SET consumed_at = ? WHERE id = ?",
                     (now_iso(), r["id"]))
-        if r["state"] == "reply":
+        if r["state"] in ("reply", "inject"):
             con.execute("UPDATE messages SET state = 'seen' WHERE id = ?", (r["id"],))
             if r["wake_job"]:
                 _cancel_wake(r["wake_job"])
@@ -1243,6 +1384,18 @@ def build_parser() -> argparse.ArgumentParser:
     ck.add_argument("id", type=int)
     ck.add_argument("--json", action="store_true")
     ck.set_defaults(func=cmd_check)
+
+    inj = sub.add_parser("inject", help="plumbing: deliver a GitHub issue "
+                         "comment to the session that created the issue")
+    inj.add_argument("session", metavar="SESSION_ID",
+                     help="the creator session, from the issue-body marker")
+    inj.add_argument("content", help="the comment body")
+    inj.add_argument("--issue", required=True, metavar="OWNER/REPO#N")
+    inj.add_argument("--author", default="", metavar="LOGIN")
+    inj.add_argument("--seat", default="", metavar="agent/seat",
+                     help="fallback seat when the transcript is gone "
+                     "(the marker's creator-seat)")
+    inj.set_defaults(func=cmd_inject)
 
     pd = sub.add_parser("pending-for",
                         help="hook helper: what this session must take before it stops")

@@ -18,6 +18,10 @@
 #     the reply and cancels the wake, and a channel that will not end stops
 #     waking anyone
 #   - a finished exchange writes itself into BOTH seats' timelines, once
+#   - THE CREATOR LEG: `msg inject` binds a GitHub issue comment to the
+#     session that created the issue, wakes it with the issue as the answer
+#     path, is consumed by being shown, degrades to seat news when the
+#     session's transcript is gone, and a chatty issue stops waking anyone
 #
 # Exit 0 = all pass, exit 1 = any fail.
 
@@ -328,6 +332,71 @@ CLAUDE_CODE_SESSION_ID="$BOB_S" JSTACK_MAIL_FROM=bob/chat \
 [[ ! -s "$TMP/wake.argv" ]] && pass "a runaway channel books nothing" || fail "a runaway channel books nothing"
 [[ "$("$MSG" thread "$TID")" == *"one more thing"* ]] \
   && pass "but the message is still filed and readable" || fail "but the message is still filed and readable"
+
+# -------------------------------------- 4b. inject — the GitHub creator leg
+# A comment on a task issue is delivered like a reply: bound to the creator
+# session, taken at its stop or fork-resumed, consumed by being shown. GitHub
+# holds the conversation, so the answer path is the issue and a dead creator
+# session degrades to seat news.
+: > "$TMP/wake.argv"
+"$MSG" inject "$ALICE_S" "Done, PR is up." --issue "Acme/widgets#7" --author jandj-agent >/dev/null \
+  || fail "inject exit"
+IID=$(SQL "SELECT MAX(id) FROM messages WHERE state='inject'" | grep -oE '[0-9]+')
+[[ -n "$IID" ]] && pass "inject files an inject-state row" || fail "inject files an inject-state row"
+[[ "$(SQL "SELECT bound_session, to_seat FROM messages WHERE id=$IID")" == "[('$ALICE_S', 'alice/chat')]" ]] \
+  && pass "the comment binds to the creator session, seat read off its transcript" \
+  || fail "the comment binds to the creator session, seat read off its transcript"
+grep -q -- "--resume-session $ALICE_S" "$TMP/wake.argv" \
+  && pass "the inject wake resumes the creator session" || fail "the inject wake resumes the creator session"
+grep -q "gh issue comment 7 -R Acme/widgets" "$TMP/wake.argv" \
+  && pass "the wake's answer path is the issue, not msg" || fail "the wake's answer path is the issue, not msg"
+grep -q "\[inbox:$IID\]" "$TMP/wake.argv" \
+  && pass "the inject wake carries its routing marker" || fail "the inject wake carries its routing marker"
+
+# the creator session finds it at its stop — and nobody else ever does
+"$MSG" pending-for alice/chat --session "$ALICE_S" | grep -q "Done, PR is up." \
+  && pass "the creator session finds the comment" || fail "the creator session finds the comment"
+"$MSG" pending-for alice/chat --session some-stranger >/dev/null; [[ $? -eq 1 ]] \
+  && pass "an injected comment ambushes nobody else" || fail "an injected comment ambushes nobody else"
+: > "$TMP/wake.argv"
+"$MSG" deliver "$IID" >/dev/null
+[[ "$(SQL "SELECT state FROM messages WHERE id=$IID")" == "[('seen',)]" ]] \
+  && pass "delivery consumes the comment" || fail "delivery consumes the comment"
+IJOB=$(SQL "SELECT wake_job FROM messages WHERE id=$IID" | grep -oE "'[a-f0-9]+'" | tr -d "'")
+grep -q "scheduler.cli rm $IJOB" "$TMP/wake.argv" \
+  && pass "inject delivery cancels the wake it beat" || fail "inject delivery cancels the wake it beat"
+
+# a chatty issue stops waking the creator — comments still file, still show
+for i in 2 3 4 5 6 7 8; do
+  "$MSG" inject "$ALICE_S" "note $i" --issue "Acme/widgets#7" --author jandj-agent >/dev/null 2>&1
+done
+: > "$TMP/wake.argv"
+out=$("$MSG" inject "$ALICE_S" "note 9" --issue "Acme/widgets#7" --author jandj-agent 2>&1)
+[[ "$out" == *"no wake was booked"* ]] \
+  && pass "a chatty issue stops waking the creator" || fail "a chatty issue stops waking the creator ($out)"
+[[ ! -s "$TMP/wake.argv" ]] && pass "past the ceiling nothing is booked" || fail "past the ceiling nothing is booked"
+"$MSG" pending-for alice/chat --session "$ALICE_S" | grep -q "note 9" \
+  && pass "past the ceiling the comment still shows at a stop" \
+  || fail "past the ceiling the comment still shows at a stop"
+python3 -c "import sqlite3;c=sqlite3.connect('$DB');c.execute(\"UPDATE messages SET state='seen' WHERE state='inject'\");c.commit()"
+
+# a dead creator session degrades to seat news — the comment is already
+# permanent on the issue, so nothing pretends at a channel
+out=$("$MSG" inject dead-sess-1 "Worker died, exit 143." --issue "Acme/widgets#9" --author jandj-agent --seat alice/chat 2>&1) \
+  || fail "degraded inject exit"
+DGID=$(SQL "SELECT MAX(id) FROM messages WHERE subject LIKE 'Acme/widgets#9%'" | grep -oE '[0-9]+')
+[[ "$out" == *"no transcript left"* ]] \
+  && pass "a dead creator degrades to seat news, and says so" \
+  || fail "a dead creator degrades to seat news, and says so ($out)"
+[[ "$(SQL "SELECT state, bound_session FROM messages WHERE id=$DGID")" == "[('update', None)]" ]] \
+  && pass "the degraded comment binds no session" || fail "the degraded comment binds no session"
+[[ "$("$MSG" updates-for alice/chat)" == *"Worker died"* ]] \
+  && pass "and lands as the seat's news" || fail "and lands as the seat's news"
+out=$("$MSG" inject dead-sess-2 "x" --issue "Acme/widgets#9" --author x 2>&1); rc=$?
+[[ $rc -ne 0 && "$out" == *"nowhere to deliver"* ]] \
+  && pass "a dead creator with no seat fails loudly" || fail "a dead creator with no seat fails loudly"
+out=$("$MSG" inject "$ALICE_S" "x" --issue "notaref" 2>&1); rc=$?
+[[ $rc -ne 0 ]] && pass "a malformed issue ref is refused" || fail "a malformed issue ref is refused"
 
 # ------------------------------- 5. a task nobody can take is NOT filed
 cat > "$JSTACK_REVIEW_CONFIG" <<EOF3

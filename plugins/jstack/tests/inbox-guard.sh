@@ -11,6 +11,9 @@
 #   - a spawned run is bound by the [inbox:N] in its own prompt, and to
 #     nothing else
 #   - stop_hook_active / non-agent cwd / kill switches → allow, silently
+#   - the creator leg: an injected GitHub comment blocks the session that
+#     created the issue, names the issue as the answer path (never msg reply),
+#     and is consumed by being shown
 #
 # Exit 0 = all pass, exit 1 = any fail.
 
@@ -157,6 +160,26 @@ out=$(run "$A1" "$TMP/user.jsonl" "$ALICE")
 # being shown IS its lifecycle — nothing is owed back, so it is consumed here
 "$MSG" pending-for alice/chat --session "$A1" >/dev/null; [[ $? -eq 1 ]] \
   && pass "an answer is consumed by being shown" || fail "an answer is consumed by being shown"
+
+# 8. THE CREATOR LEG — a GitHub comment on an issue this session created is
+#    handed to it the same way, but the answer path it is given is the issue
+#    itself: `msg reply` aims at a seat, and github is not one.
+A2=aaaa3333-aaaa-3333-aaaa-333333333333
+transcript "$A2" "$ALICE"
+"$MSG" inject "$A2" "Tests are red on CI, need a call." \
+  --issue "Acme/widgets#12" --author jandj-agent >/dev/null
+out=$(run "$A2" "$TMP/user.jsonl" "$ALICE")
+[[ "$(printf '%s' "$out" | decision)" == "block" ]] \
+  && pass "the creator session is handed the comment" || fail "the creator session is handed the comment"
+[[ "$out" == *"Tests are red on CI"* ]] \
+  && pass "the comment itself is in the block" || fail "the comment itself is in the block"
+[[ "$out" == *"gh issue comment"* ]] \
+  && pass "the block's answer path is the issue" || fail "the block's answer path is the issue"
+[[ "$out" == *"Acme/widgets#12"* ]] \
+  && pass "the block names the issue" || fail "the block names the issue"
+"$MSG" pending-for alice/chat --session "$A2" >/dev/null; [[ $? -eq 1 ]] \
+  && pass "an injected comment is consumed by being shown" \
+  || fail "an injected comment is consumed by being shown"
 
 echo
 if [[ $fails -eq 0 ]]; then echo "ALL PASS"; exit 0; else echo "$fails FAILED"; exit 1; fi

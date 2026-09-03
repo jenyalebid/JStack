@@ -423,17 +423,16 @@
       "kind": "skill",
       "name": "Issue",
       "status": "live",
-      "description": "Works one assigned GitHub issue from open to a PR: reads the brief, boards it, builds the fix in a worktree, opens the PR, answers on the issue.",
+      "description": "Works one assigned GitHub issue from open to a PR: reads the brief, builds the fix in a worktree, opens the PR, answers on the issue. Cards move process-side on the events the worker fires; the session never places one.",
       "code": [
-        "skills/issue/SKILL.md",
-        "bin/place-issue"
+        "skills/issue/SKILL.md"
       ],
       "config": [],
       "docs": [],
       "test": {
         "type": "script",
         "path": "tests/skills.sh",
-        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory, and the place-issue adapter it calls is present and executable."
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, and name matches directory."
       },
       "subsystems": [
         {
@@ -452,7 +451,45 @@
             "description": "Drives the real binary against a stub gh: the card is added AND its column set, and a column that could not be set is reported as unset with exit 5 rather than claimed; an exact board title beats a substring that also matches, an ambiguous or unknown title exits 4 without placing, and a closed board is not a placement target; a user-owned account resolves like an org one even though gh exits non-zero on that call; the dry run mutates nothing and exits 5 on a column that does not exist."
           },
           "subsystems": [],
-          "notes": "Companion to file-issue, and a different act: file-issue answers where a NEW finding goes (an intake column, by repo linkage); this answers where work-in-progress is visible (a work board, by title). Adding is idempotent, so a resumed session re-running it does not duplicate its card. Board titles are read live for the same reason file-issue reads linkage live - a local board->id table is a second copy of a fact GitHub owns."
+          "notes": "Companion to file-issue, and a different act: file-issue answers where a NEW finding goes (an intake column, by repo linkage); this answers where work-in-progress is visible (a work board, by title). Adding is idempotent, so a re-fired event does not duplicate the card. Sessions never place their own cards - a host card engine shells to this binary on GitHub events. Board titles are read live for the same reason file-issue reads linkage live - a local board->id table is a second copy of a fact GitHub owns."
+        }
+      ]
+    },
+    {
+      "id": "task",
+      "kind": "skill",
+      "name": "Task",
+      "status": "live",
+      "description": "Hands a unit of work to an agent as a GitHub task issue: the issue is the task, its comments are the conversation, its PR is the delivery, the merge is the close. Filing embeds the creating session in the body and assigns the executor account - the assignment is the spawn.",
+      "code": [
+        "skills/task/SKILL.md",
+        "bin/task-create"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/skills.sh",
+        "description": "Validates SKILL.md exists, frontmatter is well-formed, name matches directory, and the task-create adapter it calls is present and executable."
+      },
+      "subsystems": [
+        {
+          "id": "task-create",
+          "kind": "subsystem",
+          "name": "Task Filing",
+          "description": "Files the issue through file-issue (which keeps type labels, board routing and every filing degradation), embeds the creator marker resolved through bin/msg's own session->seat logic, then assigns the executor account last so the loop the worker joins is fully formed.",
+          "code": [
+            "bin/task-create"
+          ],
+          "config": [],
+          "docs": [],
+          "test": {
+            "type": "script",
+            "path": "tests/task-create.sh",
+            "description": "Drives the real binary against a stubbed file-issue and gh in a fake HOME: the creator marker rides the filed body when the session resolves and its absence degrades to a loud marker-less filing, never a refusal; the executor is assigned on the filed number and a failed assignment exits 6 with assigned=none so filed-but-spawnless is never read as success; --no-assign files without touching gh; a file-issue refusal propagates untouched with nothing assigned; the dry run previews the assignment without making it; and a missing title or body refuses before anything happens."
+          },
+          "subsystems": [],
+          "notes": "The marker is the creator leg: the host webhook reads it from the issue body to deliver every later comment into the CLI that filed the task. Session->seat resolution is imported from bin/msg at run time rather than copied, so the one resolution logic cannot fork. Assignment is deliberately the last act and deliberately separable: --no-assign is the kill-switch and night-auditor path, where the issue waits fully formed for someone else to assign."
         }
       ]
     },

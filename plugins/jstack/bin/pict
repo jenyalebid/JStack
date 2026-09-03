@@ -120,6 +120,25 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import repo_seat  # noqa: E402
+
+
+def _inject_hook():
+    """The SessionStart hook, imported by path — its filename has dashes, so it
+    is not importable by name. pict shows what the hook composes; reimplementing
+    any of it here would be a second copy that drifts from the thing it claims
+    to preview."""
+    import importlib.util  # noqa: PLC0415
+    path = Path(__file__).resolve().parent.parent / "hooks" / "session-start-inject.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_jstack_inject", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
 PLUGIN_BIN = Path(__file__).resolve().parent
 
 
@@ -561,19 +580,34 @@ def review_config() -> dict:
         return {}
 
 
-def resolve_seat(directory: Path, root: Path) -> tuple[str | None, str | None]:
-    """Same contract as session-start-inject.py resolve()."""
+def resolve_seat(directory: Path, root: Path,
+                 cfg: dict | None = None) -> tuple[str | None, str | None]:
+    """Same contract as session-start-inject.py resolve(), repo-seat fallback
+    included — pict has to show what the session would really receive, and in a
+    repo the agent owns that is the owning agent's seat, not nothing."""
     try:
         rel = directory.resolve().relative_to(root.resolve())
     except (ValueError, OSError):
-        return None, None
-    if not rel.parts:
-        return None, None
-    agent_dir = root / rel.parts[0]
-    if not (agent_dir / "CLAUDE.md").is_file():
-        return None, None
-    submode = "/".join(x.lower() for x in rel.parts[1:]) or "chat"
-    return agent_dir.name.lower(), submode
+        rel = None
+    if rel is not None and rel.parts:
+        agent_dir = root / rel.parts[0]
+        if (agent_dir / "CLAUDE.md").is_file():
+            submode = "/".join(x.lower() for x in rel.parts[1:]) or "chat"
+            return agent_dir.name.lower(), submode
+    cfg = review_config() if cfg is None else cfg
+    return repo_seat.seat_for(directory, root,
+                              repo_seat.registry_path_for(cfg, root))
+
+
+def seat_via_repo(directory: Path, root: Path) -> bool:
+    """True when the seat came from the registry rather than the directory —
+    the case the hook hands an identity block, since walk-up cannot reach a
+    workspace that is a sibling of the checkout."""
+    try:
+        rel = directory.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return True
+    return not (rel.parts and (root / rel.parts[0] / "CLAUDE.md").is_file())
 
 
 def timeline_count(cfg: dict, agent: str, submode: str) -> tuple[int, str]:
@@ -604,14 +638,29 @@ def timeline_count(cfg: dict, agent: str, submode: str) -> tuple[int, str]:
 def gather_timeline(directory: Path, sources: list[Source]) -> None:
     cfg = review_config()
     root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
-    agent, submode = resolve_seat(directory, root)
+    agent, submode = resolve_seat(directory, root, cfg)
     mech = "SessionStart hook — jstack session-start-inject.py (emulated read-only)"
     if agent is None or submode == "review":
         add(sources, "start", "(no timeline injection)",
-            mech + " — dir is not an agent seat", None)
+            mech + " — dir is not an agent seat, and no registry entry owns it",
+            None)
         return
-    n, why = timeline_count(cfg, agent, submode)
     seat = f"{agent}/{submode}"
+    if seat_via_repo(directory, root) and cfg.get("inject_identity", True):
+        hook = _inject_hook()
+        if hook is not None:
+            reg_path = repo_seat.registry_path_for(cfg, root)
+            try:
+                identity = hook.build_identity(
+                    agent, submode, root, repo_seat.load_registry(reg_path))
+            except Exception:
+                identity = ""
+            if identity:
+                add(sources, "start", f"role files — seat `{seat}`",
+                    mech + " — cwd is a repo the registry owns, so walk-up never "
+                    "reaches the workspace, wrapped in <jstack-identity>", identity)
+
+    n, why = timeline_count(cfg, agent, submode)
     if n <= 0:
         add(sources, "start", f"(no timeline injection) seat `{seat}`",
             mech + (f" — {why}" if why else ""), None)

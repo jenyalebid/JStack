@@ -363,4 +363,43 @@ echo "$OUT6" | grep -q "(empty)" || fail6 "--bare mislabeled an empty rule"
 NR_HITS=$(echo "$OUT6" | grep -c "not renderable" || true)
 [ "$NR_HITS" -eq 1 ] || fail6 "--bare 'not renderable' should be the base prompt alone"
 
+# ── a repo seat previews the identity block the hook actually sends ─────────
+# systems.json claims pict "previews exactly what an IDE session in a repo
+# would receive". It showed the timeline and silently dropped the role files —
+# the larger of the two blocks, and the one whose absence looks like a session
+# with no identity rather than a preview with a hole in it.
+mkdir -p "$FIX/repos/Widget"
+git -C "$FIX/repos/Widget" init -q 2>/dev/null
+echo "# Widget repo docs" > "$FIX/repos/Widget/CLAUDE.md"
+cat > "$FIX/Agents/agents.json" <<EOF
+{"alpha": {"workspace": "$FIX/Agents/Alpha/chat", "repos": ["Widget"]}}
+EOF
+cat > "$CLAUDE/jstack/review.json" <<EOF
+{"agent_root": "$FIX/Agents", "repo_root": "$FIX/repos",
+ "agent_registry": "$FIX/Agents/agents.json",
+ "timeline_inject": {"*/chat": 2}}
+EOF
+OUT7="$(PICT_CLAUDE_DIR="$CLAUDE" PICT_WALK_ROOT="$FIX" PICT_LOG_EVENT="$TMP/log_event" \
+       JSTACK_REVIEW_CONFIG="$CLAUDE/jstack/review.json" JSTACK_RULES_DIR="$CLAUDE/rules" \
+       "$PICT" "$FIX/repos/Widget")"
+fail7() { echo "FAIL: $1"; echo "---- output ----"; echo "$OUT7"; exit 1; }
+
+echo "$OUT7" | grep -q 'role files — seat `alpha/chat`' \
+  || fail7 "repo seat previews no identity block"
+echo "$OUT7" | grep -q "Alpha identity" || fail7 "agent role file missing from identity"
+echo "$OUT7" | grep -q 'seat `alpha/chat`' || fail7 "repo seat did not resolve"
+# order matters: identity is who you are, and it precedes what you last did
+IL=$(echo "$OUT7" | grep -n 'role files — seat' | head -1 | cut -d: -f1)
+TL=$(echo "$OUT7" | grep -n 'timeline tail — seat' | head -1 | cut -d: -f1)
+[ -n "$IL" ] && [ -n "$TL" ] && [ "$IL" -lt "$TL" ] \
+  || fail7 "identity must precede the timeline, as the hook orders them"
+
+# a session standing in its own seat already has its role by walk-up — the
+# block would be a duplicate, and the hook does not send one
+OUT8="$(PICT_CLAUDE_DIR="$CLAUDE" PICT_WALK_ROOT="$FIX" PICT_LOG_EVENT="$TMP/log_event" \
+       JSTACK_REVIEW_CONFIG="$CLAUDE/jstack/review.json" JSTACK_RULES_DIR="$CLAUDE/rules" \
+       "$PICT" "$FIX/Agents/Alpha/chat")"
+echo "$OUT8" | grep -q 'role files — seat' \
+  && { echo "FAIL: cockpit seat got a duplicate identity block"; exit 1; }
+
 echo "PASS: pict"

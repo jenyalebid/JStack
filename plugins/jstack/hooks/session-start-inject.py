@@ -68,7 +68,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-PLUGIN_BIN = Path(__file__).resolve().parent.parent / "bin"
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_BIN = PLUGIN_ROOT / "bin"
+sys.path.insert(0, str(PLUGIN_ROOT))
+import repo_seat  # noqa: E402
 
 
 def _config() -> dict:
@@ -107,6 +110,13 @@ def resolve(cwd: Path, root: Path) -> tuple[str | None, str | None]:
 
 _NO_TTY = {"??", "?", "-", ""}
 
+# An IDE drives its embedded agent from a window, not a terminal: nothing in
+# the ancestry ever holds a tty, so the walk below would read a live human
+# session as a headless spawn and inject nothing. An IDE ancestor is the
+# window's equivalent of a controlling terminal.
+_IDE_ANCESTORS = {n.strip() for n in (
+    os.environ.get("JSTACK_IDE_ANCESTORS") or "Xcode").split(",") if n.strip()}
+
 
 def _is_interactive() -> bool:
     """A human-driven session has a controlling terminal somewhere; headless
@@ -117,8 +127,12 @@ def _is_interactive() -> bool:
     /dev/tty inside a hook fails even when a human is driving — the terminal
     lives on the CLI process up the ancestry. Try /dev/tty (covers direct
     invocation), then walk parents via ps and count any ancestor holding a
-    tty as interactive. JSTACK_ASSUME_INTERACTIVE=1 short-circuits to True —
-    for hosts (or tests) whose spawn shape defeats the ancestry walk."""
+    tty as interactive. An IDE ancestor counts too: an editor drives its
+    embedded agent from a window and no process in that chain ever holds a
+    tty, so a human sitting in Xcode would otherwise read as a daemon
+    (JSTACK_IDE_ANCESTORS overrides the set).
+    JSTACK_ASSUME_INTERACTIVE=1 short-circuits to True — for hosts (or tests)
+    whose spawn shape defeats the ancestry walk."""
     if os.environ.get("JSTACK_ASSUME_INTERACTIVE"):
         return True
     try:
@@ -132,17 +146,20 @@ def _is_interactive() -> bool:
             return False
         try:
             out = subprocess.run(
-                ["ps", "-o", "tty=,ppid=", "-p", str(pid)],
+                ["ps", "-o", "tty=,ppid=,comm=", "-p", str(pid)],
                 capture_output=True, text=True, timeout=3,
-            ).stdout.split()
+            ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             return False
-        if len(out) < 2:
+        parts = out.split(None, 2)
+        if len(parts) < 2:
             return False
-        if out[0] not in _NO_TTY:
+        if parts[0] not in _NO_TTY:
+            return True
+        if len(parts) > 2 and Path(parts[2]).name in _IDE_ANCESTORS:
             return True
         try:
-            pid = int(out[1])
+            pid = int(parts[1])
         except ValueError:
             return False
     return False
@@ -388,6 +405,61 @@ def build_tag_context(tag: str, seat: str, entries: str, n: int) -> str:
     )
 
 
+def build_identity(agent: str, submode: str, root: Path, registry: dict) -> str:
+    """The agent's role file, for a session that reached its seat through a repo.
+
+    A cockpit session loads its role by standing in it — CLAUDE.md walk-up
+    climbs from cwd to the workspace and picks it up. A session in a repo can't:
+    the workspace is a sibling of the checkout, not an ancestor, so walk-up
+    passes it by and the session gets the repo's docs and none of its own
+    identity. Reading it in is the same answer walk-up would have given, applied
+    to the layout the IDE forces.
+
+    Ordered least-specific first, matching how walk-up stacks: shared protocol
+    at the agent root, then the agent's own role file, then the seat's."""
+    entry = registry.get(agent) or {}
+    ws = entry.get("workspace")
+    seat_dir = Path(str(ws)).expanduser() if ws else root / agent
+    try:
+        agent_dir = root / seat_dir.resolve().relative_to(root.resolve()).parts[0]
+    except (ValueError, OSError, IndexError):
+        agent_dir = seat_dir
+
+    parts = []
+    seen = set()
+    for path in (root / "CLAUDE.md", agent_dir / "CLAUDE.md", seat_dir / "CLAUDE.md"):
+        try:
+            rp = path.resolve()
+        except OSError:
+            continue
+        if rp in seen or not path.is_file():
+            continue
+        seen.add(rp)
+        try:
+            body = path.read_text().strip()
+        except OSError:
+            continue
+        if body:
+            parts.append(f"--- {path} ---\n{body}")
+    if not parts:
+        return ""
+
+    body = "\n\n".join(parts)
+    return (
+        "<jstack-identity>\n"
+        f"Injected on entry by JStack. Your working directory is a repo that "
+        f"{agent} owns, so you are the {agent} agent working in it — the seat is "
+        f"{agent}/{submode}. Your role files are below: CLAUDE.md walk-up climbs "
+        "from the working directory and your workspace is a sibling of this "
+        "checkout, not an ancestor, so it never reaches them. Read them as your "
+        "own identity, the same as if you had started in the workspace. Where "
+        "they describe your cockpit as the working directory, that part is the "
+        "terminal shape — here the working directory is the code.\n\n"
+        f"{body}\n"
+        "</jstack-identity>"
+    )
+
+
 def main() -> int:
     # `--explain <agent/seat>` — machine mode, no stdin contract: prints the
     # injection answer for a seat as JSON (see explain()). Consumers that
@@ -415,6 +487,14 @@ def main() -> int:
     cfg = _config()
     root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
     agent, submode = resolve(Path(cwd), root)
+    via_repo = False
+    if agent is None:
+        # Not a seat directory. It may still be a repo the registry says an
+        # agent owns — an IDE fixes cwd to the checkout, so this is the only
+        # way that session ever sees its own history.
+        registry_path = repo_seat.registry_path_for(cfg, root)
+        agent, submode = repo_seat.seat_for(cwd, root, registry_path)
+        via_repo = agent is not None
     if agent is None or submode == "review":
         return 0
 
@@ -428,6 +508,15 @@ def main() -> int:
 
     seat = f"{agent}/{submode}"
     blocks = []
+
+    # Identity first, and only for a session that reached its seat through a
+    # repo: CLAUDE.md walk-up already gave a cockpit session its role, but a
+    # session standing in a checkout never passes its workspace.
+    if via_repo and cfg.get("inject_identity", True):
+        identity = build_identity(
+            agent, submode, root, repo_seat.load_registry(registry_path))
+        if identity:
+            blocks.append(identity)
 
     # A pinned tag replaces the seat window with the subject's. The seat's
     # configured depth still sets it — but a seat that injects nothing still

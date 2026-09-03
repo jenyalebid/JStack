@@ -18,7 +18,9 @@
 #   (i) kill switch env → no output
 #   (j) live-session-only: headless spawns never inject, any seat, any config
 #       form; liveness is read off the process ancestry (hooks run detached
-#       from the controlling terminal, /dev/tty never opens inside one)
+#       from the controlling terminal, /dev/tty never opens inside one); an
+#       IDE ancestor counts as live, since an editor drives its embedded
+#       agent from a window and nothing in that chain holds a tty
 #   (k) per-dir seats: each dir is its own seat — own lineage + ancestor dirs,
 #       never a sibling dir's
 #
@@ -188,6 +190,38 @@ for _ in $(seq 1 60); do [[ -f "$HEADLESS_OUT" ]] && break; sleep 0.1; done
 [[ -f "$HEADLESS_OUT" && ! -s "$HEADLESS_OUT" ]] \
   && pass "live-only: orphaned headless spawn gets nothing" \
   || fail "live-only: orphaned headless spawn gets nothing"
+
+# (j3) an IDE drives its agent from a window: the whole chain is tty-less, so
+# without an IDE ancestor a live human session reads as a daemon. Same orphan
+# harness, but the hook's parent is named in JSTACK_IDE_ANCESTORS.
+IDE_OUT="$TMP/ide.out"
+JSTACK_IDE_ANCESTORS=sh JSTACK_REVIEW_CONFIG="$CFG2" python3 - "$HOOK" "$PAYLOAD" "$IDE_OUT" <<'PYEOF'
+import os, subprocess, sys, time
+hook, payload, outfile = sys.argv[1], sys.argv[2], sys.argv[3]
+if os.fork() == 0:
+    os.setsid()
+    if os.fork() == 0:
+        deadline = time.time() + 20
+        while os.getppid() != 1 and time.time() < deadline:
+            time.sleep(0.05)
+        # via sh so the hook's immediate ancestor is comm "sh"
+        # trailing ':' defeats sh's tail-call exec, so sh stays alive as the
+        # hook's parent — that process is what stands in for the IDE here
+        r = subprocess.run(["/bin/sh", "-c", 'python3 "%s"; :' % hook],
+                           input=payload, capture_output=True, text=True)
+        with open(outfile, "w") as f:
+            f.write(r.stdout)
+        os._exit(0)
+    os._exit(0)
+else:
+    os.wait()
+PYEOF
+# the orphan waits to be reparented before it even starts the hook, and a
+# busy machine stretches that — wait generously, a green run still exits early
+for _ in $(seq 1 300); do [[ -s "$IDE_OUT" ]] && break; sleep 0.1; done
+[[ -s "$IDE_OUT" ]] \
+  && pass "live-only: IDE ancestor counts as live without a tty" \
+  || fail "live-only: IDE ancestor counts as live without a tty"
 
 # (j2) the production interactive shape — detached hook, tty on the ancestor
 SPAWNER="$TMP/detached_spawn.py"

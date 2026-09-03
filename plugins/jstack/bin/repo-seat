@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""repo-seat — which agent seat owns a directory of code.
+
+  repo-seat [dir]           "wbis/chat", or exit 3 if nothing owns it
+  repo-seat [dir] --json    {"agent","submode","seat","repo","via","dir"}
+
+dir defaults to the working directory. Resolution and the reasoning behind it
+live in repo_seat.py; this is the way to ask from a shell, a hook, or while
+working out why an IDE session did or didn't land in the seat you expected.
+
+Config comes from the session-end engine's file (JSTACK_REVIEW_CONFIG, default
+~/.claude/jstack/review.json): `agent_root`, and `agent_registry` if the
+registry isn't at the default {agent_root}/agents.json.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import repo_seat  # noqa: E402
+
+
+def _config() -> dict:
+    p = Path(os.environ.get(
+        "JSTACK_REVIEW_CONFIG",
+        str(Path.home() / ".claude" / "jstack" / "review.json"),
+    )).expanduser()
+    try:
+        data = json.loads(p.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def main(argv: list[str]) -> int:
+    as_json = "--json" in argv
+    args = [a for a in argv if not a.startswith("-")]
+    directory = Path(args[0]).expanduser() if args else Path.cwd()
+
+    cfg = _config()
+    root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
+    registry_path = repo_seat.registry_path_for(cfg, root)
+    registry = repo_seat.load_registry(registry_path)
+
+    agent, repo, via = repo_seat.owner_of(directory, registry)
+    if agent is None:
+        if as_json:
+            print(json.dumps({
+                "agent": None, "submode": None, "seat": None, "repo": None,
+                "via": None, "dir": str(directory),
+                "registry": str(registry_path),
+                "agents": len(registry),
+            }))
+        else:
+            why = ("registry is empty or unreadable: " + str(registry_path)
+                   if not registry else "no agent in the registry owns it")
+            print(f"{directory}: {why}", file=sys.stderr)
+        return 3
+
+    agent, submode = repo_seat._seat_of(registry[agent], agent, root)
+    if as_json:
+        print(json.dumps({
+            "agent": agent, "submode": submode, "seat": f"{agent}/{submode}",
+            "repo": repo, "via": via, "dir": str(directory),
+            "registry": str(registry_path),
+        }))
+    else:
+        print(f"{agent}/{submode}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        raise SystemExit(130)

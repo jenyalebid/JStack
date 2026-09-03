@@ -88,6 +88,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import repo_seat  # noqa: E402
+
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 PLUGIN_BIN = Path(__file__).resolve().parent
 
@@ -343,8 +346,11 @@ def find_session(session_id: str, transcript_hint: str | None = None) -> tuple[P
     agents = reviewable_agents(CFG["agent_root"])
 
     def resolve(p: Path) -> tuple[Path, str | None]:
-        return p, resolve_agent(p.parent.name, CFG["agent_root"], agents,
-                                CFG["project_dir_map"], CFG["default_agent"])
+        agent = resolve_agent(p.parent.name, CFG["agent_root"], agents,
+                              CFG["project_dir_map"], CFG["default_agent"])
+        if agent is None:
+            agent = _repo_agent(_session_cwd(p), agents)
+        return p, agent
 
     if transcript_hint:
         p = Path(transcript_hint)
@@ -411,6 +417,18 @@ def _session_cwd(jsonl_path: Path) -> str | None:
     return None
 
 
+def _repo_agent(cwd: str | None, agents: dict[str, str]) -> str | None:
+    """The agent that owns the repo a non-workspace session ran in, if any.
+    Gated on the agent being reviewable so a registry entry can never conjure
+    an agent the workspace layout doesn't have."""
+    if not cwd:
+        return None
+    agent, _ = repo_seat.seat_for(
+        cwd, CFG["agent_root"],
+        repo_seat.registry_path_for(CFG, CFG["agent_root"]))
+    return agent if agent in agents else None
+
+
 def resolve_submode(jsonl_path: Path, agent_root: Path, agent_title: str) -> str | None:
     """The seat the session ran in: the session dir's full path under
     {agent_root}/{agent_title}/, "/"-joined — seats are directories, each dir
@@ -425,7 +443,13 @@ def resolve_submode(jsonl_path: Path, agent_root: Path, agent_title: str) -> str
     try:
         rel = Path(cwd).relative_to(agent_root / agent_title)
     except ValueError:
-        return None
+        # Outside the workspace. A session in a repo the agent owns still has a
+        # seat — its cockpit one — so its entry files with the rest of that
+        # agent's work instead of being dropped for having no seat.
+        _, submode = repo_seat.seat_for(
+            cwd, agent_root,
+            repo_seat.registry_path_for(CFG, agent_root))
+        return submode
     return "/".join(rel.parts) if rel.parts else "chat"
 
 

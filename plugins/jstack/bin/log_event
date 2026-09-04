@@ -4,7 +4,8 @@
 Write:
     log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
               [--detail "..."]... [--context "..."] [--origin direct|indirect]
-              [--pipeline-task <repo>#<issue>] [--session <id>]
+              [--commit <sha>[@<repo>]]... [--pipeline-task <repo>#<issue>]
+              [--session <id>]
 
 Query / admin (first positional is the subcommand):
     log_event tail <agent[/submode]> [-n N | --sessions N] [--tag <name>] [--json]
@@ -36,6 +37,12 @@ Origin marks who drove the session the entry came from: `direct` (a human at
 the wheel) or `indirect` (cron/gateway/spawned work). Resolution: --origin
 flag > JSTACK_TIMELINE_ORIGIN env > direct. Pre-origin rows read back as ''.
 
+`--commit` links the entry to what it shipped. The entry says why the sitting
+happened; the commit says what changed — the two halves of one event, kept in
+the store that owns each. The sha is the link and the subject rides beside it,
+read from git rather than retyped, so the timeline's own `grep` can find work
+by what its commits said.
+
 Store: {timeline_dir}/timeline.db (sqlite, WAL — concurrent writers safe).
 Timeline dir: $JSTACK_TIMELINE_DIR (default ~/Logs/Timeline). Format spec lives
 in the jstack rule `timeline.md`. Source is `agent` or `agent/submode` — always
@@ -53,6 +60,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +84,7 @@ CREATE TABLE IF NOT EXISTS entries (
     verdict_note  TEXT,
     context       TEXT NOT NULL DEFAULT '',
     origin        TEXT NOT NULL DEFAULT '',
+    commits       TEXT NOT NULL DEFAULT '[]',
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_entries_seat ON entries(agent, submode, date, time);
@@ -121,6 +130,8 @@ def connect() -> sqlite3.Connection:
         con.execute("ALTER TABLE entries ADD COLUMN context TEXT NOT NULL DEFAULT ''")
     if "origin" not in cols:
         con.execute("ALTER TABLE entries ADD COLUMN origin TEXT NOT NULL DEFAULT ''")
+    if "commits" not in cols:
+        con.execute("ALTER TABLE entries ADD COLUMN commits TEXT NOT NULL DEFAULT '[]'")
     return con
 
 
@@ -184,6 +195,112 @@ def _clean_details(details: list[str] | None) -> list[str]:
     return out
 
 
+# ------------------------------------------------------------------- commits
+#
+# An entry and a commit are two halves of one event. The entry says why the
+# sitting happened and what it means for the next one; the commit says what
+# changed. Neither belongs inside the other — a timeline that carried diffs
+# would stop being readable, and a commit message cannot explain a sitting that
+# shipped nothing. So the entry carries the LINK, and just enough of the commit
+# to be findable: its sha and its subject.
+#
+# The subject is read from git, never taken from the caller. A writer retyping
+# its own commit message drifts from what the commit actually says the moment
+# either is edited, and a link whose text disagrees with its target is worse
+# than a bare sha. Git is on the same disk; asking it costs one subprocess on a
+# path that runs a few times a session.
+
+#: Absolute — a hook or launchd caller has no useful PATH, and resolving the
+#: wrong `git` would be a silent wrong answer rather than a missing one.
+_GIT = "/usr/bin/git"
+
+#: A local `git show` on a warm repo is milliseconds. The bound exists so a
+#: wedged git (a lock held by a concurrent session in the shared tree) costs
+#: the link and not the entry.
+_GIT_TIMEOUT = 10
+
+
+def _git(repo: str, *args: str) -> str | None:
+    try:
+        proc = subprocess.run([_GIT, "-C", repo, *args], capture_output=True,
+                              text=True, timeout=_GIT_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def resolve_commit(ref: str) -> dict | None:
+    """One `--commit` value → `{sha, repo, subject}`, read out of git.
+
+    `<sha>` resolves in the current directory; `<sha>@<repo>` in that checkout
+    — the form `/jstack:push` uses, since it commits with `git -C <root>` and
+    already knows which root each sha belongs to.
+
+    An unresolvable ref keeps its sha with an empty subject and warns on
+    stderr. It must never fail the write: the link is metadata, and the same
+    rule origin follows applies — losing the entry to save the link inverts
+    which one matters. A bare sha still points at something a person can look
+    up; a lost entry is gone.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    sha, _, repo = ref.partition("@")
+    sha = sha.strip()
+    repo = repo.strip() or os.getcwd()
+    if not sha:
+        return None
+
+    out = _git(repo, "show", "-s", "--format=%H%x1f%s", sha)
+    if out is None or "\x1f" not in out:
+        print(f"log_event: could not resolve commit {ref!r} — storing the sha "
+              f"alone, with no subject", file=sys.stderr)
+        return {"sha": sha, "repo": "", "subject": ""}
+    full, _, subject = out.partition("\x1f")
+    top = _git(repo, "rev-parse", "--show-toplevel") or ""
+    return {"sha": full.strip(), "repo": Path(top).name if top else "",
+            "subject": " ".join(subject.split())}
+
+
+def _clean_commits(refs: list[str] | None) -> list[dict]:
+    """Resolve each ref once, in the order given, first mention winning.
+
+    Deduped on the resolved sha rather than the ref as typed: the same commit
+    reached as a short sha and as a full one is one commit, and an entry
+    claiming it twice would double-count in every reader downstream."""
+    out: list[dict] = []
+    seen = set()
+    for ref in refs or []:
+        c = resolve_commit(ref)
+        if c is None or c["sha"] in seen:
+            continue
+        seen.add(c["sha"])
+        out.append(c)
+    return out
+
+
+def _load_commits(raw: str) -> list[dict]:
+    """Read the column back. Defensive because a store predating the column
+    reads as '' through any connection that did not go through `connect()`."""
+    try:
+        val = json.loads(raw or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [c for c in val if isinstance(c, dict) and c.get("sha")]
+
+
+def format_commits(commits: list[dict]) -> list[str]:
+    """One line per commit — short sha, repo, subject. The display shape for
+    `show` and `recall --full`; deliberately absent from `format_tail`, which
+    is what every session boots on and stays prose."""
+    lines = []
+    for c in commits:
+        where = f" {c['repo']}" if c.get("repo") else ""
+        what = f" {c['subject']}" if c.get("subject") else ""
+        lines.append(f"{c['sha'][:8]}{where}{what}".rstrip())
+    return lines
+
+
 # --------------------------------------------------------------------- writes
 
 def _clamp_future(day: str, ts: str) -> tuple[str, str]:
@@ -207,7 +324,8 @@ def append_timeline(source: str, text: str, day: str | None = None,
                     details: list[str] | None = None,
                     session_id: str | None = None,
                     context: str | None = None,
-                    origin: str | None = None) -> None:
+                    origin: str | None = None,
+                    commits: list[dict] | None = None) -> None:
     if not source or not text:
         return
     d = day or datetime.now().strftime("%Y-%m-%d")
@@ -218,11 +336,12 @@ def append_timeline(source: str, text: str, day: str | None = None,
     with con:
         con.execute(
             "INSERT INTO entries (date, time, agent, submode, headline, details,"
-            " pipeline_task, session_id, context, origin, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+            " pipeline_task, session_id, context, origin, commits, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
             (d, ts, agent, submode, " ".join(text.split()),
              json.dumps(_clean_details(details), ensure_ascii=False),
              session_id, (context or "").strip(), origin or default_origin(),
+             json.dumps(commits or [], ensure_ascii=False),
              datetime.now().isoformat(timespec="seconds")),
         )
     con.close()
@@ -234,9 +353,15 @@ def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
                                details: list[str] | None = None,
                                session_id: str | None = None,
                                context: str | None = None,
-                               origin: str | None = None) -> None:
+                               origin: str | None = None,
+                               commits: list[dict] | None = None) -> None:
     """One live entry per pipeline task: replace all rows carrying the tag
-    (tagged column, or legacy tag-in-text) with one block, earliest ts kept."""
+    (tagged column, or legacy tag-in-text) with one block, earliest ts kept.
+
+    Commits ACCUMULATE across the replacements, for the same reason the
+    earliest timestamp survives them: a task's shipped work is the whole of it,
+    not whatever the last session happened to touch. A replacement that dropped
+    the earlier links would quietly unship them."""
     if not source or not task_tag or not text:
         return
     headline = " ".join(text.split())
@@ -249,24 +374,36 @@ def consolidate_pipeline_entry(source: str, task_tag: str, text: str,
     con = connect()
     with con:
         matched = con.execute(
-            "SELECT id, time FROM entries WHERE date = ? AND"
+            "SELECT id, time, commits FROM entries WHERE date = ? AND"
             " (pipeline_task = ? OR headline LIKE ? OR details LIKE ?)",
             (d, task_tag, f"%{task_tag}%", f"%{task_tag}%"),
         ).fetchall()
-        earliest = min((t for _, t in matched), default=None)
+        earliest = min((t for _, t, _ in matched), default=None)
+        carried: list[dict] = []
+        seen = set()
+        for _, _, raw in matched:
+            for c in _load_commits(raw):
+                if c["sha"] not in seen:
+                    seen.add(c["sha"])
+                    carried.append(c)
+        for c in commits or []:
+            if c["sha"] not in seen:
+                seen.add(c["sha"])
+                carried.append(c)
         if matched:
             con.executemany("DELETE FROM entries WHERE id = ?",
-                            [(i,) for i, _ in matched])
+                            [(i,) for i, _, _ in matched])
         final_ts = timestamp or earliest or datetime.now().strftime("%H:%M")
         _, final_ts = _clamp_future(d, final_ts)
         con.execute(
             "INSERT INTO entries (date, time, agent, submode, headline, details,"
-            " pipeline_task, session_id, context, origin, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " pipeline_task, session_id, context, origin, commits, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (d, final_ts, agent, submode, headline,
              json.dumps(_clean_details(details), ensure_ascii=False),
              task_tag, session_id, (context or "").strip(),
              origin or default_origin(),
+             json.dumps(carried, ensure_ascii=False),
              datetime.now().isoformat(timespec="seconds")),
         )
     con.close()
@@ -294,7 +431,7 @@ def set_verdict(seat: str, verdict: str, note: str) -> str | None:
 # -------------------------------------------------------------------- queries
 
 _ENTRY_COLS = ("id, date, time, agent, submode, headline, details, verdict,"
-               " verdict_note, session_id, context, origin")
+               " verdict_note, session_id, context, origin, commits")
 
 # A row with no session_id is its own session — legacy (pre-session) rows and
 # any writer that omitted --session must not collapse into one giant bucket
@@ -324,11 +461,12 @@ def _seat_filter(seat: str | None) -> tuple[str, tuple]:
 
 
 def _entry_row(row: tuple) -> dict:
-    eid, date, ts, a, s, h, dt, v, vn, sid, ctx, org = row
+    eid, date, ts, a, s, h, dt, v, vn, sid, ctx, org, cms = row
     return {"id": eid, "date": date, "time": ts, "agent": a, "submode": s,
             "headline": h, "details": json.loads(dt),
             "verdict": v, "verdict_note": vn,
-            "session_id": sid, "context": ctx, "origin": org}
+            "session_id": sid, "context": ctx, "origin": org,
+            "commits": _load_commits(cms)}
 
 
 def tail_entries(seat: str | None, n: int, origin: str | None = None,
@@ -431,13 +569,18 @@ def format_tail(entries: list[dict], show_seat: bool = False) -> str:
 
 def grep_entries(pattern: str, seat: str | None = None,
                  since: str | None = None, tag: str | None = None) -> list[dict]:
-    """Substring search (case-insensitive) over headline + details + context,
-    across all days and seats — the recall surface for 'when did we do X?'."""
+    """Substring search (case-insensitive) over headline + details + context +
+    linked commit subjects, across all days and seats — the recall surface for
+    'when did we do X?'.
+
+    Commit subjects are in scope because they are the half of the record that
+    names the code: "when did we touch the lockout?" is answered by the commit
+    that says so, and an entry findable only by its own prose would miss it."""
     esc = (pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"))
     like = f"%{esc}%"
     where = ["(headline LIKE ? ESCAPE '\\' OR details LIKE ? ESCAPE '\\'"
-             " OR context LIKE ? ESCAPE '\\')"]
-    params: list = [like, like, like]
+             " OR context LIKE ? ESCAPE '\\' OR commits LIKE ? ESCAPE '\\')"]
+    params: list = [like, like, like, like]
     if tag:
         frag, tp = _tag_clause(tag)
         where.append(frag); params.extend(tp)
@@ -479,17 +622,17 @@ def recall_entries(day_from: str, day_to: str, seat: str | None = None,
     con = connect()
     rows = con.execute(
         "SELECT id, date, time, agent, submode, headline, details, verdict,"
-        " verdict_note, session_id, context, origin FROM entries"
+        " verdict_note, session_id, context, origin, commits FROM entries"
         f" WHERE {' AND '.join(where)} ORDER BY date, time, id", params,
     ).fetchall()
     con.close()
     out = []
-    for i, d, t, a, s, h, dt, v, vn, sid, ctx, org in rows:
+    for i, d, t, a, s, h, dt, v, vn, sid, ctx, org, cms in rows:
         out.append({"id": i, "date": d, "time": t,
                     "source": format_source(a, s), "headline": h,
                     "details": json.loads(dt), "verdict": v,
                     "verdict_note": vn, "session_id": sid, "context": ctx,
-                    "origin": org})
+                    "origin": org, "commits": _load_commits(cms)})
     return out
 
 
@@ -505,6 +648,8 @@ def format_recall(entries: list[dict], full: bool = False) -> str:
         if e["verdict"]:
             note = f" — {e['verdict_note']}" if e["verdict_note"] else ""
             lines.append(f"  ↳ verdict: {e['verdict']}{note}")
+        for c in format_commits(e.get("commits") or []):
+            lines.append(f"  ▸ {c}")
         if full and e["context"]:
             lines.append(f"context:\n{e['context']}")
         blocks.append("\n".join(lines))
@@ -516,17 +661,17 @@ def show_entry(entry_id: int) -> dict | None:
     con = connect()
     row = con.execute(
         "SELECT id, date, time, agent, submode, headline, details,"
-        " pipeline_task, session_id, verdict, verdict_note, context, origin"
-        " FROM entries WHERE id = ?", (entry_id,),
+        " pipeline_task, session_id, verdict, verdict_note, context, origin,"
+        " commits FROM entries WHERE id = ?", (entry_id,),
     ).fetchone()
     con.close()
     if row is None:
         return None
-    i, d, t, a, s, h, dt, pt, sid, v, vn, ctx, org = row
+    i, d, t, a, s, h, dt, pt, sid, v, vn, ctx, org, cms = row
     return {"id": i, "date": d, "time": t, "source": format_source(a, s),
             "headline": h, "details": json.loads(dt), "pipeline_task": pt,
             "session_id": sid, "verdict": v, "verdict_note": vn,
-            "context": ctx, "origin": org}
+            "context": ctx, "origin": org, "commits": _load_commits(cms)}
 
 
 # ---------------------------------------------------------------------- tags
@@ -770,10 +915,13 @@ def tag_entries(tag: str, since: str | None = None) -> list[dict]:
 def _write_usage() -> str:
     return ('usage: log_event <agent[/submode]> "<headline>" [--at HH:MM] '
             '[--date YYYY-MM-DD] [--detail "..."]... [--context "..."] '
-            '[--origin direct|indirect] [--pipeline-task <tag>] [--session <id>]\n'
+            '[--origin direct|indirect] [--commit <sha>[@<repo>]]... '
+            '[--pipeline-task <tag>] [--session <id>]\n'
             '       (--at/--date default to now/today, machine-local — omit '
             'unless logging an earlier event;\n'
-            '        --origin defaults from $JSTACK_TIMELINE_ORIGIN, else direct)\n'
+            '        --origin defaults from $JSTACK_TIMELINE_ORIGIN, else direct;\n'
+            '        --commit repeats, one per sha shipped — subject is read '
+            'from git, repo defaults to $PWD)\n'
             '   or: log_event tail <agent[/submode]> [-n N | --sessions N] '
             '[--tag <name>] [--json]\n'
             '   or: log_event tail --tag <name> [--sessions N]   '
@@ -953,6 +1101,10 @@ def _cmd_show(rest: list[str]) -> int:
     if e["verdict"]:
         note = f" — {e['verdict_note']}" if e["verdict_note"] else ""
         print(f"↳ verdict: {e['verdict']}{note}")
+    if e["commits"]:
+        print("commits:")
+        for line in format_commits(e["commits"]):
+            print(f"  {line}")
     if e["context"]:
         print(f"context:\n{e['context']}")
     return 0
@@ -1163,6 +1315,7 @@ def main(argv: list[str]) -> int:
         return 2
     timestamp = day = pipeline_task = session_id = context = origin = None
     details: list[str] = []
+    commit_refs: list[str] = []
     words: list[str] = []
 
     i = 0
@@ -1182,10 +1335,12 @@ def main(argv: list[str]) -> int:
             session_id = rest[i + 1]; i += 2
         elif a == "--origin":
             origin = rest[i + 1]; i += 2
+        elif a == "--commit":
+            commit_refs.append(rest[i + 1]); i += 2
         elif a.startswith("-") and len(a) > 1:
             print(f"log_event: unknown flag {a} — supported: --at --date "
-                  "--detail --context --origin --pipeline-task --session",
-                  file=sys.stderr)
+                  "--detail --context --origin --commit --pipeline-task "
+                  "--session", file=sys.stderr)
             return 2
         else:
             words.append(a); i += 1
@@ -1211,18 +1366,22 @@ def main(argv: list[str]) -> int:
     if not session_id:
         session_id = _env_session() or None
 
+    commits = _clean_commits(commit_refs)
+
     label = day if day else "today"
     if pipeline_task:
         consolidate_pipeline_entry(source, pipeline_task, text, day=day,
                                    timestamp=timestamp, details=details,
                                    session_id=session_id, context=context,
-                                   origin=origin)
+                                   origin=origin, commits=commits)
         print(f"consolidated: {source} ({label}) [{pipeline_task}] {text[:80]}")
     else:
         append_timeline(source, text, day=day, timestamp=timestamp,
                         details=details, session_id=session_id, context=context,
-                        origin=origin)
+                        origin=origin, commits=commits)
         print(f"logged: {source} ({label}) {text[:80]}")
+    for line in format_commits(commits):
+        print(f"  ▸ {line}")
     return 0
 
 

@@ -17,7 +17,8 @@ The timeline is the single running memory: a sqlite store of seat-tagged entries
 ```bash
 log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
           [--detail "..."]... [--context "..."] [--origin direct|indirect]
-          [--pipeline-task <repo>#<issue>] [--session <sid>]
+          [--commit <sha>[@<repo>]]... [--pipeline-task <repo>#<issue>]
+          [--session <sid>]
 ```
 
 - **Source is the seat:** `agent/submode` (e.g. `alpha/chat`) — stored as split columns; always pass the submode when the seat is known, since seat injection filters on it. A bare `agent` source is legal but invisible to seat tails once seat-tagged entries fill the window.
@@ -27,7 +28,8 @@ log_event <agent[/submode]> "<headline>" [--at HH:MM] [--date YYYY-MM-DD]
 - **Future stamps are impossible and clamp:** a `--date` after today lands today stamped now; a same-day `--at` past the current minute (2-min grace) becomes now. Backstop for the classic writer error — HH:MM copied from a UTC transcript timestamp.
 - **`--context`** is on-demand depth: stored on the entry, never injected — surfaced only by `show` and `tail --json`. Keeps the boot window lean while the entry stays self-sufficient.
 - **`--origin direct|indirect`** marks who drove the session the entry came from: `direct` = a human at the wheel, `indirect` = cron/gateway/spawned. Resolution: flag > `JSTACK_TIMELINE_ORIGIN` env > direct. Spawn plumbing sets the env on unattended sessions (a bad env value falls back to direct — origin is metadata and must never block a write); pre-origin rows read back as `''`.
-- **`--pipeline-task <tag>`** consolidates: every existing entry carrying the tag (tagged column or legacy tag-in-text) is replaced by one current entry. The tag is auto-prepended to the headline; the earliest matched timestamp is kept unless `--at` is given. One live entry per task, always current.
+- **`--commit <sha>[@<repo>]`** (repeatable) links the entry to what the sitting shipped. The sha is the link; the subject is read from git and stored beside it, so `grep` can find work by what its commits said and a reader is never handed a bare hash. `<repo>` defaults to `$PWD` — `/jstack:push` passes it explicitly, since it commits with `git -C <root>` and knows which root each sha came from. Dedup is on the *resolved* sha, so a short ref and a full one are one commit. An unresolvable ref stores the sha with an empty subject and warns: the link is metadata and must never cost the entry, the same rule origin follows. Surfaces in `show`, `recall`, `tail --json` and `grep` — never in the injected boot window, which stays prose. Consolidation accumulates them (see `--pipeline-task`).
+- **`--pipeline-task <tag>`** consolidates: every existing entry carrying the tag (tagged column or legacy tag-in-text) is replaced by one current entry. The tag is auto-prepended to the headline; the earliest matched timestamp is kept unless `--at` is given, and linked commits accumulate across the replacements for the same reason — a task's shipped work is the whole of it, not whatever the last session touched. One live entry per task, always current.
 - **`--session <sid>`** links the entry to the transcript that produced it, and is the column tags resolve through. Falls back to `$CLAUDE_CODE_SESSION_ID` when the flag is absent, so a hand-typed write is still reachable by tag; the explicit flag wins, since a caller writing on another session's behalf knows better than its own environment. The transcript link itself is advisory — transcripts get cleaned over time; anything the future must know rides the entry itself (bullets or `--context`).
 - Headlines collapse internal newlines/whitespace; details are normalized to `- ` bullets.
 

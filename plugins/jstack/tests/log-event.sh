@@ -550,6 +550,85 @@ JSTACK_TIMELINE_DIR="$OLD" "$LOG_EVENT" tag new legacyok --description "arrived 
 [[ $(python3 -c "import sqlite3; print(sqlite3.connect('$OLD/timeline.db').execute(\"SELECT name FROM tags\").fetchall())") == "[('legacyok',)]" ]] \
   && pass "tag tables migrate onto a pre-tag db" || fail "tag schema migration"
 
+# ---- commits: the entry links what it shipped -------------------------------
+#
+# An entry says why the sitting happened; the commit says what changed. The link
+# is the sha, and the subject rides beside it so the timeline's own grep can
+# find work by what its commits said.
+
+CR="$TMP/commitrepo"; mkdir -p "$CR"
+git -C "$CR" init -q .
+git -C "$CR" config user.email t@example.com
+git -C "$CR" config user.name Tester
+echo one > "$CR/a.txt"; git -C "$CR" add a.txt
+git -C "$CR" commit -qm "fix(auth): a lockout that punished the device"
+C1=$(git -C "$CR" rev-parse HEAD)
+echo two > "$CR/b.txt"; git -C "$CR" add b.txt
+git -C "$CR" commit -qm "feat(host): the seam answers projects"
+C2=$(git -C "$CR" rev-parse HEAD)
+
+# 41. the subject is READ from git, not taken from the caller
+"$LOG_EVENT" cx/chat --at 15:00 --date "$DAY" "Ships the fix" --commit "$C1@$CR" >/dev/null
+stored=$(SQL "SELECT commits FROM entries WHERE headline='Ships the fix'")
+[[ "$stored" == *"a lockout that punished the device"* && "$stored" == *"$C1"* ]] \
+  && pass "--commit stores sha + subject read from git" || fail "--commit store ($stored)"
+
+# 42. the repo name comes off the checkout, not the argument
+[[ "$stored" == *'"repo": "commitrepo"'* ]] \
+  && pass "commit repo resolved from the checkout" || fail "commit repo ($stored)"
+
+# 43. a bare sha resolves against $PWD — the hand-typed form, from in the repo
+(cd "$CR" && "$LOG_EVENT" cx/chat --at 15:01 --date "$DAY" "From inside" --commit "$C2") >/dev/null
+[[ $(SQL "SELECT commits FROM entries WHERE headline='From inside'") == *"the seam answers projects"* ]] \
+  && pass "bare sha resolves in \$PWD" || fail "bare sha in PWD"
+
+# 44. grep reaches commit subjects — the whole point of storing the text and not
+#     only the link. 'lockout' appears in NO headline, detail or context.
+"$LOG_EVENT" grep "lockout" | grep -q "Ships the fix" \
+  && pass "grep finds an entry by its commit's subject" || fail "grep over commits"
+
+# 45. an unresolvable sha keeps the link and warns — it must never cost the
+#     entry, the same rule origin follows (metadata never blocks a write)
+err=$("$LOG_EVENT" cx/chat --at 15:02 --date "$DAY" "Bad link" --commit "nosuchsha@$CR" 2>&1 >/dev/null)
+rc=$?
+[[ $rc -eq 0 ]] && echo "$err" | grep -q "could not resolve commit" \
+  && [[ $(SQL "SELECT commits FROM entries WHERE headline='Bad link'") == *"nosuchsha"* ]] \
+  && pass "unresolvable sha warns, entry still lands" || fail "bad sha handling (rc=$rc, $err)"
+
+# 46. the same commit twice is one commit — deduped on the RESOLVED sha, so a
+#     short ref and a full one cannot double-count
+"$LOG_EVENT" cx/chat --at 15:03 --date "$DAY" "Twice" \
+  --commit "$C1@$CR" --commit "${C1:0:8}@$CR" >/dev/null
+n=$(python3 -c "import sqlite3,json; print(len(json.loads(sqlite3.connect('$DB').execute(\"SELECT commits FROM entries WHERE headline='Twice'\").fetchone()[0])))")
+[[ "$n" == "1" ]] && pass "duplicate refs to one commit dedupe" || fail "commit dedupe (got $n)"
+
+# 47. injection stays prose — format_tail never renders a sha. The boot window
+#     is what every session reads; hashes there are the noise the format bans.
+"$LOG_EVENT" tail cx/chat -n 10 | grep -qi "$C1" \
+  && fail "tail leaked a sha into the injected view" || pass "tail stays prose, no shas"
+
+# 48. `show` and `recall` are where the link surfaces
+"$LOG_EVENT" show "$(SQL "SELECT id FROM entries WHERE headline='Ships the fix'" | tr -dc '0-9')" \
+  | grep -q "${C1:0:8}" \
+  && pass "show prints the linked commits" || fail "show commits"
+"$LOG_EVENT" recall "$DAY" cx | grep -q "${C1:0:8}" \
+  && pass "recall prints the linked commits" || fail "recall commits"
+
+# 49. commits ACCUMULATE across pipeline consolidation — a task's shipped work
+#     is the whole of it, not whatever the last session touched
+"$LOG_EVENT" px/chat --date "$DAY" --pipeline-task "app#7" "started" --commit "$C1@$CR" >/dev/null
+"$LOG_EVENT" px/chat --date "$DAY" --pipeline-task "app#7" "finished" --commit "$C2@$CR" >/dev/null
+acc=$(SQL "SELECT commits FROM entries WHERE pipeline_task='app#7'")
+[[ "$acc" == *"$C1"* && "$acc" == *"$C2"* ]] \
+  && pass "pipeline consolidation carries earlier commits forward" || fail "pipeline commit accumulation ($acc)"
+
+# 50. the column arrives on a db that predates it — same in-place upgrade
+#     context/origin get, or every installed host stays unlinkable
+JSTACK_TIMELINE_DIR="$OLD" "$LOG_EVENT" old --at 11:00 --date 2026-01-05 "Linked post-upgrade" \
+  --commit "$C1@$CR" >/dev/null
+[[ $(python3 -c "import sqlite3; print(sqlite3.connect('$OLD/timeline.db').execute(\"SELECT commits FROM entries WHERE headline='Linked post-upgrade'\").fetchall())") == *"$C1"* ]] \
+  && pass "commits column migrates onto a pre-commits db" || fail "commits schema migration"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "log-event: $fails FAILED" >&2

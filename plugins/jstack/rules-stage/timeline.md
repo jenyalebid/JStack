@@ -14,7 +14,8 @@ headless spawns never receive an injection, and `origin=indirect` entries
 (crons, publish wakes, spawned work) never ride in one — the injected view
 is `tail --origin direct`, the seat's human-driven narrative. Feeds daily
 briefs, nightly reviews, and every seat's cold start. **Not a session log.
-Not a commit log. Not a build report.**
+Not a commit log. Not a build report.** It *links* to commits (see below) and
+is still none of those: one entry per sitting, not one per change.
 
 Store: sqlite at `{timeline_dir}/timeline.db` (default `~/Logs/Timeline/`) —
 the ONLY artifact; there are no rendered files. Everything goes through the
@@ -55,7 +56,10 @@ Headline — present-tense, one line, ≤120 chars.
 
 ## What does NOT belong
 
-- File paths, commit hashes, branch names, session UUIDs, PIDs, exit codes.
+- File paths, commit hashes, branch names, session UUIDs, PIDs, exit codes —
+  **in the prose**. A sha belongs to the entry, but not to its sentences: it
+  rides the `--commit` link (below), where a reader can follow it and a writer
+  never has to spend a bullet on it.
 - Test counts, line counts, build configs, device/simulator models, OS versions.
 - Process noise — "pushed", "build clean", "5/5 tests pass".
 - Routine maintenance — "reviewed session".
@@ -71,6 +75,36 @@ trace, the exact state of a half-done thread), put it in `--context`: stored
 on the entry, never injected. It surfaces only via `log_event show <id>` or
 `tail --json`. The `--session` link is advisory — transcripts get cleaned
 over time; the entry plus its context must stand alone.
+
+## Commits — what the sitting shipped
+
+An entry and a commit are two halves of one event, and neither absorbs the
+other. The **commit** says what changed, in the store that can show you the
+diff. The **entry** says why the sitting happened, what it means for the next
+one, and everything that shipped no code at all — a decision, a dead end, a
+directive, a blocker. Link them; never restate one inside the other.
+
+```bash
+log_event {agent}/{submode} "headline" --commit {sha}            # resolves in $PWD
+log_event {agent}/{submode} "headline" --commit {sha}@{repo_root} # from anywhere
+```
+
+Repeat `--commit` once per sha the sitting shipped. The subject is **read from
+git**, never retyped — a hand-copied message drifts from the commit the moment
+either is edited, and a link whose text disagrees with its target is worse than
+a bare sha. An unresolvable sha warns and still stores; the link never costs the
+entry.
+
+Where it shows: `show`, `recall`, `tail --json`, and `grep` — searching commit
+subjects along with the prose, so "when did we touch the lockout?" lands on the
+entry whose commit says lockout. Where it does NOT show: the injected boot
+window, which stays prose.
+
+**Log at delivery, not only at the end.** The moment a unit of work is done and
+committed is the moment its entry is cheapest and truest to write — the shas
+exist, the reasoning is still loaded, and nothing has been compacted away yet. A
+sitting that delivers three times leaves three entries. Waiting for session end
+means one entry written from whatever survived the last boundary.
 
 ## Origin — who drove the session
 
@@ -181,6 +215,7 @@ log_event {agent}/{submode} --at 14:05 "event from earlier today"
 log_event {agent}/{submode} --at 23:10 --date 2026-04-28 "late-logged event"
 log_event {agent}/{submode} --session {session_id} "headline"   # link the transcript
 log_event {agent}/{submode} --origin indirect "headline"  # writing for unattended work
+log_event {agent}/{submode} "headline" --commit {sha}@{repo}    # link what it shipped
 ```
 
 Agents write their own seat as source. Reserved sources (e.g. `assistant`)

@@ -19,11 +19,19 @@ from . import config
 
 def _bootstrap_python_path() -> None:
     """Put the install's `python_path` on sys.path so a workspace_resolver
-    living outside this package is importable."""
+    living outside this package is importable.
+
+    Appended, never inserted at the front. The install's `python_path` is an
+    absolute machine path (`~/Operations/Infrastructure`), so inserting it at 0
+    outranked whatever the caller had already put there — and a process running
+    out of a git worktree got the home checkout's `lib`/`dashboard` the moment
+    anything imported this package. Making a module reachable is the whole job
+    here; outranking the caller's own tree never was.
+    """
     for entry in config.install().get("python_path") or []:
         p = str(config.expand(entry))
         if p not in sys.path:
-            sys.path.insert(0, p)
+            sys.path.append(p)
 
 
 def spawn_dirs() -> list:

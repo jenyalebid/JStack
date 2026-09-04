@@ -114,9 +114,11 @@ def validate_registry(reg: dict) -> None:
             rrule = sched.get("rrule")
             if not isinstance(rrule, str) or not rrule:
                 raise ValueError(f"{where}: schedule.rrule required when kind='rrule'")
+            # Resolved OUTSIDE the try: a missing dateutil is not a bad
+            # rrule, and reporting it as one sends the reader to inspect a
+            # schedule string that was always fine.
+            rrulestr = occurrences.get_rrulestr()
             try:
-                from dateutil.rrule import rrulestr
-
                 rrulestr(rrule, dtstart=dtstart)
             except Exception as e:
                 raise ValueError(f"{where}: bad rrule {rrule!r}: {e}") from None

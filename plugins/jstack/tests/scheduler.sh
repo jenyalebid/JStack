@@ -22,12 +22,16 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="${JSTACK_PYTHON:-python3}"
 command -v "$PY" >/dev/null 2>&1 || { echo "FAIL: no python3 on PATH (set JSTACK_PYTHON)"; exit 1; }
 
-# The package needs python-dateutil for RRULE expansion. A host python without
-# it cannot run the scheduler at all, so say so plainly rather than failing in a
-# way that looks like a code defect.
+# python-dateutil is needed for RRULE expansion and for NOTHING ELSE. Recurring
+# jobs require it; one-shot jobs must not, because a one-shot is how a message
+# wake and a self-scheduled follow-up are delivered — the paths a fresh install
+# needs on day one, before anyone has installed anything. The rest of this file
+# exercises recurrence and so needs the package; the portability check below
+# runs first and deliberately runs WITHOUT it.
 if ! "$PY" -c "import dateutil.rrule" >/dev/null 2>&1; then
-    echo "SKIP: python-dateutil not installed for $PY — the scheduler cannot run here."
+    echo "SKIP: python-dateutil not installed for $PY — the recurrence checks need it."
     echo "      Install it (pip install python-dateutil) or point JSTACK_PYTHON at the venv that runs the daemon."
+    echo "      NOTE: the one-shot path does not need it; see tests/scheduler-bare.sh."
     exit 0
 fi
 

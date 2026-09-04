@@ -9,9 +9,30 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from dateutil.rrule import rrulestr
-
 from . import config
+
+def get_rrulestr():
+    """`dateutil.rrule.rrulestr`, imported on first recurring-schedule use.
+
+    dateutil is this package's only third-party dependency, and it is needed
+    by exactly one kind of job. Imported at module top it became a dependency
+    of the whole CLI: `scheduler.cli` imports this module, so on a machine
+    without dateutil even `add-once` died at import — and one-shot jobs are
+    how a message wake and a self-scheduled follow-up are delivered. Both
+    call sites below sit past the `kind == "once"` early return, so the
+    entire one-shot path now runs on a stock interpreter.
+
+    The failure, when it does come, names the one job kind that needs it
+    rather than the import line."""
+    try:
+        from dateutil.rrule import rrulestr
+    except ImportError as e:  # noqa: TRY003 — the fix belongs in the message
+        raise ImportError(
+            "recurring schedules need the 'python-dateutil' package "
+            "(pip install python-dateutil); one-shot jobs do not"
+        ) from e
+    return rrulestr
+
 
 _CRON_FIELDS = ("minute", "hour", "day-of-month", "month", "day-of-week")
 _CRON_BOUNDS = {
@@ -141,7 +162,7 @@ def next_fires(job: dict, n: int = 1, after: "datetime|None" = None,
     if sched.get("kind") == "once":
         return [dtstart] if dtstart > after else []
 
-    rule = rrulestr(sched["rrule"], dtstart=dtstart)
+    rule = get_rrulestr()(sched["rrule"], dtstart=dtstart)
     out: list[datetime] = []
     cur = after
     for _ in range(n):
@@ -176,5 +197,5 @@ def last_fire(job: dict, before: "datetime|None" = None, inc: bool = True) -> "d
             return dtstart if dtstart <= before else None
         return dtstart if dtstart < before else None
 
-    rule = rrulestr(sched["rrule"], dtstart=dtstart)
+    rule = get_rrulestr()(sched["rrule"], dtstart=dtstart)
     return rule.before(before, inc=inc)

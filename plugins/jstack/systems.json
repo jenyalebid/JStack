@@ -534,6 +534,25 @@
       "notes": "Args: [today|yesterday|<date>], date normalized in python3 (defaults today). Portable repo discovery: repo_root userConfig, else parent of agent_root, scanned for */.git. Ownership: agent_registry userConfig (else {agent_root}/agents.json) — each agent entry's {workspace, repos}; repo<->registry matched by normalized name (case + _/- folded) against BOTH local dir basename and git origin, so Acme_iOS==Acme-iOS. Owning-agent context delivered by instructing the auditor to read {workspace}/CLAUDE.md + {repo}/CLAUDE.md first (in-process subagents don't inherit a foreign CLAUDE.md via cwd); unowned repo -> generic auditor, coverage never drops. Per-day commits via `git log --all --no-merges --since/--until --date=local` so develop/feature/pushed work is covered. Verdict logged to the AUDITED day's file: `log_event day-audit --at <now> --date <DAY> --pipeline-task day-audit#<DAY>` — one block per day, replaced on re-run. Report-only on repos (never edits code); high-severity findings re-verified by the parent before repeating. /jstack:day-audit."
     },
     {
+      "id": "root-derivation",
+      "kind": "system",
+      "name": "Root Derivation",
+      "status": "live",
+      "description": "The one declaration a JStack install derives its tree from. $JSTACK_ROOT (else a caller-supplied cfg 'root', else $HOME) yields Agents/, Systems/, Config/, State/, Logs/ and Credentials/ by structure — visible, declared folders, never a hidden dotfolder, because a hidden state dir is a second shadow root and that is the disease this cures. Each derived dir keeps its own env override above the derivation and a cfg key between them, so an install that names dirs explicitly is untouched by the derivation existing. Also the single definition of an agent — a directory under agents_dir() with a CLAUDE.md, or with a seat subdir carrying one — behind agents()/resolve_agent()/seats(), replacing copies that had drifted apart across the scheduler, both hooks, repo_seat and msg.",
+      "code": [
+        "root.py"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/root.sh",
+        "description": "Hermetic tmpdir roots with HOME redirected: the six-dir derivation from JSTACK_ROOT; env > cfg > derivation precedence per dir, resolved per call so an env change mid-process takes effect; the legacy 'agent_root' cfg key installs already set; an explicit JSTACK_STATE_DIR outranking the derivation, which is the property that keeps a live daemon's state in place; a data dir inside the shipping checkout raising while agents_dir inside a repo stays legal; the agent taxonomy (top-level CLAUDE.md, seat-only, plain folder, dotdir) through agents/resolve_agent/seats including case and separator folding; and a bare-root proof asserting every answer comes from a tmpdir holding only Agents/alice/CLAUDE.md, never the machine's own tree."
+      },
+      "subsystems": [],
+      "notes": "Imports nothing from the package and reads no config file — callers pass their own parsed cfg, so there is one opinion about which file is authoritative. scheduler/config.py carries its own copy of the shipping-tree guard deliberately: it must keep working on an older install where root.py is absent, and importing the other way would be a cycle. Only Config/State/Logs/Credentials are guarded; Agents/ and Systems/ may legitimately live inside a repo. Resolution is never cached at import — a constant captured at import answers with the environment of a process start nobody remembers."
+    },
+    {
       "id": "scheduler",
       "kind": "system",
       "name": "Scheduler",
@@ -576,6 +595,49 @@
           },
           "subsystems": [],
           "notes": "Regression guarded: occurrences.py imported rrulestr at module top and cli.py imports occurrences, so on any python without dateutil the CLI died at import and add-once never reached argparse — which on a second machine read as 'the tools do not work here'. The registry validator separately wrapped its own import in the rrule try/except, reporting a missing package as a malformed schedule string; it now resolves the accessor outside that try."
+        },
+        {
+          "id": "schedule-self",
+          "kind": "system",
+          "name": "Scheduler — self-booked wakes",
+          "status": "live",
+          "description": "The self-wake primitive: an agent's 'I'll check back at three' becomes a real one-shot or a loud non-zero exit, never a silent nothing. bin/schedule-self infers agent and seat from cwd through root.py, reads times in the scheduler's configured timezone rather than a hardcoded region, refuses a time already past, pins the seat as the job's workspace, and books through `scheduler.cli add-once` — the same subprocess path the inbox wake uses, so there is one way to book a job. --resume fork-resumes the calling conversation: session id from $CLAUDE_CODE_SESSION_ID, workspace pinned to the directory the session started in because that string is what names the transcript's project slug. An omitted timeout ships no per-job value so the category's runway governs; pinning the global default at the call site would silently override the category and kill a legitimately-long wake mid-flight.",
+          "code": [
+            "bin/schedule-self",
+            "root.py"
+          ],
+          "config": [],
+          "docs": [
+            "docs/systems/scheduler.md"
+          ],
+          "test": {
+            "type": "script",
+            "path": "tests/schedule-self.sh",
+            "description": "Hermetic bare root (only Agents/alice/chat/CLAUDE.md), tmpdir SCHEDULER_HOME, and the scheduler-bare dateutil blocker so the stock-interpreter guarantee is proved on machines that have the package. Asserts by reading the registry back, never by trusting exit 0: agent, workspace, message and configured tz on a real booking; the seat pinned from a subdirectory; agent-dir resolution with no seat; outside-tree and past-time refusals booking nothing; --resume pinning cwd and carrying the session id, and failing without the env var, from the wrong dir, or with no transcript; an explicit timeout reaching the job while an omitted one leaves no per-job value; below-runway timeouts refused; category pass-through; and name-based idempotency so a repeated booking cannot double-fire."
+          },
+          "subsystems": [],
+          "notes": "Booking env matches bin/msg's _sched_argv with one deliberate inversion: an explicit SCHEDULER_HOME env outranks mail.scheduler_home, per the root model's rule that explicit env is the top rung. The port dropped the origin machine's message-prefix category inference, its social-slot plumbing and its host-policy timeout ceiling — those are one operation's settings, not the tool's. The timeout test asserts the value is None rather than the key's absence: cli._base_job writes an omitted flag as an explicit null and resolve._present reads null and absent as the same fact."
+        },
+        {
+          "id": "scheduler-service-install",
+          "kind": "system",
+          "name": "Scheduler — service install",
+          "status": "live",
+          "description": "The missing half of a fresh install: booking works everywhere, firing only works where a daemon runs, so the default experience of a second machine was 'I scheduled it and nothing happened' — the most confusing failure the system can produce. bin/jstack-scheduler turns `python3 -m scheduler` into a supervised per-user service (launchd LaunchAgent on macOS, systemd user unit on Linux) generated from the same resolution the daemon boots with: the resolved root frozen into the definition because launchd strips the environment, explicit SCHEDULER_*/JSTACK_* overrides passed through, spawn_dirs expanded into the service PATH so a stripped environment cannot lose `claude`, and stdout/stderr under root.state_dir() — never the checkout. Idempotent install, ownership-stamped files it refuses to overwrite when it did not write them, --dry-run on install and uninstall, and a status that probes definition, process and API separately rather than reporting one and implying the others.",
+          "code": [
+            "bin/jstack-scheduler"
+          ],
+          "config": [],
+          "docs": [
+            "docs/systems/scheduler.md"
+          ],
+          "test": {
+            "type": "script",
+            "path": "tests/scheduler-install.sh",
+            "description": "Never loads, unloads or writes a real service: HOME is redirected into a tmpdir and every invocation is --dry-run or status. Parses the emitted plist with plistlib rather than grepping it (validity, RunAtLoad/KeepAlive, -m scheduler, the root in env, logs under that root's State, no data path inside the checkout); asserts the default label differs from the label the origin machine's own daemon runs under; that dry-run writes no file, creates no directory and loads nothing; that a hand-rolled definition is refused and left untouched; that a missing python-dateutil is named as a warning rather than a refusal; that an unsupported platform exits non-zero with a runnable foreground command; and that status on an absent label reports not-installed and exits 3 without raising."
+          },
+          "subsystems": [],
+          "notes": "The default label is namespaced under the product on purpose: the origin machine runs the same daemon under a hand-rolled label, and a colliding default would adopt and reload a live service on someone's first try-out. JSTACK_SCHEDULER_PLATFORM overrides sys.platform so the unsupported path is testable on a supported machine. Exit codes: 0 ok, 1 refused or unhealthy, 2 unsupported or usage, 3 status-not-installed. Real install/uninstall has not yet executed a launchctl load anywhere — that path is reviewed and command-printed, and its first real run belongs on a scratch machine."
         }
       ],
       "notes": "One package, every machine — nothing about a host is written into it. A host declares itself in {install}/config/scheduler.json: timezone, spawn_env, spawn_path_prepend, spawn_dirs, workspace_resolver ('module:function') + python_path, agent_root / agent_registry, seat_rules. SCHEDULER_HOME roots config/ and state/ (default: the package's parent); SCHEDULER_CONFIG_DIR / STATE_DIR / CREDENTIALS_DIR / API_PORT / INSTALL_FILE override individually. Requires python-dateutil and the claude CLI. Runs under launchd/systemd as `python3 -m scheduler`; mutations go through `python3 -m scheduler.cli`. permission_mode defaults to bypassPermissions because an unattended run has nobody to answer a prompt — narrowing it per job or per category is deliberate, not a default to reach for. Control API binds 127.0.0.1 only, no auth."

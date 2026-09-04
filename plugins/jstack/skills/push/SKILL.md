@@ -24,7 +24,7 @@ git -C "$(dirname "$F")" rev-parse --show-toplevel
 
 A path that prints nothing is not pushable — drop it, name it in the report. Nothing resolves at all → tell the user in one line and stop. Do not assume the cwd is a repo; the cockpit usually is not.
 
-Do not cross-check the list against `git status`. Anything in status that is on nobody's list belongs to another session — leave it, silently.
+Never cross-check the list against `git status` — what is on nobody's list is another session's.
 
 ## 2. Split into units
 
@@ -71,4 +71,14 @@ git -C "$R" diff --cached -- '*.env*' '*secret*' '*.pem' '*.key'
 
 ## 5. Report
 
-One line per commit — `<sha> <type>(<scope>): <subject>` — grouped under its repo and branch. No summary paragraph. Name any dropped non-repo files. Then stop.
+One line per commit — `<sha> <type>(<scope>): <subject>` — grouped under its repo and branch. No summary paragraph. Name any dropped non-repo files.
+
+## 6. Log the sitting
+
+Here, not at session end — by then the shas are gone.
+
+```bash
+log_event <agent>/<submode> "<why this sitting happened>" --commit <sha>@<repo-root>...
+```
+
+Link every sha; keep them out of the prose. Tag the subject if untagged. Then stop.

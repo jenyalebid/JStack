@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""jstack-scheduler — make the daemon a service, and know whether it is one.
+
+On a fresh install the registry accepts a job, `list` shows it, and the hour
+passes in silence — because nothing is running to fire it. Booking is the half
+that ships with the CLI; this tool is the other half: the daemon as a per-user
+service, generated from the same resolution the daemon itself boots with, so
+"I scheduled it and nothing happened" stops being the default experience of a
+second machine.
+
+    jstack-scheduler install    [--dry-run] [--label L] [--python BIN] [--port N]
+    jstack-scheduler uninstall  [--dry-run] [--label L]
+    jstack-scheduler status     [--label L] [--port N]
+    jstack-scheduler restart    [--label L]
+    jstack-scheduler logs       [--label L] [-n N]
+
+macOS: a per-user LaunchAgent at ~/Library/LaunchAgents/<label>.plist, loaded
+with `launchctl`. Linux: a systemd user unit at
+~/.config/systemd/user/<label>.service, managed with `systemctl --user`.
+Anything else: exit 2, printing the foreground command — `python3 -m scheduler`
+with the right environment is a complete answer, just not a supervised one.
+
+Exit codes, documented because scripts branch on them:
+
+    0  the verb did what it says (for `status`: definition present and ours,
+       process running, API answering)
+    1  refused (a definition this tool did not write), a command failed, or
+       `status` found the service installed but not fully healthy
+    2  unsupported platform, or bad usage
+    3  `status`: no definition installed under this label
+
+Self-contained python3 stdlib — no venv, no host imports. The plugin root goes
+on sys.path for two sibling stdlib-only modules: `root` (the one declaration
+the whole tree derives from) and `scheduler.config` (the daemon's own opinion
+of its machine config — asking it beats restating its answers here and being
+wrong the day they change).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import plistlib
+import re
+import shlex
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from collections import deque
+from pathlib import Path
+from types import SimpleNamespace
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT))
+
+import root  # noqa: E402
+from scheduler import config as sched_config  # noqa: E402
+
+# The default label is namespaced under the PRODUCT, not under any operator's
+# reverse-domain. Deliberate collision-avoidance: the machine this package grew
+# up on already runs the same daemon under a hand-rolled label of its own, and
+# a default that matched an existing label would adopt — and on the next
+# `install`, reload — a live service the moment someone tried the tool out.
+# A label this package has never shipped under can only ever name what this
+# tool itself wrote.
+DEFAULT_LABEL = "com.jstack.scheduler"
+
+# Stamped into every file this tool writes: an XML comment in a plist, a `#`
+# line in a unit — both formats ignore it. `install`, `uninstall` and
+# `restart` refuse any file that lacks it, because a definition without the
+# stamp is somebody's hand-rolled service, and overwriting or unloading one of
+# those is how an update quietly kills a daemon nobody remembers building.
+MARKER = "written by jstack-scheduler"
+
+# Explicit overrides win over the JSTACK_ROOT derivation by design, and a
+# service manager starts the daemon with a stripped environment — so whatever
+# was driving resolution in the installing shell has to be frozen into the
+# definition, or the daemon boots into a different tree than the one it was
+# just installed against.
+PASS_THROUGH = (
+    "SCHEDULER_HOME", "SCHEDULER_CONFIG_DIR", "SCHEDULER_STATE_DIR",
+    "SCHEDULER_CREDENTIALS_DIR", "SCHEDULER_INSTALL_FILE",
+    "SCHEDULER_API_PORT", "SCHEDULER_TICK_SECONDS",
+    "JSTACK_AGENTS_DIR", "JSTACK_SYSTEMS_DIR", "JSTACK_CONFIG_DIR",
+    "JSTACK_STATE_DIR", "JSTACK_LOGS_DIR", "JSTACK_CREDENTIALS_DIR",
+)
+
+
+def platform_kind() -> str:
+    """'launchd', 'systemd', or the raw platform name when neither applies.
+
+    JSTACK_SCHEDULER_PLATFORM overrides sys.platform so the unsupported-path
+    behaviour can be PROVED on a supported machine — otherwise the exact case
+    this tool exists to make survivable (an unfamiliar host) is the one case
+    no test ever exercises.
+    """
+    plat = os.environ.get("JSTACK_SCHEDULER_PLATFORM") or sys.platform
+    if plat == "darwin":
+        return "launchd"
+    if plat.startswith("linux"):
+        return "systemd"
+    return plat
+
+
+def target_for(kind: str, label: str) -> "Path|None":
+    if kind == "launchd":
+        return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    if kind == "systemd":
+        return Path.home() / ".config" / "systemd" / "user" / f"{label}.service"
+    return None
+
+
+def resolve(args) -> SimpleNamespace:
+    """Everything a definition needs, resolved once, the same way the daemon
+    resolves it.
+
+    `sched_config.install()` is the daemon's own merged machine config —
+    spawn_dirs and friends come from there rather than a restated copy.
+    `root.state_dir()` is guarded: a JSTACK_ROOT pointing into the shipping
+    checkout raises here, before anything is written — the same rule as
+    `scheduler/config.py::_guarded_path`, enforced by root.py itself, which is
+    what keeps daemon stdout from ever landing one `git add -A` from public.
+    """
+    label = args.label
+    if not label or "/" in label or label.startswith(".") or label != label.strip():
+        print(f"error: {label!r} is not a usable service label", file=sys.stderr)
+        raise SystemExit(2)
+    cfg = sched_config.install()
+    rootp = root.root(cfg)
+    state = root.state_dir(cfg)
+    kind = platform_kind()
+
+    env = {}
+    # launchd hands a service a stripped PATH; `spawn_dirs` exists in
+    # config.BUILTIN_INSTALL for exactly that problem on the child side. The
+    # daemon process gets the same expanded list, so `claude` and `git`
+    # resolve for it too instead of reintroducing the problem one process up.
+    dirs = [os.path.expanduser(str(d)) for d in cfg.get("spawn_dirs") or []]
+    if dirs:
+        env["PATH"] = ":".join(dirs)
+    # The one import `-m scheduler` needs is the plugin dir itself. The
+    # installing shell's own PYTHONPATH is that shell's business — freezing it
+    # in would bake transient sys.path junk into a service that outlives it.
+    env["PYTHONPATH"] = str(PLUGIN_ROOT)
+    env["JSTACK_ROOT"] = str(rootp)
+    for var in PASS_THROUGH:
+        val = os.environ.get(var)
+        if val:
+            env[var] = val
+    port_flag = getattr(args, "port", None)
+    if port_flag:
+        env["SCHEDULER_API_PORT"] = str(port_flag)
+
+    return SimpleNamespace(
+        kind=kind,
+        label=label,
+        target=target_for(kind, label),
+        python=str(Path(getattr(args, "python", None)
+                        or sys.executable).expanduser()),
+        root=rootp,
+        out_log=state / "scheduler" / "daemon.out",
+        err_log=state / "scheduler" / "daemon.err",
+        env=env,
+        port_flag=port_flag,
+    )
+
+
+def foreground_cmd(r: SimpleNamespace) -> str:
+    """The daemon with no service manager at all — always a runnable answer."""
+    parts = [f"PYTHONPATH={shlex.quote(str(PLUGIN_ROOT))}",
+             f"JSTACK_ROOT={shlex.quote(str(r.root))}"]
+    for var in PASS_THROUGH:
+        val = os.environ.get(var)
+        if val:
+            parts.append(f"{var}={shlex.quote(val)}")
+    parts += [shlex.quote(r.python), "-m", "scheduler"]
+    return " ".join(parts)
+
+
+def unsupported(r: SimpleNamespace) -> int:
+    print(f"error: platform {r.kind!r} is not supported — this tool manages "
+          f"macOS launchd and Linux systemd user services only.",
+          file=sys.stderr)
+    print("The daemon itself runs anywhere python3 does. Foreground:",
+          file=sys.stderr)
+    print(f"  {foreground_cmd(r)}", file=sys.stderr)
+    return 2
+
+
+# ------------------------------------------------------------------ ownership
+
+
+def file_owner(target: "Path|None") -> str:
+    """'absent', 'ours', or 'foreign'.
+
+    Unreadable counts as foreign: when ownership cannot be established,
+    not-touching is the only safe answer.
+    """
+    if target is None or not target.exists():
+        return "absent"
+    try:
+        text = target.read_text(errors="replace")
+    except OSError:
+        return "foreign"
+    return "ours" if MARKER in text else "foreign"
+
+
+def refuse(target: Path) -> int:
+    print(f"error: {target} exists but does not carry the "
+          f"'{MARKER}' stamp — it is a hand-rolled service definition, not "
+          f"one this tool wrote. Refusing to touch it: pick another --label, "
+          f"or remove the file yourself if it really is disposable.",
+          file=sys.stderr)
+    return 1
+
+
+# ----------------------------------------------------------------- definition
+
+
+def plist_bytes(r: SimpleNamespace) -> bytes:
+    data = {
+        "Label": r.label,
+        "ProgramArguments": [r.python, "-m", "scheduler"],
+        "WorkingDirectory": str(r.root),
+        # RunAtLoad + KeepAlive is what makes "it fires with nobody logged in
+        # watching" survive reboots and crashes; without them the definition
+        # is a file, not a daemon.
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(r.out_log),
+        "StandardErrorPath": str(r.err_log),
+        "EnvironmentVariables": r.env,
+    }
+    raw = plistlib.dumps(data)
+    stamp = (f"<!-- {MARKER}: install/uninstall refuse any file "
+             f"without this stamp -->\n").encode()
+    return raw.replace(b"<plist", stamp + b"<plist", 1)
+
+
+def unit_text(r: SimpleNamespace) -> str:
+    env_lines = "\n".join(
+        f'Environment="{k}={v}"' for k, v in r.env.items()
+    )
+    # append: needs systemd >= 240 (2018); everything modern qualifies, and a
+    # host old enough not to is better served by the foreground command anyway.
+    return f"""# {MARKER}: install/uninstall refuse any file without this stamp
+[Unit]
+Description=jstack scheduler daemon
+
+[Service]
+ExecStart={r.python} -m scheduler
+WorkingDirectory={r.root}
+{env_lines}
+StandardOutput=append:{r.out_log}
+StandardError=append:{r.err_log}
+Restart=always
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def definition_bytes(r: SimpleNamespace) -> bytes:
+    return plist_bytes(r) if r.kind == "launchd" else unit_text(r).encode()
+
+
+# ------------------------------------------------------------------- managers
+
+
+def _sh(argv: list) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+
+
+def is_loaded(r: SimpleNamespace) -> bool:
+    try:
+        if r.kind == "launchd":
+            return _sh(["launchctl", "list", r.label]).returncode == 0
+        return _sh(["systemctl", "--user", "is-active", "--quiet",
+                    f"{r.label}.service"]).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def load_cmds(r: SimpleNamespace, loaded: bool) -> list:
+    if r.kind == "launchd":
+        cmds = []
+        # `load` on an already-loaded label is a no-op that keeps the OLD
+        # definition; the unload first is what makes a second `install` an
+        # update instead of a silent nothing.
+        if loaded:
+            cmds.append(["launchctl", "unload", str(r.target)])
+        cmds.append(["launchctl", "load", str(r.target)])
+        return cmds
+    unit = f"{r.label}.service"
+    return [["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", unit],
+            ["systemctl", "--user", "restart", unit]]
+
+
+def unload_cmds(r: SimpleNamespace, loaded: bool) -> list:
+    if r.kind == "launchd":
+        return [["launchctl", "unload", str(r.target)]] if loaded else []
+    return [["systemctl", "--user", "disable", "--now", f"{r.label}.service"],
+            ["systemctl", "--user", "daemon-reload"]]
+
+
+def run_all(cmds: list) -> int:
+    for argv in cmds:
+        print("+ " + shlex.join(argv))
+        try:
+            p = _sh(argv)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"error: {argv[0]}: {e}", file=sys.stderr)
+            return 1
+        if p.returncode != 0:
+            print(f"error: {shlex.join(argv)} exited {p.returncode}: "
+                  f"{(p.stderr or p.stdout).strip()}", file=sys.stderr)
+            return 1
+    return 0
+
+
+# ------------------------------------------------------------------- commands
+
+
+def warn_if_no_dateutil(python: str) -> None:
+    """python-dateutil is the package's one third-party dep, needed by
+    RECURRING jobs and nothing else — so its absence is a warning, never a
+    refusal: one-shots (message wakes, self-scheduled follow-ups) work fine
+    without it, and blocking the install would block those too."""
+    try:
+        p = subprocess.run([python, "-c", "import dateutil"],
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return
+    if p.returncode != 0:
+        print(f"warning: {python} cannot import dateutil — recurring jobs "
+              f"will not book until python-dateutil is installed for that "
+              f"interpreter; one-shot jobs work without it.", file=sys.stderr)
+
+
+def cmd_install(args) -> int:
+    r = resolve(args)
+    if r.target is None:
+        return unsupported(r)
+    warn_if_no_dateutil(r.python)
+    if file_owner(r.target) == "foreign":
+        return refuse(r.target)
+    content = definition_bytes(r)
+    cmds = load_cmds(r, is_loaded(r))
+    if args.dry_run:
+        print(f"would write: {r.target}")
+        print(f"--- begin {r.target} ---")
+        text = content.decode()
+        sys.stdout.write(text if text.endswith("\n") else text + "\n")
+        print(f"--- end {r.target} ---")
+        for argv in cmds:
+            print("would run: " + shlex.join(argv))
+        print(f"foreground equivalent: {foreground_cmd(r)}")
+        return 0
+    r.target.parent.mkdir(parents=True, exist_ok=True)
+    r.out_log.parent.mkdir(parents=True, exist_ok=True)
+    r.target.write_bytes(content)
+    print(f"wrote {r.target}")
+    rc = run_all(cmds)
+    if rc != 0:
+        return rc
+    print(f"installed. `jstack-scheduler status --label {r.label}` verifies "
+          f"the process is up and the API answers.")
+    return 0
+
+
+def cmd_uninstall(args) -> int:
+    r = resolve(args)
+    if r.target is None:
+        # Nothing this tool could ever have installed here.
+        return unsupported(r)
+    owner = file_owner(r.target)
+    if owner == "absent":
+        print(f"nothing installed — no {r.target}")
+        return 0
+    if owner == "foreign":
+        return refuse(r.target)
+    cmds = unload_cmds(r, is_loaded(r))
+    if args.dry_run:
+        for argv in cmds:
+            print("would run: " + shlex.join(argv))
+        print(f"would remove: {r.target}")
+        return 0
+    rc = run_all(cmds)
+    if rc != 0:
+        return rc
+    r.target.unlink()
+    print(f"removed {r.target}")
+    return 0
+
+
+def cmd_restart(args) -> int:
+    r = resolve(args)
+    if r.target is None:
+        return unsupported(r)
+    owner = file_owner(r.target)
+    if owner == "absent":
+        print(f"error: not installed — no {r.target}. "
+              f"`jstack-scheduler install` first.", file=sys.stderr)
+        return 1
+    if owner == "foreign":
+        return refuse(r.target)
+    if r.kind == "launchd":
+        cmds = ([["launchctl", "unload", str(r.target)]] if is_loaded(r) else []
+                ) + [["launchctl", "load", str(r.target)]]
+    else:
+        cmds = [["systemctl", "--user", "restart", f"{r.label}.service"]]
+    return run_all(cmds)
+
+
+def installed_env(r: SimpleNamespace) -> dict:
+    """The EnvironmentVariables the INSTALLED definition really carries —
+    truth over re-derivation, since the file may predate a config change."""
+    if file_owner(r.target) != "ours":
+        return {}
+    try:
+        if r.kind == "launchd":
+            with open(r.target, "rb") as fh:
+                return plistlib.load(fh).get("EnvironmentVariables") or {}
+        out = {}
+        for m in re.finditer(r'Environment="([^=]+)=([^"]*)"',
+                             r.target.read_text(errors="replace")):
+            out[m.group(1)] = m.group(2)
+        return out
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return {}
+
+
+def installed_logs(r: SimpleNamespace) -> "tuple[Path, Path]":
+    if file_owner(r.target) == "ours":
+        try:
+            if r.kind == "launchd":
+                with open(r.target, "rb") as fh:
+                    d = plistlib.load(fh)
+                return Path(d["StandardOutPath"]), Path(d["StandardErrorPath"])
+            text = r.target.read_text(errors="replace")
+            out = re.search(r"StandardOutput=append:(.+)", text)
+            err = re.search(r"StandardError=append:(.+)", text)
+            if out and err:
+                return Path(out.group(1).strip()), Path(err.group(1).strip())
+        except (OSError, plistlib.InvalidFileException, KeyError, ValueError):
+            pass
+    return r.out_log, r.err_log
+
+
+def probe_process(r: SimpleNamespace) -> "tuple[str, bool]":
+    """(human line, running?). Reports only what it could actually observe —
+    'cannot observe' is an honest state; a guessed 'not running' is not."""
+    try:
+        if r.kind == "launchd":
+            p = _sh(["launchctl", "list", r.label])
+            if p.returncode != 0:
+                return f"not loaded (launchctl has no job {r.label!r})", False
+            m = re.search(r'"PID"\s*=\s*(\d+)', p.stdout)
+            if m:
+                return f"running (pid {m.group(1)})", True
+            last = re.search(r'"LastExitStatus"\s*=\s*(\d+)', p.stdout)
+            return ("loaded but no process"
+                    + (f" (last exit {last.group(1)})" if last else "")), False
+        p = _sh(["systemctl", "--user", "show", f"{r.label}.service",
+                 "-p", "ActiveState", "-p", "MainPID"])
+        if p.returncode != 0:
+            return "cannot observe (systemctl --user failed)", False
+        state = re.search(r"ActiveState=(\S+)", p.stdout)
+        pid = re.search(r"MainPID=(\d+)", p.stdout)
+        running = bool(state and state.group(1) == "active"
+                       and pid and pid.group(1) != "0")
+        label = state.group(1) if state else "unknown"
+        return (f"{label}" + (f" (pid {pid.group(1)})" if running else "")), running
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"cannot observe ({e})", False
+
+
+def probe_api(port: int) -> "tuple[str, bool]":
+    url = f"http://127.0.0.1:{port}/health"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            payload = json.loads(resp.read().decode())
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        reason = getattr(e, "reason", e)
+        return f"not answering on 127.0.0.1:{port} ({reason})", False
+    if payload.get("ok") is True:
+        return (f"answering on 127.0.0.1:{port} — "
+                f"{payload.get('jobs_enabled', '?')} job(s) enabled, "
+                f"{payload.get('active_runs', '?')} active run(s), "
+                f"up {payload.get('uptime_s', '?')}s"), True
+    return f"answering on 127.0.0.1:{port} but not ok: {payload}", False
+
+
+def cmd_status(args) -> int:
+    """Three separate probes, reported separately: the plist existing is not
+    the daemon running, and the process being up is not the API serving. Any
+    one can be true without the next, and each gap names its own fix."""
+    r = resolve(args)
+    if r.target is None:
+        return unsupported(r)
+    owner = file_owner(r.target)
+    if owner == "absent":
+        print(f"definition: not installed — no {r.target}")
+    elif owner == "ours":
+        print(f"definition: {r.target} ({MARKER})")
+    else:
+        print(f"definition: {r.target} exists but was NOT written by this "
+              f"tool — not managed here")
+
+    proc_line, running = probe_process(r)
+    print(f"process:    {proc_line}")
+
+    # Probe the port the INSTALLED definition actually runs on, not the
+    # shell's idea of it; --port beats both for poking sandboxes.
+    port = int(r.port_flag or installed_env(r).get("SCHEDULER_API_PORT")
+               or sched_config.API_PORT)
+    api_line, ok = probe_api(port)
+    print(f"api:        {api_line}")
+    if owner == "absent" and ok:
+        print(f"note: something IS serving 127.0.0.1:{port}, but it is not a "
+              f"service installed under {r.label!r} — another install owns "
+              f"that daemon.")
+    if owner == "absent":
+        return 3
+    return 0 if (owner == "ours" and running and ok) else 1
+
+
+def cmd_logs(args) -> int:
+    r = resolve(args)
+    if r.target is None:
+        return unsupported(r)
+    out_log, err_log = installed_logs(r)
+    rc = 0
+    for name, path in (("stdout", out_log), ("stderr", err_log)):
+        print(f"{name}: {path}")
+        try:
+            with open(path, errors="replace") as fh:
+                lines = deque(fh, maxlen=args.n)
+        except OSError:
+            print("  (no file yet — the daemon has not run under this "
+                  "definition)")
+            rc = 1
+            continue
+        for line in lines:
+            sys.stdout.write("  " + line)
+    return rc
+
+
+# ---------------------------------------------------------------------- parse
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="jstack-scheduler", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def _common(sp):
+        sp.add_argument("--label", default=DEFAULT_LABEL, metavar="LABEL",
+                        help=f"service label (default: {DEFAULT_LABEL})")
+
+    s = sub.add_parser("install", help="write the service definition and load it")
+    _common(s)
+    s.add_argument("--dry-run", action="store_true",
+                   help="print what would be written and run; touch nothing")
+    s.add_argument("--python", metavar="BIN",
+                   help="interpreter for the daemon (default: the one running "
+                        "this tool — run the installer with the python you "
+                        "want the daemon on)")
+    s.add_argument("--port", type=int, metavar="N",
+                   help="pin SCHEDULER_API_PORT in the definition")
+    s.set_defaults(func=cmd_install)
+
+    u = sub.add_parser("uninstall", help="unload the service and remove its definition")
+    _common(u)
+    u.add_argument("--dry-run", action="store_true",
+                   help="print what would run and be removed; touch nothing")
+    u.set_defaults(func=cmd_uninstall)
+
+    st = sub.add_parser("status", help="definition, process, API — three probes, reported separately")
+    _common(st)
+    st.add_argument("--port", type=int, metavar="N",
+                    help="probe this API port instead of the resolved one")
+    st.set_defaults(func=cmd_status)
+
+    rs = sub.add_parser("restart", help="unload/load the installed service")
+    _common(rs)
+    rs.set_defaults(func=cmd_restart)
+
+    lg = sub.add_parser("logs", help="where the daemon's output goes, and its tail")
+    _common(lg)
+    lg.add_argument("-n", type=int, default=40, metavar="LINES",
+                    help="lines of each stream to show (default 40)")
+    lg.set_defaults(func=cmd_logs)
+
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

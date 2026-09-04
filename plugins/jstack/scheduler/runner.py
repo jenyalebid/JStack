@@ -73,8 +73,8 @@ def is_transient_api_error(output: str) -> bool:
 def rate_limit_reset(output: str, now: datetime) -> "datetime|None":
     """The next reset datetime quoted in a usage-limit message, else None.
 
-    'resets 7am' → the next 07:00 Pacific at/after `now` (today if still ahead,
-    tomorrow if already past). The CLI also quotes minutes ('resets 9:10am'),
+    'resets 7am' → the next 07:00 in the install's tz at/after `now` (today if
+    still ahead, tomorrow if already past). The CLI also quotes minutes ('resets 9:10am'),
     and an unparsed reset is not a harmless miss: no reset means no defer, the
     job's next_run is never pinned, and the run comes back hours later on a
     stale due-time — duplicate work on a live account.

@@ -41,7 +41,7 @@ Repo not on this machine → clone it into the pad and work there.
 
 Ordinary engineering to your own standard: read the code around the change, fix the cause. Run whatever the repo runs and report the real result. A bug fix leaves behind a test that fails without it; where that is genuinely impossible, say why in the comment.
 
-Comment as you go. When the shape of the fix settles, when you change course, when something surprises you — put it on the issue, not in this session's prose. Comment style is a hard rule: digest form — what changed, what's next, what's blocked. A few lines. Boss reads these.
+Comment as you go. When the shape of the fix settles, when you change course, when something surprises you — put it on the issue, not in this session's prose. Comment style is a hard rule: digest form — what changed, what's next, what's blocked. A few lines. The user reads these.
 
 Stay inside the issue. Anything else you trip over goes through `/jstack:report` — its own commit or its own issue, never riding along in this PR.
 

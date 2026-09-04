@@ -134,7 +134,7 @@ Whoever writes the entry assigns the tag, in the same breath:
 
 ```bash
 log_event tag list                                # the whole vocabulary, with counts
-log_event tag set jremote --session {session_id}  # --session defaults to $CLAUDE_CODE_SESSION_ID
+log_event tag set payments --session {session_id}  # --session defaults to $CLAUDE_CODE_SESSION_ID
 ```
 
 **Pick from the list; minting is the rare path.** The value of a tag is that
@@ -154,10 +154,10 @@ Reads filter with `--tag`, and that read is unbounded by seat — which is the
 whole point:
 
 ```bash
-log_event tag show jremote --since 2026-08-01   # every seat's work on it
+log_event tag show payments --since 2026-08-01  # every seat's work on it
 log_event tail alpha/chat --tag infra           # one seat, one subject
 log_event grep "webhook" --tag infra
-log_event recall 2026-08-01..2026-08-31 all --tag jremote
+log_event recall 2026-08-01..2026-08-31 all --tag payments
 ```
 
 An undefined tag is an error on every read, not an empty list — silence there
@@ -167,7 +167,8 @@ A session can also be **opened on** a tag: `JSTACK_TIMELINE_TAG=<name>` swaps
 the seat's injected history for that subject's, across every seat that worked
 it, and the session tags itself so the thread continues. Replacement, not
 addition — the seat still says where the terminal runs, and stops saying what
-gets read. Any spawner can set it; jRemote's Home pins are one caller.
+gets read. Any spawner can set it; a board that pins a subject per pane is
+one caller.
 
 A tag can only reach entries that carry a `session_id`, so a write with no
 `--session` falls back to `$CLAUDE_CODE_SESSION_ID`. Pass `--session`
@@ -239,7 +240,7 @@ log_event recall 2026-04-28 alpha              # one agent's day (alpha/chat = o
 log_event recall 2026-04-21..2026-04-27 --full # a week, context blobs included
 log_event grep "publish endpoint" --seat alpha/chat --since 2026-04-01
 log_event show 1234                 # everything one entry holds (id from grep/recall/tail --json)
-log_event tag show jremote          # one subject, every seat that touched it
+log_event tag show payments         # one subject, every seat that touched it
 ```
 
 `--tag <name>` narrows `tail`, `grep` and `recall` the same way — see **Tags**.

@@ -38,7 +38,7 @@ inherits injection without another registration edit. With no default, seats
 with no match get nothing. No config key → no injection anywhere (opt-in).
 
 A session can be opened on a SUBJECT instead of its seat: `JSTACK_TIMELINE_TAG`
-in the spawn's environment (a pinned tag on the jRemote board, or set by hand
+in the spawn's environment (a pinned tag on a spawner's board, or set by hand
 from the desk) swaps the seat window for a tag window — the last N sittings
 ANY seat had on that tag, seat named on each line. It replaces the seat
 history rather than adding to it: opening a subject is not opening a seat, and
@@ -227,9 +227,9 @@ def tail(seat: str | None, n: int, as_json: bool = False,
 def pinned_tag() -> str:
     """The subject this session was opened on, or "".
 
-    Set by whoever spawned the session — a pinned tag on the jRemote board,
+    Set by whoever spawned the session — a pinned tag on a spawner's board,
     or `JSTACK_TIMELINE_TAG=<tag> claude` from the desk. It replaces the
-    seat's own history with the subject's: the same seat opened on `jremote`
+    seat's own history with the subject's: the same seat opened on `payments`
     and on `social` is two different cockpits, and the point of opening one
     is not to read the other."""
     return os.environ.get("JSTACK_TIMELINE_TAG", "").strip().lower()

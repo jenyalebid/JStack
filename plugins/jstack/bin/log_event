@@ -894,7 +894,7 @@ def tag_exists(tag: str) -> bool:
 
 def tag_entries(tag: str, since: str | None = None) -> list[dict]:
     """Every entry under a tag, across seats and agents — the cross-agent
-    surface ('all the jremote work last month'), unbounded by seat or day."""
+    surface ('all the payments work last month'), unbounded by seat or day."""
     where, params = _tag_clause(tag)
     clauses, ps = [where], list(params)
     if since:

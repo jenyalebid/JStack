@@ -92,7 +92,7 @@ A new or rewritten view lands with a `#Preview`. Not decoration — it is how th
 
 A view that reads a store or a service through the environment can't preview anything until something supplies them, so the harness is part of the app, not per-file boilerplate: one file in `Support/` holding an in-memory stack, a seeded sample set, and a wrapper installing the same environment the app installs. Previews then read as one wrapper call and the view. The seed carries the awkward shapes on purpose — those are what the canvas is for.
 
-One shape for that wrapper across every app, so they read alike (`AppPreview` in Habits and jRemote, `BookPreview` in Books): a host taking two closures — `edit:` to bend the world before it draws, and the content closure the view is popped inside, handed the seeded world. Sample data comes off that world, never a global, so a row's preview and the screen's preview draw the same record instead of two that can drift. `edit:` is what keeps the states worth designing reachable — the emptied board, the quiet day, the payload that hasn't landed.
+One shape for that wrapper across every app, so they read alike (an `AppPreview` in one app, a `BookPreview` in the next): a host taking two closures — `edit:` to bend the world before it draws, and the content closure the view is popped inside, handed the seeded world. Sample data comes off that world, never a global, so a row's preview and the screen's preview draw the same record instead of two that can drift. `edit:` is what keeps the states worth designing reachable — the emptied board, the quiet day, the payload that hasn't landed.
 
 A preview that stops compiling is broken, and gets fixed by the change that broke it rather than deleted.
 

@@ -215,7 +215,7 @@ def build_reason(rows: list, seat: str) -> str:
             "You are the issue's creator. If a comment asks you something or "
             "the work has gone wrong, answer on the issue itself — `gh issue "
             'comment <N> -R <owner/repo> --body "…"` — digest form, a few '
-            "lines; Boss reads these. A progress note that needs nothing gets "
+            "lines; the operator reads these. A progress note that needs nothing gets "
             "nothing back.",
             "",
         ]

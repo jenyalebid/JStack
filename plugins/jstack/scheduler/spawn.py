@@ -22,7 +22,7 @@ def _bootstrap_python_path() -> None:
     living outside this package is importable.
 
     Appended, never inserted at the front. The install's `python_path` is an
-    absolute machine path (`~/Operations/Infrastructure`), so inserting it at 0
+    absolute machine path (the host install's own tree), so inserting it at 0
     outranked whatever the caller had already put there — and a process running
     out of a git worktree got the home checkout's `lib`/`dashboard` the moment
     anything imported this package. Making a module reachable is the whole job

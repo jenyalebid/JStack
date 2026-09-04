@@ -79,7 +79,7 @@ A vocabulary is only worth sharing if it can be corrected, so it is editable in 
 A seat can be opened on a tag instead of on itself. Export `JSTACK_TIMELINE_TAG=<name>` for the session and the injector **swaps the seat window for the subject window**: the last N sittings *any* seat had on that tag, oldest first, each line naming who worked it.
 
 ```bash
-JSTACK_TIMELINE_TAG=jremote claude     # the seat's terminal, the subject's history
+JSTACK_TIMELINE_TAG=payments claude    # the seat's terminal, the subject's history
 ```
 
 Replacement, not addition. A pinned session is one sitting with one subject, and the seat's other threads are noise against it — the same seat opened on two tags is two cockpits, and the point of opening one is not to read the other. The seat still decides *where* the terminal runs, because a tag has no workspace; it stops deciding what gets read.
@@ -89,7 +89,7 @@ Two properties make the pin hold rather than decay:
 - **The session tags itself**, at its first instant (`INSERT OR IGNORE`, never minting). Without it a pinned session files untagged and the *next* session on the same pin cannot see what it did.
 - **An unknown tag falls back and says so.** Injection refuses a name outside the vocabulary and prints a visible note under the seat's own history, rather than booting a session blind on a subject that does not exist — the same refusal `tag set` and the `--tag` reads make, for the same reason.
 
-Any spawner can set the variable; nothing else is required of it. jRemote's Home board pins a (tag, seat) pair and exports it into the pane, which is one caller of a contract that is just an env var.
+Any spawner can set the variable; nothing else is required of it. A board UI that pins a (tag, seat) pair and exports it into the pane it opens is one caller of a contract that is just an env var.
 
 ## The store
 

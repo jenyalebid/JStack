@@ -62,8 +62,9 @@ One store, one backup, one WAL; the timeline's `entries` table is untouched.
 This binary is the only sanctioned writer of `messages` — a second writer
 would fork the source of truth (same law log_event holds).
 
-`@boss` is deliberately NOT a mailbox: the host's own Boss channel owns human
-contact and already has a reply path. Sending to it errors and says so.
+`@boss` is deliberately NOT a mailbox: the host's own channel to its human
+owns that contact and already has a reply path. Sending to it errors and
+says so.
 
 Self-contained python3 stdlib — no venv, no host imports. Safe to call from
 hooks, crons, spawned sessions, or interactively.
@@ -84,7 +85,7 @@ def _is_seat(path: Path) -> bool:
     """A seat is a directory holding a CLAUDE.md — the same evidence the
     injector and review engine use to recognize one.
 
-    This is the gate, not a blocklist of storage dir names: `Junior/ideas`
+    This is the gate, not a blocklist of storage dir names: `Alice/ideas`
     is a real seat and `Bob/pad` is not, and only the file on disk knows
     which is which. Addressing a dir no session ever boots in would file a
     message that could never be read — so it must fail at send time."""
@@ -236,7 +237,7 @@ def _walk_segments(root: Path, segs: list) -> "str|None":
     'service-call' resolves as the single dir `service-call` before it is
     tried as `service/call`: a hyphen inside a real directory name is far
     commoner than a nested pair, and trying the whole string first is what
-    makes @jarvis-service-call work without special-casing it."""
+    makes @alice-service-call work without special-casing it."""
     if not segs:
         return ""
     whole = "-".join(segs)
@@ -272,15 +273,15 @@ def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
         # A seat STRING is lowercase; the directory it names is not. Resolve
         # through the real dir instead of rebuilding a path out of the
         # lowercase name — the workspace string is what the CLI hashes into a
-        # session's project dir, so `~/Agents/jarvis/chat` files a spawned
+        # session's project dir, so `~/Agents/alice/chat` files a spawned
         # session's transcript somewhere the seat's own history never looks.
         root = _agent_dirs().get(agent)
         if root is None:
             _fail(f"@self: {agent!r} is not an agent under {agent_root()}")
         return agent, submode, root / submode
     if spec.lower() == "boss":
-        _fail("@boss is not a mailbox — the host's Boss channel owns human "
-              "contact and has its own reply path. Use it instead.")
+        _fail("@boss is not a mailbox — the host's own channel to its human "
+              "owns that contact and has its own reply path. Use it instead.")
 
     agents = _agent_dirs()
     parts = [p for p in spec.lower().split("-") if p]
@@ -570,10 +571,10 @@ def _wake_prompt(row) -> str:
 # could ever resolve was a conversation, and the session it picked was the
 # most recently active one, which is by construction the one a person is
 # typing in. It was not a delivery path that occasionally hit a human; it was
-# aimed at them. On 2026-08-27 it appended a task to a half-written question of
-# Boss's, submitted the two as one message, and sent the session off to answer
-# the sender instead of him. Across its whole life it delivered exactly once,
-# and that was the once.
+# aimed at them. In production it appended a task to a half-written question
+# the operator was still typing, submitted the two as one message, and sent
+# the session off to answer the sender instead of the person mid-sentence.
+# Across its whole life it delivered exactly once, and that was the once.
 #
 # A task now books the wake and nothing else. The wake is headless by design —
 # a fresh `claude --print` in the seat's workspace — so it disturbs no live
@@ -663,7 +664,7 @@ def _inject_prompt(row, repo: str, num: str, author: str) -> str:
         f'  gh issue comment {num} -R {repo} --body "…"',
         "",
         "Digest form, a few lines — what you decided, what you need, what is "
-        "blocked. Boss reads these. If the comment is a progress note that "
+        "blocked. The operator reads these. If the comment is a progress note that "
         "needs nothing, take it and say nothing back — a comment acknowledging "
         "a comment is traffic, not work.",
     ]
@@ -702,6 +703,15 @@ def _sched_argv(sub: list) -> "tuple|None":
         env["SCHEDULER_HOME"] = str(home)
     python = str(Path(mail.get("python") or sys.executable or "python3").expanduser())
     return [python, "-m", "scheduler.cli"] + sub, env, str(plugin_root)
+
+
+def _tz_label() -> str:
+    """The machine's own timezone abbreviation (PDT, CET, …).
+
+    Wake times are local wall clock (`datetime.now()`), so the label printed
+    beside them must be the local zone's — a hardcoded region name would lie
+    to every install outside it."""
+    return datetime.now().astimezone().tzname() or "local time"
 
 
 def _book_wake(seat: str, workspace: Path, prompt: str, name: str,
@@ -896,7 +906,7 @@ def cmd_send(args) -> int:
                 (delivery, job, mid))
     con.commit()
     print(f"#{mid} → {seat} — session spawning at "
-          f"{delivery.split(':', 1)[1]} PT, tied to this one. Their reply comes "
+          f"{delivery.split(':', 1)[1]} {_tz_label()}, tied to this one. Their reply comes "
           f"back here; `msg check {mid}` says where it has got to.")
     return 0
 
@@ -957,7 +967,7 @@ def _return_leg(con, row, seat: str, parent) -> int:
     if delivery:
         print(f"#{mid} → {seat} — answer bound to session {target[:8]}. It reaches "
               f"them at their next stop, or resumes that conversation at "
-              f"{delivery.split(':', 1)[1]} PT, whichever comes first.")
+              f"{delivery.split(':', 1)[1]} {_tz_label()}, whichever comes first.")
     else:
         # Not fatal the way a task's failed wake is: the message is an answer,
         # it is already bound to the right session, and that session picks it
@@ -1041,7 +1051,7 @@ def cmd_inject(args) -> int:
     the issue.
 
     The task system's creator leg. An issue filed by /task carries its
-    creator's session id in the issue body; when the worker (or Boss)
+    creator's session id in the issue body; when the worker (or the operator)
     comments, the webhook calls this with that id and the comment. Delivery is
     the same race a reply runs — the creator session takes it at its next
     stop, or a wake fork-resumes it — because a comment on your issue is an
@@ -1124,7 +1134,7 @@ def cmd_inject(args) -> int:
     if delivery:
         print(f"#{mid} → {seat} — comment bound to session {sid[:8]}. It "
               f"reaches them at their next stop, or resumes that conversation "
-              f"at {delivery.split(':', 1)[1]} PT, whichever comes first.")
+              f"at {delivery.split(':', 1)[1]} {_tz_label()}, whichever comes first.")
     else:
         print(f"#{mid} → {seat} — comment bound to session {sid[:8]}; no "
               f"resume wake could be booked, so it lands only if that session "
@@ -1296,7 +1306,7 @@ def cmd_check(args) -> int:
     if row["wake_job"]:
         when = (row["delivery"] or "").split(":", 1)[-1]
         print(f"  wake           job {row['wake_job'][:8]}"
-              f"{f', booked {when} PT' if when else ''}")
+              f"{f', booked {when} {_tz_label()}' if when else ''}")
     if row["state"] == "task":
         if not run.get("known"):
             print("  → not started yet. Nothing has run for it; the wake is still ahead.")

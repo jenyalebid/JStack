@@ -168,7 +168,7 @@ else
   (( diff >= -1 && diff <= 2 )) \
     && pass "future --at clamped to now ($stored)" || fail "future --at clamped (got $stored, now_min=$NOW_MIN)"
 
-  # 20. future --date is impossible too (UTC date rollover after ~5pm PT) — lands today, stamped now
+  # 20. future --date is impossible too (late in a local day, the UTC date already reads tomorrow) — lands today, stamped now
   "$LOG_EVENT" clampy2 --at 00:15 --date 2099-01-01 "Dated tomorrow by UTC rollover" >/dev/null
   got=$(SQL "SELECT date FROM entries WHERE agent='clampy2'")
   [[ "$got" == *"$TODAY"* ]] \
@@ -367,14 +367,14 @@ t=$("$LOG_EVENT" tail iris/chat --sessions 99)
 # unrecognized name is refused rather than created, and a query against a name
 # nobody defined errors instead of returning an empty list that reads as "we
 # never worked on it".
-"$LOG_EVENT" tag new jremote --description "the iOS remote app and its host board" >/dev/null 2>&1 \
+"$LOG_EVENT" tag new payments --description "the payments rework and its rollout" >/dev/null 2>&1 \
   && pass "tag new creates" || fail "tag new creates"
 "$LOG_EVENT" tag new infra --description "daemons, dashboard, scheduler" >/dev/null 2>&1
 "$LOG_EVENT" tag new sloppy >/dev/null 2>&1
 [[ $? -eq 2 && $(SQL "SELECT COUNT(*) FROM tags WHERE name='sloppy'") == "[(0,)]" ]] \
   && pass "tag new without --description refused, nothing created" || fail "tag new description gate"
-"$LOG_EVENT" tag new jremote --description "duplicate" >/dev/null 2>&1
-[[ $? -eq 2 && $(SQL "SELECT COUNT(*) FROM tags WHERE name='jremote'") == "[(1,)]" ]] \
+"$LOG_EVENT" tag new payments --description "duplicate" >/dev/null 2>&1
+[[ $? -eq 2 && $(SQL "SELECT COUNT(*) FROM tags WHERE name='payments'") == "[(1,)]" ]] \
   && pass "duplicate tag refused" || fail "duplicate tag refused"
 "$LOG_EVENT" tag new "Not A Tag" --description "x" >/dev/null 2>&1
 [[ $? -eq 2 ]] && pass "malformed tag name refused" || fail "malformed tag name refused"
@@ -384,7 +384,7 @@ t=$("$LOG_EVENT" tail iris/chat --sessions 99)
 "$LOG_EVENT" kim/chat --at 07:00 --date "$DAY" --session tag-s1 "Kim on the remote" >/dev/null
 "$LOG_EVENT" lee/chat --at 07:05 --date "$DAY" --session tag-s1 "Lee on the remote" >/dev/null
 "$LOG_EVENT" kim/chat --at 07:10 --date "$DAY" --session tag-s2 "Kim on the daemons" >/dev/null
-"$LOG_EVENT" tag set jremote --session tag-s1 >/dev/null
+"$LOG_EVENT" tag set payments --session tag-s1 >/dev/null
 "$LOG_EVENT" tag set infra --session tag-s2 >/dev/null
 
 "$LOG_EVENT" tag set nosuchthing --session tag-s1 >/dev/null 2>&1
@@ -395,18 +395,18 @@ t=$("$LOG_EVENT" tail iris/chat --sessions 99)
 # already on the session in hand — offering what is set is how a pick becomes a
 # no-op the user has to notice for themselves.
 out=$("$LOG_EVENT" tag list --session tag-s1)
-[[ "$out" == *"● jremote"* && "$out" != *"● infra"* ]] \
+[[ "$out" == *"● payments"* && "$out" != *"● infra"* ]] \
   && pass "tag list marks what the session carries" || fail "tag list --session marker ($out)"
 [[ $("$LOG_EVENT" tag list --session tag-s1 --json | grep -c '"carried": true') == 1 ]] \
   && pass "tag list --json carries the membership" || fail "tag list --json carried"
 [[ "$(env -u CLAUDE_CODE_SESSION_ID "$LOG_EVENT" tag list)" != *"●"* ]] \
   && pass "no session, no marker column" || fail "tag list marks with no session"
 
-out=$("$LOG_EVENT" tag show jremote)
+out=$("$LOG_EVENT" tag show payments)
 [[ "$out" == *"Kim on the remote"* && "$out" == *"Lee on the remote"* && "$out" != *"daemons"* ]] \
   && pass "tag show spans seats, excludes other tags" || fail "tag show cross-seat ($out)"
 
-out=$("$LOG_EVENT" tail kim/chat -n 10 --tag jremote)
+out=$("$LOG_EVENT" tail kim/chat -n 10 --tag payments)
 [[ "$out" == *"Kim on the remote"* && "$out" != *"Kim on the daemons"* ]] \
   && pass "tail --tag filters through session_id" || fail "tail --tag ($out)"
 
@@ -487,7 +487,7 @@ print(c.execute('SELECT COUNT(*) FROM session_tags st'
 # which is what a session pinned to a subject boots on. Two agents on one
 # subject are one thread — so Lee's row must ride Kim's, and the seat has to be
 # named on every line or the block reads as one agent's own history.
-out=$("$LOG_EVENT" tail --tag jremote --sessions 10)
+out=$("$LOG_EVENT" tail --tag payments --sessions 10)
 [[ "$out" == *"Kim on the remote"* && "$out" == *"Lee on the remote"* \
    && "$out" != *"daemons"* ]] \
   && pass "seatless tail --tag spans agents" || fail "seatless tail --tag ($out)"
@@ -504,7 +504,7 @@ out=$("$LOG_EVENT" tail --tag jremote --sessions 10)
 out=$("$LOG_EVENT" grep "Kim on" --tag infra)
 [[ "$out" == *"daemons"* && "$out" != *"remote"* ]] \
   && pass "grep --tag filters" || fail "grep --tag ($out)"
-out=$("$LOG_EVENT" recall "$DAY" all --tag jremote)
+out=$("$LOG_EVENT" recall "$DAY" all --tag payments)
 [[ "$out" == *"Lee on the remote"* && "$out" != *"daemons"* ]] \
   && pass "recall --tag filters" || fail "recall --tag ($out)"
 
@@ -518,16 +518,16 @@ done
 "$LOG_EVENT" tail kim/chat --tag ghosttag 2>&1 | grep -q "no tag 'ghosttag'" \
   && pass "unknown tag errors on every read, and names itself" || fail "unknown tag message"
 
-"$LOG_EVENT" tag set "#JRemote" --session tag-s3 >/dev/null 2>&1
+"$LOG_EVENT" tag set "#Payments" --session tag-s3 >/dev/null 2>&1
 [[ $(SQL "SELECT COUNT(*) FROM session_tags WHERE session_id='tag-s3'") == "[(1,)]" ]] \
-  && pass "tag names normalize (#JRemote → jremote)" || fail "tag normalize"
-"$LOG_EVENT" tag unset jremote --session tag-s3 >/dev/null 2>&1
+  && pass "tag names normalize (#Payments → payments)" || fail "tag normalize"
+"$LOG_EVENT" tag unset payments --session tag-s3 >/dev/null 2>&1
 [[ $(SQL "SELECT COUNT(*) FROM session_tags WHERE session_id='tag-s3'") == "[(0,)]" ]] \
   && pass "tag unset detaches" || fail "tag unset"
 
 # A tag attached to no session can never be queried, so refuse rather than
 # silently attach to the empty string.
-"$LOG_EVENT" tag set jremote >/dev/null 2>&1
+"$LOG_EVENT" tag set payments >/dev/null 2>&1
 [[ $? -eq 2 ]] && pass "tag set with no session anywhere refused" || fail "tag set no-session gate"
 
 # The write-side fallback. 16% of a recent month's rows carried no session_id —
@@ -542,7 +542,7 @@ CLAUDE_CODE_SESSION_ID=env-sess "$LOG_EVENT" mo/chat --at 06:05 --date "$DAY" --
   && pass "explicit --session beats the env var" || fail "explicit session precedence"
 
 out=$("$LOG_EVENT" show "$(SQL "SELECT id FROM entries WHERE headline='Kim on the remote'" | tr -dc '0-9')")
-[[ "$out" == *"tags: jremote"* ]] && pass "show prints the session's tags" || fail "show tags line ($out)"
+[[ "$out" == *"tags: payments"* ]] && pass "show prints the session's tags" || fail "show tags line ($out)"
 
 # The relation must arrive on dbs that predate it — the same in-place upgrade
 # the context/origin columns get, or every installed host stays tagless.

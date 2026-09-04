@@ -38,7 +38,7 @@ Every comment on the issue lands back in this CLI — at your next stop, or by w
 gh issue comment <N> --repo <owner/repo> --body "..."
 ```
 
-Comment style is a hard rule: digest form — what changed, what's next, what's blocked. A few lines. Boss reads these.
+Comment style is a hard rule: digest form — what changed, what's next, what's blocked. A few lines. The user reads these.
 
 A "worker died (exit N)" comment means the spawn is gone, loudly. Re-assigning the executor revives the same session; do that, or say why not.
 

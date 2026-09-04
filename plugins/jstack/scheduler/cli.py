@@ -20,8 +20,16 @@ from zoneinfo import ZoneInfo
 
 from . import config, journal, occurrences, registry, runner
 
-# Wall-clock zone for job times — the install's, not a fixed region.
-PT = ZoneInfo(config.DEFAULT_TZ)
+# Wall-clock zone for job times — the install's, not a fixed region. The
+# label beside a printed time is derived from it for the same reason: a
+# hardcoded region abbreviation lies to every install outside that region.
+LOCAL_TZ = ZoneInfo(config.DEFAULT_TZ)
+
+
+def _tz_label() -> str:
+    return datetime.now(LOCAL_TZ).tzname() or config.DEFAULT_TZ
+
+
 _MIN_PREFIX = 8
 
 
@@ -68,7 +76,7 @@ def _base_job(agent: str, name: str, message: str, timeout_seconds: "int|None",
         "enabled": True,
         "payload": {"message": message},
         "timeout_seconds": timeout_seconds,
-        "created_at": datetime.now(PT).isoformat(timespec="seconds"),
+        "created_at": datetime.now(LOCAL_TZ).isoformat(timespec="seconds"),
         "description": "",
     }
     if workspace:
@@ -80,8 +88,9 @@ def cmd_add_once(args) -> None:
     try:
         dt = datetime.strptime(args.at, "%Y-%m-%d %H:%M")
     except ValueError:
-        _fail(f"--at must be 'YYYY-MM-DD HH:MM' (PT wall clock), got {args.at!r}")
-    name = args.name or f"{args.agent} wake {args.at} PT"
+        _fail(f"--at must be 'YYYY-MM-DD HH:MM' ({config.DEFAULT_TZ} wall clock), "
+              f"got {args.at!r}")
+    name = args.name or f"{args.agent} wake {args.at} {_tz_label()}"
     job = _base_job(args.agent, name, args.message, args.timeout_seconds, args.workspace)
     if args.category:
         job["category"] = args.category
@@ -96,7 +105,7 @@ def cmd_add_once(args) -> None:
     if getattr(args, "locked", False):
         job["locked"] = True
     registry.mutate(lambda reg: reg["jobs"].append(job))
-    _emit(args, job, f"added once job {job['id']} — fires {args.at} PT")
+    _emit(args, job, f"added once job {job['id']} — fires {args.at} {_tz_label()}")
 
 
 def cmd_add_recurring(args) -> None:
@@ -104,7 +113,7 @@ def cmd_add_recurring(args) -> None:
         _fail("exactly one of --cron or --rrule is required")
     if args.cron:
         rrule = occurrences.cron_to_rrule(args.cron)
-        dtstart = datetime.now(PT).replace(second=0, microsecond=0)
+        dtstart = datetime.now(LOCAL_TZ).replace(second=0, microsecond=0)
     else:
         if not args.at_time:
             _fail("--rrule requires --at-time HH:MM")
@@ -113,7 +122,7 @@ def cmd_add_recurring(args) -> None:
         except ValueError:
             _fail(f"--at-time must be HH:MM, got {args.at_time!r}")
         rrule = args.rrule
-        dtstart = datetime.now(PT).replace(hour=hh, minute=mm, second=0, microsecond=0)
+        dtstart = datetime.now(LOCAL_TZ).replace(hour=hh, minute=mm, second=0, microsecond=0)
     job = _base_job(args.agent, args.name, args.message, args.timeout_seconds, args.workspace)
     if args.category:
         job["category"] = args.category
@@ -173,7 +182,7 @@ def cmd_list(args) -> None:
 
 def cmd_next(args) -> None:
     reg = registry.load_registry()
-    now = datetime.now(PT)
+    now = datetime.now(LOCAL_TZ)
     horizon = now.timestamp() + args.days * 86400
     if args.job:
         jobs = [_match_job(reg, args.job)]
@@ -333,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="scheduler.cli", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
 
-    ao = sub.add_parser("add-once", help="one-shot job at a PT wall-clock time")
+    ao = sub.add_parser("add-once", help="one-shot job at a local wall-clock time")
     ao.add_argument("--agent", required=True)
     ao.add_argument("--at", required=True, metavar='"YYYY-MM-DD HH:MM"')
     ao.add_argument("--message", required=True)

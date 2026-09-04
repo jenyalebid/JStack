@@ -73,6 +73,15 @@ PLUGIN_BIN = PLUGIN_ROOT / "bin"
 sys.path.insert(0, str(PLUGIN_ROOT))
 import repo_seat  # noqa: E402
 
+try:
+    import root as _root  # noqa: E402
+except ImportError:
+    # An older install runs this hook without root.py — a supported state. A
+    # SessionStart hook that raises breaks every session start on the machine,
+    # so this is the one place degrading quietly is right: fall back to the
+    # literal pre-root default at the use site.
+    _root = None
+
 
 def _config() -> dict:
     cfg_path = Path(
@@ -93,8 +102,11 @@ def resolve(cwd: Path, root: Path) -> tuple[str | None, str | None]:
 
     submode is the session dir's full path under {root}/{Name} ("/"-joined —
     per-dir seats: social/chat is its own seat, distinct from chat and from
-    social), or "chat" at the agent root. Recognized only when {Name}/CLAUDE.md
-    exists — same gate the engine uses."""
+    social), or "chat" at the agent root. Recognized when {Name} is an agent:
+    a CLAUDE.md at its top, or a seat below it carrying one."""
+    if _root is not None:
+        return _root.seat_of(cwd, base=root)
+    # Older install without root.py: the literal gate this shipped with.
     try:
         rel = cwd.resolve().relative_to(root.resolve())
     except (ValueError, OSError):
@@ -485,7 +497,8 @@ def main() -> int:
     cwd = payload.get("cwd") or os.getcwd()
 
     cfg = _config()
-    root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
+    root = (_root.agents_dir(cfg) if _root is not None
+            else Path(cfg.get("agent_root") or "~/Agents").expanduser())
     agent, submode = resolve(Path(cwd), root)
     via_repo = False
     if agent is None:

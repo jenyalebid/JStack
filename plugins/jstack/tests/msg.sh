@@ -435,5 +435,66 @@ EOF4
 [[ "$("$LOG_EVENT" tail alice/chat -n 5)" == *"A timeline entry"* ]] \
   && pass "log_event still reads its own table" || fail "log_event still reads its own table"
 
+# ---------------------------------- 7. the root declaration (JSTACK_ROOT)
+# A machine nobody hand-configured: a root holding nothing but two agents'
+# CLAUDE.md files, no agent_root key, no mail block at all. Addressing must
+# resolve through $JSTACK_ROOT/Agents, and a --wake must land in the registry
+# the scheduler itself derives — "exited 0" alone is exactly the silent no-op
+# this check exists to catch. The real scheduler.cli runs here, unstubbed,
+# booking into the tmp root.
+BROOT="$TMP/bare-root"; BARE_TL="$TMP/bare-timeline"
+mkdir -p "$BROOT/Agents/Ann" "$BROOT/Agents/Ben"
+printf '# Ann\n' > "$BROOT/Agents/Ann/CLAUDE.md"
+printf '# Ben\n' > "$BROOT/Agents/Ben/CLAUDE.md"
+BARE_CFG="$TMP/bare-review.json"; printf '{}' > "$BARE_CFG"
+bare_msg() { (cd "$BROOT/Agents/Ann" && \
+  env -u SCHEDULER_HOME JSTACK_ROOT="$BROOT" JSTACK_REVIEW_CONFIG="$BARE_CFG" \
+      JSTACK_TIMELINE_DIR="$BARE_TL" "$MSG" "$@"); }
+BSQL() { python3 -c "import sqlite3,sys; print(sqlite3.connect('$BARE_TL/timeline.db').execute(sys.argv[1]).fetchall())" "$1"; }
+
+out=$(bare_msg send @ben "Bare task" --wake 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == *"→ ben/chat"* ]] \
+  && pass "bare root: @ben resolves through \$JSTACK_ROOT/Agents, cockpit at the agent dir" \
+  || fail "bare root: @ben resolves through \$JSTACK_ROOT/Agents (rc=$rc: $out)"
+# where the child actually books: ask the scheduler's own resolution, in the
+# same environment the child ran with — not a path restated here
+BARE_SCHED=$(env -u SCHEDULER_HOME JSTACK_ROOT="$BROOT" PYTHONPATH="$PLUGIN_ROOT" \
+  python3 -c "from scheduler import config; print(config.SCHEDULE_FILE)")
+case "$BARE_SCHED" in
+  "$BROOT"/*) pass "bare root: the registry derives from the declared root" ;;
+  *) fail "bare root: registry derived outside the root ($BARE_SCHED)" ;;
+esac
+BJOB=$(BSQL "SELECT wake_job FROM messages WHERE subject='Bare task'" | grep -oE '[a-f0-9-]{36}')
+[[ -n "$BJOB" ]] && grep -q "$BJOB" "$BARE_SCHED" 2>/dev/null \
+  && pass "bare root: the wake is really in that registry, not just exit 0" \
+  || fail "bare root: the wake is really in that registry (job='$BJOB' file=$BARE_SCHED)"
+# a bare agent's cockpit is its own dir — the wake must run there, not in a
+# rebuilt {agent}/chat path no session ever boots in
+BWS=$(python3 -c "
+import json
+jobs = json.load(open('$BARE_SCHED')).get('jobs', [])
+print(next((j.get('workspace', '') for j in jobs if j.get('id') == '$BJOB'), ''))" 2>/dev/null)
+[[ "$BWS" == "$BROOT/Agents/Ben" ]] \
+  && pass "bare root: the wake runs in the bare agent's own dir" \
+  || fail "bare root: the wake runs in the bare agent's own dir (got '$BWS')"
+
+# the regression that protects a hand-configured install: a config that DOES
+# set mail.scheduler_home books into THAT home, whatever JSTACK_ROOT says
+MHOME="$TMP/mail-home"
+BARE_CFG2="$TMP/bare-review2.json"
+printf '{"mail": {"scheduler_home": "%s"}}' "$MHOME" > "$BARE_CFG2"
+out=$( (cd "$BROOT/Agents/Ann" && \
+  env -u SCHEDULER_HOME JSTACK_ROOT="$BROOT" JSTACK_REVIEW_CONFIG="$BARE_CFG2" \
+      JSTACK_TIMELINE_DIR="$BARE_TL" "$MSG" send @ben "Configured task" --wake 2>&1) ); rc=$?
+CJOB=$(BSQL "SELECT wake_job FROM messages WHERE subject='Configured task'" | grep -oE '[a-f0-9-]{36}')
+CONF_SCHED=$(env -u JSTACK_ROOT SCHEDULER_HOME="$MHOME" PYTHONPATH="$PLUGIN_ROOT" \
+  python3 -c "from scheduler import config; print(config.SCHEDULE_FILE)")
+[[ $rc -eq 0 && -n "$CJOB" ]] && grep -q "$CJOB" "$CONF_SCHED" 2>/dev/null \
+  && pass "mail.scheduler_home still wins: booked into the configured home" \
+  || fail "mail.scheduler_home still wins (rc=$rc job='$CJOB' file=$CONF_SCHED: $out)"
+grep -q "$CJOB" "$BARE_SCHED" 2>/dev/null \
+  && fail "configured booking leaked into the derived registry" \
+  || pass "and not into the derived one"
+
 echo
 if [[ $fails -eq 0 ]]; then echo "ALL PASS"; exit 0; else echo "$fails FAILED"; exit 1; fi

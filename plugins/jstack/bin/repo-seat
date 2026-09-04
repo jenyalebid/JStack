@@ -21,6 +21,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import repo_seat  # noqa: E402
 
+try:
+    import root as _root  # noqa: E402
+except ImportError:
+    # An older install has no root.py — a supported state, not an error. The
+    # literal pre-root default below keeps that install answering exactly as
+    # it did before the derivation existed.
+    _root = None
+
 
 def _config() -> dict:
     p = Path(os.environ.get(
@@ -40,7 +48,8 @@ def main(argv: list[str]) -> int:
     directory = Path(args[0]).expanduser() if args else Path.cwd()
 
     cfg = _config()
-    root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
+    root = (_root.agents_dir(cfg) if _root is not None
+            else Path(cfg.get("agent_root") or "~/Agents").expanduser())
     registry_path = repo_seat.registry_path_for(cfg, root)
     registry = repo_seat.load_registry(registry_path)
 

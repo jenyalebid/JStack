@@ -5,8 +5,11 @@
 # touches a real registry, state dir, or running daemon). Verifies the contract
 # that makes one package serve every machine:
 #   - config/scheduler.json drives timezone, spawn env, and spawn PATH
-#   - workspace resolution: job override > resolver hook > registry > agent_root,
+#   - workspace resolution: job override > resolver hook > registry > agents dir,
 #     with seat_rules applied only when the seat is real
+#   - data dirs: SCHEDULER_*_DIR > SCHEDULER_HOME > JSTACK_ROOT derivation >
+#     ~/.scheduler, and the derivation layer never moves an install that
+#     predates it
 #   - a broken resolver spec raises instead of silently running elsewhere
 #   - permission_mode defaults to bypassPermissions and resolves job>category>default
 #   - VTIMEZONE is derived from the zone (DST, last-Sunday, and no-DST cases)
@@ -38,6 +41,9 @@ fi
 TMP=$(mktemp -d /tmp/jstack-scheduler-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/config" "$TMP/agents/demo-social/chat" "$TMP/agents/plain"
+# `plain` and `demo-social` stay bare on purpose: a workspace is not required
+# to be a declared agent. The fallback's bar is "a directory that exists", and
+# these two check it stays that low.
 
 export SCHEDULER_HOME="$TMP"
 export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -129,6 +135,145 @@ else:
 finally:
     config.reset_install_cache()
 '
+
+# ── workspace fallback: real directories, not fabricated joins ──
+# These need the parent env minus any ambient JSTACK_* declarations — the
+# resolution under test must come from scheduler.json's agent_root, not from
+# whatever the machine running this file happens to export.
+
+mkdir -p "$TMP/agents/CasedAgent" "$TMP/agents/snake_agent"
+touch "$TMP/agents/CasedAgent/CLAUDE.md" "$TMP/agents/snake_agent/CLAUDE.md"
+
+if out=$(env -u JSTACK_ROOT -u JSTACK_AGENTS_DIR "$PY" -c '
+import os
+from pathlib import Path
+from scheduler import spawn
+base = Path(os.environ["SCHEDULER_HOME"]) / "agents"
+assert spawn.resolve_workspace({"agent_id": "casedagent"}) == base / "CasedAgent"
+assert spawn.resolve_workspace({"agent_id": "snake-agent"}) == base / "snake_agent"
+' 2>&1); then
+    pass "fallback tolerates case and -/_ spelling of a real agent dir"
+else
+    fail "agent id folding — $out"
+fi
+
+if out=$(env -u JSTACK_ROOT -u JSTACK_AGENTS_DIR "$PY" -c '
+import os
+from pathlib import Path
+from scheduler import spawn
+base = Path(os.environ["SCHEDULER_HOME"]) / "agents"
+# `plain` has no CLAUDE.md, so it is not an agent — and still resolves. A
+# workspace only has to exist; requiring a declaration would refuse to run a
+# job in a directory that is sitting right there.
+assert spawn.resolve_workspace({"agent_id": "plain"}) == base / "plain"
+' 2>&1); then
+    pass "a real directory resolves even when nothing declared it an agent"
+else
+    fail "undeclared-but-real workspace — $out"
+fi
+
+if out=$(env -u JSTACK_ROOT -u JSTACK_AGENTS_DIR "$PY" -c '
+from scheduler import spawn
+try:
+    spawn.resolve_workspace({"agent_id": "gh0st"})
+except ValueError as e:
+    msg = str(e)
+    assert "gh0st" in msg, msg            # the id that missed
+    assert "/agents" in msg, msg          # the dir that was searched
+    assert "CasedAgent" in msg, msg       # a real neighbouring agent id
+else:
+    raise AssertionError("a nonexistent agent resolved to a fabricated path")
+' 2>&1); then
+    pass "a miss raises at the mistake, naming the searched dir and the real ids"
+else
+    fail "workspace miss error — $out"
+fi
+
+if out=$(env -u JSTACK_ROOT -u JSTACK_AGENTS_DIR "$PY" -c '
+from pathlib import Path
+from scheduler import spawn
+got = spawn.resolve_workspace({"agent_id": "gh0st", "workspace": "/tmp/pinned"})
+assert got == Path("/tmp/pinned"), got
+' 2>&1); then
+    pass "an explicit job workspace wins even when the agent does not exist"
+else
+    fail "workspace override for a missing agent — $out"
+fi
+
+# ── data dirs: the JSTACK_ROOT derivation layer ──
+# A NEW layer between SCHEDULER_HOME and the ~/.scheduler default. Each check
+# states its own environment outright: the layer's whole contract is
+# precedence, and precedence only shows under a controlled one.
+
+JROOT="$TMP/jstack-root"; LEGACY_HOME="$TMP/legacy-home"
+mkdir -p "$JROOT" "$LEGACY_HOME"
+
+# No JSTACK_ROOT: byte-identical to the pre-derivation chain. This is the
+# regression that protects the running daemon.
+if out=$(env -u JSTACK_ROOT -u SCHEDULER_CONFIG_DIR -u SCHEDULER_STATE_DIR \
+        -u SCHEDULER_CREDENTIALS_DIR SCHEDULER_HOME="$TMP" "$PY" -c '
+import os
+from pathlib import Path
+from scheduler import config
+home = Path(os.environ["SCHEDULER_HOME"])
+assert config.CONFIG_DIR == home / "config", config.CONFIG_DIR
+assert config.STATE_DIR == home / "state" / "scheduler", config.STATE_DIR
+assert config.CREDENTIALS_DIR == home / "Credentials", config.CREDENTIALS_DIR
+' 2>&1); then
+    pass "no JSTACK_ROOT: SCHEDULER_HOME keeps the exact legacy shapes"
+else
+    fail "SCHEDULER_HOME legacy regression — $out"
+fi
+
+# The interpreter that runs a live daemon may declare SCHEDULER_HOME itself
+# through a site hook (a .pth setdefault), so `env -u` alone cannot produce
+# the unset state these checks are about. -S keeps site processing out of a
+# subprocess whose whole premise is that the variable is absent.
+if out=$(env -u JSTACK_ROOT -u SCHEDULER_HOME -u SCHEDULER_CONFIG_DIR \
+        -u SCHEDULER_STATE_DIR -u SCHEDULER_CREDENTIALS_DIR \
+        HOME="$LEGACY_HOME" "$PY" -S -c '
+import os
+from pathlib import Path
+from scheduler import config
+home = Path(os.environ["HOME"]) / ".scheduler"
+assert config.CONFIG_DIR == home / "config", config.CONFIG_DIR
+assert config.STATE_DIR == home / "state" / "scheduler", config.STATE_DIR
+assert config.CREDENTIALS_DIR == home / "Credentials", config.CREDENTIALS_DIR
+' 2>&1); then
+    pass "no JSTACK_ROOT, no SCHEDULER_HOME: the ~/.scheduler default is untouched"
+else
+    fail "bare-default legacy regression — $out"
+fi
+
+if out=$(env -u SCHEDULER_HOME -u SCHEDULER_CONFIG_DIR -u SCHEDULER_STATE_DIR \
+        -u SCHEDULER_CREDENTIALS_DIR -u JSTACK_CONFIG_DIR -u JSTACK_STATE_DIR \
+        -u JSTACK_CREDENTIALS_DIR JSTACK_ROOT="$JROOT" "$PY" -S -c '
+import os
+from pathlib import Path
+from scheduler import config
+r = Path(os.environ["JSTACK_ROOT"])
+assert config.CONFIG_DIR == r / "Config", config.CONFIG_DIR
+assert config.STATE_DIR == r / "State" / "scheduler", config.STATE_DIR
+assert config.CREDENTIALS_DIR == r / "Credentials", config.CREDENTIALS_DIR
+' 2>&1); then
+    pass "JSTACK_ROOT alone: dirs derive as Config / State/scheduler / Credentials"
+else
+    fail "JSTACK_ROOT derivation — $out"
+fi
+
+if out=$(env -u SCHEDULER_HOME -u SCHEDULER_CONFIG_DIR -u SCHEDULER_CREDENTIALS_DIR \
+        -u JSTACK_CONFIG_DIR -u JSTACK_STATE_DIR -u JSTACK_CREDENTIALS_DIR \
+        JSTACK_ROOT="$JROOT" SCHEDULER_STATE_DIR="$TMP/live-state" "$PY" -S -c '
+import os
+from pathlib import Path
+from scheduler import config
+assert config.STATE_DIR == Path(os.environ["SCHEDULER_STATE_DIR"]), config.STATE_DIR
+assert config.CONFIG_DIR == Path(os.environ["JSTACK_ROOT"]) / "Config", config.CONFIG_DIR
+' 2>&1); then
+    pass "SCHEDULER_STATE_DIR outranks JSTACK_ROOT; its siblings still derive"
+else
+    fail "explicit-dir precedence over JSTACK_ROOT — $out"
+fi
 
 # ── permission_mode ──
 

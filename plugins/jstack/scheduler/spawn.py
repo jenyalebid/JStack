@@ -16,6 +16,14 @@ from pathlib import Path
 
 from . import config
 
+try:
+    import root
+except ImportError:
+    # An older install can carry this package without root.py alongside it —
+    # a supported state, not an error. The workspace fallback degrades to the
+    # legacy blind join this module shipped with.
+    root = None
+
 
 def _bootstrap_python_path() -> None:
     """Put the install's `python_path` on sys.path so a workspace_resolver
@@ -116,13 +124,47 @@ def _apply_seat_rules(agent_id: str, workspace: Path) -> Path:
     return workspace
 
 
+def _from_agents_dir(agent_id: str) -> Path:
+    """The built-in fallback: a real directory under agents_dir().
+
+    Two bars, and they are not the same bar. `root.resolve_agent` answers
+    "which agent is this", so it requires a CLAUDE.md — but a spawn only needs
+    somewhere real to run, and a directory that exists is a legitimate
+    workspace before anything has declared it a seat. So: resolve the agent
+    when there is one (that is what buys the case and -/_ tolerance), else
+    accept the literal join when it names a directory that exists.
+
+    What does NOT survive is the join to a path that is not there. It used to
+    be returned anyway, and the run then died inside the spawn with an errno
+    against a path nobody recognised, an hour after the typo that caused it.
+    Raising here names the id and the ids that ARE there, at the point of the
+    mistake."""
+    inst = config.install()
+    if root is None:
+        # Older install without root.py: the legacy join, unchanged.
+        return config.expand(inst.get("agent_root") or "~/Agents") / agent_id
+    resolved = root.resolve_agent(agent_id, inst)
+    if resolved is not None:
+        return resolved
+    literal = root.agents_dir(inst) / agent_id
+    if literal.is_dir():
+        return literal
+    known = root.agents(inst)
+    raise ValueError(
+        f"agent {agent_id!r} has no workspace under {root.agents_dir(inst)} — "
+        f"known agents: {', '.join(known) if known else '(none)'}. Fix the "
+        f"job's agent_id, or set `workspace` on the job to pin one outright."
+    )
+
+
 def resolve_workspace(job: dict) -> Path:
     """Where this job's run is spawned.
 
     Job `workspace` override wins outright — a resume wake pins it to the
     calling session's cwd so the forked transcript is found under the same
     project slug. Otherwise the install decides: its resolver hook if it has
-    one, else its agent registry, else {agent_root}/{agent_id}.
+    one, else its agent registry, else the agent's directory under the
+    install's agents dir.
     """
     ws = job.get("workspace")
     if ws:
@@ -135,5 +177,5 @@ def resolve_workspace(job: dict) -> Path:
 
     resolved = _from_registry(agent_id)
     if resolved is None:
-        resolved = config.expand(config.install().get("agent_root") or "~/Agents") / agent_id
+        resolved = _from_agents_dir(agent_id)
     return _apply_seat_rules(agent_id, resolved)

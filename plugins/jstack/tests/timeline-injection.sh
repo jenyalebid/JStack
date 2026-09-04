@@ -393,6 +393,29 @@ new_out=$(ctx_tag "$ROOT/Gamma/chat" greenfield pinned-sess-3)
 echo "$new_out" | grep -q "first sitting" \
   && pass "empty subject still announces the pin" || fail "empty subject pin ($new_out)"
 
+# (o) the root declaration: JSTACK_ROOT set, NO agent_root key in the config
+#     → injection finds the agents under $JSTACK_ROOT/Agents. Before root.py
+#     this resolved ~/Agents and found nothing — a resolver that passed on
+#     the machine that wrote it and failed on every other. HOME points at an
+#     empty dir so a fallback to the real home tree has nothing to hide
+#     behind: the answer must come from the declared root.
+OROOT="$TMP/declared-root"; OHOME="$TMP/declared-home"
+mkdir -p "$OROOT/Agents/Omega/chat" "$OHOME"
+printf '# Omega\n' > "$OROOT/Agents/Omega/CLAUDE.md"
+CFG_O="$TMP/review-root.json"
+printf '{ "timeline_inject": {"*/*": 5} }' > "$CFG_O"
+"$LOG_EVENT" omega/chat --at 09:00 --date "$DAY" "Omega under the declared root" >/dev/null
+o_out=$(printf '{"hook_event_name":"SessionStart","cwd":"%s","source":"startup"}' "$OROOT/Agents/Omega/chat" \
+          | JSTACK_REVIEW_CONFIG="$CFG_O" JSTACK_ASSUME_INTERACTIVE=1 \
+            JSTACK_ROOT="$OROOT" HOME="$OHOME" python3 "$HOOK" \
+          | python3 -c 'import json,sys
+raw=sys.stdin.read().strip()
+print(json.loads(raw)["hookSpecificOutput"]["additionalContext"] if raw else "")')
+echo "$o_out" | grep -q "omega/chat (your seat)" \
+  && echo "$o_out" | grep -q "Omega under the declared root" \
+  && pass "JSTACK_ROOT: agents resolve under the declared root, no agent_root key" \
+  || fail "JSTACK_ROOT: agents resolve under the declared root ($o_out)"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "timeline-injection: $fails FAILED" >&2

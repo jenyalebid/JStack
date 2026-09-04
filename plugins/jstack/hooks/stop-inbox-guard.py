@@ -50,7 +50,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-PLUGIN_BIN = Path(__file__).resolve().parent.parent / "bin"
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_BIN = PLUGIN_ROOT / "bin"
+sys.path.insert(0, str(PLUGIN_ROOT))
+try:
+    import root as _root
+except ImportError:
+    # An older install runs this hook without root.py — a supported state. A
+    # Stop hook that raises wedges the session it is guarding, so this is the
+    # one place degrading quietly is right: fall back to the literal pre-root
+    # default at the use site.
+    _root = None
 STATE_DIR = Path(os.environ.get(
     "JSTACK_REVIEW_STATE", str(Path.home() / ".claude" / "jstack" / "review-state")
 )).expanduser() / "inbox-guarded"
@@ -78,7 +88,12 @@ def _config() -> dict:
 def resolve_seat(cwd: str) -> "str|None":
     """agent/submode for a workspace session — the same seat resolution the
     SessionStart injector and the review engine use."""
-    root = Path(_config().get("agent_root") or "~/Agents").expanduser()
+    cfg = _config()
+    if _root is not None:
+        agent, submode = _root.seat_of(cwd, cfg)
+        return f"{agent}/{submode}" if agent else None
+    # Older install without root.py: the literal gate this shipped with.
+    root = Path(cfg.get("agent_root") or "~/Agents").expanduser()
     try:
         rel = Path(cwd).resolve().relative_to(root.resolve())
     except (ValueError, OSError):

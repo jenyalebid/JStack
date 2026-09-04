@@ -11,9 +11,10 @@ Two layers, and they answer different questions:
       registry plus the defaults/categories a job's settings resolve through.
       Reloaded live on mtime change.
 
-`SCHEDULER_HOME` roots both dirs (default: `~/.scheduler` — never the package
-tree; see `_guarded_path`). The finer-grained SCHEDULER_*_DIR overrides win
-over it and exist so the e2e sandbox can point a real daemon at tmp dirs.
+Data dirs resolve, highest wins: the SCHEDULER_*_DIR override (the e2e sandbox
+points a real daemon at tmp dirs with these), then `SCHEDULER_HOME`, then the
+`JSTACK_ROOT` derivation (root.py), then `~/.scheduler` — never the package
+tree; see `_guarded_path`.
 """
 
 from __future__ import annotations
@@ -21,6 +22,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+
+try:
+    import root
+except ImportError:
+    # An older install can carry this package without root.py alongside it —
+    # a supported state, not an error. Everything below degrades to the legacy
+    # chain (SCHEDULER_* env, else ~/.scheduler) exactly as it stood before
+    # the root derivation existed.
+    root = None
 
 
 def _shipping_tree_roots() -> "tuple[Path, ...]":
@@ -73,11 +83,33 @@ def _guarded_path(env_var: str, default: Path) -> Path:
     return path
 
 
+def _derived_default(legacy: Path, derive) -> Path:
+    """The default a SCHEDULER_*_DIR falls back to: the JSTACK_ROOT derivation
+    when the operator has declared one, else the legacy shape.
+
+    Two gates, both deliberate. A present SCHEDULER_HOME keeps the legacy shape
+    whatever JSTACK_ROOT says — the live daemon roots its dirs there, and its
+    state must never move because a shell exported a new variable. And the
+    derivation is consulted only when $JSTACK_ROOT is actually set: root()
+    falls back to $HOME, so consulting it unconditionally would silently move
+    an unconfigured install from ~/.scheduler to ~/Config — a breaking change
+    wearing a derivation's clothes.
+    """
+    if root is None or "SCHEDULER_HOME" in os.environ or not os.environ.get("JSTACK_ROOT"):
+        return legacy
+    return derive()
+
+
 HOME = _guarded_path("SCHEDULER_HOME", Path.home() / ".scheduler")
 
-CONFIG_DIR = _guarded_path("SCHEDULER_CONFIG_DIR", HOME / "config")
-STATE_DIR = _guarded_path("SCHEDULER_STATE_DIR", HOME / "state" / "scheduler")
-CREDENTIALS_DIR = _guarded_path("SCHEDULER_CREDENTIALS_DIR", HOME / "Credentials")
+CONFIG_DIR = _guarded_path("SCHEDULER_CONFIG_DIR", _derived_default(
+    HOME / "config", lambda: root.config_dir()))
+# The derived state keeps its `scheduler` leaf: State/ under the root is
+# shared with the other subsystems, and the scheduler does not own the dir.
+STATE_DIR = _guarded_path("SCHEDULER_STATE_DIR", _derived_default(
+    HOME / "state" / "scheduler", lambda: root.state_dir() / "scheduler"))
+CREDENTIALS_DIR = _guarded_path("SCHEDULER_CREDENTIALS_DIR", _derived_default(
+    HOME / "Credentials", lambda: root.credentials_dir()))
 
 SCHEDULE_FILE = CONFIG_DIR / "schedule.json"
 INSTALL_FILE = Path(os.environ.get("SCHEDULER_INSTALL_FILE", str(CONFIG_DIR / "scheduler.json")))
@@ -146,9 +178,13 @@ BUILTIN_INSTALL = {
     "workspace_resolver": None,
     # Extra sys.path entries so a workspace_resolver's module is importable.
     "python_path": [],
-    # Fallback workspace resolution: {agent_root}/{Name}/ plus an optional
-    # registry mapping agent id → workspace.
-    "agent_root": "~/Agents",
+    # Fallback workspace resolution: the agent's directory under the install's
+    # agents dir (root.agents_dir), plus an optional registry mapping agent
+    # id → workspace. None means "derive from the root at the point of use";
+    # a path stated in scheduler.json pins it. Not resolved here: a constant
+    # captured at import answers with the environment of a process start
+    # nobody remembers — five tests once errored at setup exactly that way.
+    "agent_root": None,
     "agent_registry": None,
     # Sub-seat redirection: an agent id ending in `suffix` runs in the named
     # subdir when that subdir has its own CLAUDE.md.

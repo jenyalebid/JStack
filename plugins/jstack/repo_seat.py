@@ -33,12 +33,38 @@ Entries marked `"active": false` are skipped: an archived agent should not
 start claiming sessions.
 """
 
+# Both hooks import this module and macOS ships /usr/bin/python3 at 3.9, where
+# a bare `str | None` annotation is a TypeError at import — the whole hook dies
+# before its own never-block guard exists. Deferring annotation evaluation is
+# what lets the file state its types and still load everywhere the hooks run.
+from __future__ import annotations
+
 import json
 import os
 import subprocess
 from pathlib import Path
 
+try:
+    import root as _root
+except ImportError:
+    # An older install ships this module without root.py — a supported state,
+    # not an error. Everything this module answers ends up inside a session
+    # hook, so degrading to the literal pre-root default beats raising.
+    _root = None
+
 DEFAULT_SEAT = "chat"
+
+
+def agents_root(cfg: "dict|None" = None) -> Path:
+    """The agent-workspace root — root.py's one derivation when it is present.
+
+    Kept here so every consumer of this module resolves the root the same way
+    instead of each spelling its own default; on an older install without
+    root.py the literal pre-root behaviour holds: cfg["agent_root"], else
+    ~/Agents."""
+    if _root is not None:
+        return _root.agents_dir(cfg)
+    return Path(str((cfg or {}).get("agent_root") or "~/Agents")).expanduser()
 
 
 def _norm(name: str) -> str:
@@ -144,10 +170,19 @@ def owner_of(directory, registry: dict) -> tuple[str | None, str | None, str | N
     return None, None, None
 
 
-def seat_for(directory, root: Path, registry_path) -> tuple[str | None, str | None]:
+def seat_for(directory, root: "Path|None" = None,
+             registry_path=None) -> tuple[str | None, str | None]:
     """(agent, submode) for a session whose cwd is an owned repo, else
     (None, None). Callers use this only after the normal {agent_root}-relative
-    resolution has come up empty — a real seat directory always wins."""
+    resolution has come up empty — a real seat directory always wins.
+
+    `root` (and the registry path derived from it) defaults through
+    agents_root(), so a caller with no opinion of its own inherits the one
+    derivation instead of restating a default."""
+    if root is None:
+        root = agents_root()
+    if registry_path is None:
+        registry_path = registry_path_for({}, root)
     registry = load_registry(registry_path)
     if not registry:
         return None, None
@@ -157,8 +192,11 @@ def seat_for(directory, root: Path, registry_path) -> tuple[str | None, str | No
     return _seat_of(registry[agent], agent, Path(root).expanduser())
 
 
-def registry_path_for(cfg: dict, root: Path) -> Path:
+def registry_path_for(cfg: dict, root: "Path|None" = None) -> Path:
     """Where the registry lives: `agent_registry` if the host set one, else the
     documented default of {agent_root}/agents.json."""
     p = cfg.get("agent_registry") or os.environ.get("JSTACK_AGENT_REGISTRY")
-    return Path(p).expanduser() if p else Path(root) / "agents.json"
+    if p:
+        return Path(p).expanduser()
+    return Path(root) / "agents.json" if root is not None else \
+        agents_root(cfg) / "agents.json"

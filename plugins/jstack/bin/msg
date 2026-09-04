@@ -81,6 +81,18 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# root.py is the one answer for "where is the tree" — a pure-stdlib sibling in
+# the plugin dir, so importing it keeps the self-contained promise above. An
+# older install (or a partial deploy) legitimately has no root.py; that is a
+# supported state, and the literal pre-root defaults at each use site keep it
+# answering exactly as it did before the derivation existed.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    import root as _root
+except ImportError:
+    _root = None
+
+
 def _is_seat(path: Path) -> bool:
     """A seat is a directory holding a CLAUDE.md — the same evidence the
     injector and review engine use to recognize one.
@@ -202,6 +214,8 @@ def session_id() -> str:
 
 
 def agent_root() -> Path:
+    if _root is not None:
+        return _root.agents_dir(_config())
     return Path(_config().get("agent_root") or "~/Agents").expanduser()
 
 
@@ -218,9 +232,15 @@ def _fail(msg: str, code: int = 2) -> "None":
 
 
 def _agent_dirs() -> dict:
-    """lowercase agent name -> its workspace dir. Filesystem is the truth:
-    an agent is a directory under the agent root holding a CLAUDE.md — the
-    same gate the SessionStart injector and the review engine use."""
+    """lowercase agent name -> its workspace dir. root.agents() is the one
+    definition of what an agent is — a dir under the agent root carrying a
+    CLAUDE.md itself or in a seat subdir; six places used to each hold their
+    own version of that rule and drift apart."""
+    if _root is not None:
+        cfg = _config()
+        base = _root.agents_dir(cfg)
+        return {name.lower(): base / name for name in _root.agents(cfg)}
+    # Older install, no root.py: the literal pre-root scan.
     out = {}
     try:
         for child in sorted(agent_root().iterdir()):
@@ -278,7 +298,10 @@ def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
         root = _agent_dirs().get(agent)
         if root is None:
             _fail(f"@self: {agent!r} is not an agent under {agent_root()}")
-        return agent, submode, root / submode
+        seat_dir = root / submode
+        if submode == "chat" and not _is_seat(seat_dir) and _is_seat(root):
+            seat_dir = root  # bare cockpit: the seat is the agent root itself
+        return agent, submode, seat_dir
     if spec.lower() == "boss":
         _fail("@boss is not a mailbox — the host's own channel to its human "
               "owns that contact and has its own reply path. Use it instead.")
@@ -306,7 +329,17 @@ def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
     # The cockpit descent: a seat that itself holds a chat/ dir means the
     # operator seat, not the container. @alice-social -> alice/social/chat.
     if not submode:
-        submode = "chat" if _is_seat(root / "chat") else ""
+        if _is_seat(root / "chat"):
+            submode = "chat"
+        elif _is_seat(root):
+            # A bare agent — CLAUDE.md at the top, no chat/ dir — keeps its
+            # cockpit at the agent root itself. The injector already files a
+            # session booted there as {agent}/chat, so that is the seat this
+            # message addresses; {root}/chat would name a directory no
+            # session ever boots in.
+            return base, "chat", root
+        else:
+            submode = ""
     elif _is_seat(root / submode / "chat"):
         submode = f"{submode}/chat"
 
@@ -324,6 +357,10 @@ def _seat_of(path: "Path|None") -> "str|None":
     """A directory -> the seat it sits in, or None. The injector's resolution."""
     if path is None:
         return None
+    if _root is not None:
+        agent, submode = _root.seat_of(path, _config())
+        return f"{agent}/{submode}" if agent else None
+    # Older install without root.py: the literal gate this shipped with.
     root = agent_root()
     try:
         rel = path.resolve().relative_to(root.resolve())
@@ -592,7 +629,11 @@ def seat_dir_for(seat: str) -> "Path|None":
     if root is None or not submode:
         return None
     d = root / submode
-    return d if _is_seat(d) else None
+    if _is_seat(d):
+        return d
+    if submode == "chat" and _is_seat(root):
+        return root  # bare cockpit: the seat is the agent root itself
+    return None
 
 
 def _reply_prompt(row, parent) -> str:
@@ -686,8 +727,20 @@ REPLY_WAKE_MINUTES = 3
 
 
 def _scheduler_home() -> "Path|None":
+    """Where msg itself READS scheduler state (`msg check`) — never a place it
+    invents for the child to book into.
+
+    `mail.scheduler_home` when set, else the SCHEDULER_HOME the child would
+    inherit, else None. None is not "wakes are off": on a machine configured
+    by neither, the scheduler derives its own tree (JSTACK_ROOT, root.py) and
+    its state dir is not home-shaped at all — so guessing a home here would
+    read state from a place the daemon never used. _run_state degrades to
+    "no record" instead, which is at least true."""
     home = _mail_config().get("scheduler_home")
-    return Path(home).expanduser() if home else None
+    if home:
+        return Path(home).expanduser()
+    env = os.environ.get("SCHEDULER_HOME", "").strip()
+    return Path(env).expanduser() if env else None
 
 
 def _sched_argv(sub: list) -> "tuple|None":
@@ -698,9 +751,15 @@ def _sched_argv(sub: list) -> "tuple|None":
     plugin_root = Path(__file__).resolve().parent.parent
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{plugin_root}:{env.get('PYTHONPATH', '')}".rstrip(":")
-    home = _scheduler_home()
+    home = mail.get("scheduler_home")
     if home:
-        env["SCHEDULER_HOME"] = str(home)
+        env["SCHEDULER_HOME"] = str(Path(home).expanduser())
+    # No configured home → the child env rides untouched and scheduler.cli
+    # resolves its own: the SCHEDULER_HOME it inherited, else the JSTACK_ROOT
+    # derivation, else ~/.scheduler. That derivation is what turned the wake
+    # real on an unconfigured machine — it used to land in a ~/.scheduler no
+    # daemon read — and deriving a home HERE instead would be a second opinion
+    # about the scheduler's tree, the exact drift the root migration removes.
     python = str(Path(mail.get("python") or sys.executable or "python3").expanduser())
     return [python, "-m", "scheduler.cli"] + sub, env, str(plugin_root)
 
@@ -856,10 +915,11 @@ def cmd_send(args) -> int:
             _fail(f"--reply-to {reply_to}: no such message")
         thread_id = parent["thread_id"] or parent["id"]
 
-    # The agent's own root — seat_dir climbed back up past every submode part.
-    agent_dir = seat_dir
-    for _ in submode.split("/"):
-        agent_dir = agent_dir.parent
+    # The agent's own root. Climbing seat_dir back up past every submode part
+    # breaks for a bare cockpit — the seat IS the agent root, and the climb
+    # would step out of the tree — so ask the map that just resolved the
+    # address instead.
+    agent_dir = _agent_dirs().get(agent) or seat_dir
     atts = _stash_attachments(args.file or [], seat_dir, agent_dir)
     state = "task" if args.wake else "update"
     cur = con.execute(

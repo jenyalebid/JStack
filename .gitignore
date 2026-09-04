@@ -1,1 +1,14 @@
 __pycache__/
+
+# Scheduler runtime data must never live in this public checkout —
+# scheduler/config.py refuses to resolve config/state/credential paths here
+# (that refusal is the fix; these patterns are defense in depth behind it).
+Credentials/
+state/
+config/
+*-token
+*.token
+.env
+.env.*
+*.pem
+*.key

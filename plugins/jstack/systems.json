@@ -626,6 +626,21 @@
         "description": "Hermetic live test — temp agents tree, temp registry, real git checkouts, temp timeline. Each resolution rule (registry name, subdirectory of a checkout, _/- spelling, git origin, <Repo>-issue-42 prefix), unowned repo → exit 3, inactive entry never claims, seat derived from the entry's workspace rather than a fixed 'chat', a real seat directory beating the registry, end-to-end SessionStart injection in an owned repo, and no-registry → silent unchanged behavior."
       },
       "notes": "Additive by construction: every caller falls back to it only after the normal {agent_root}-relative resolution returns nothing, and it returns nothing itself without a readable registry. Registry default {agent_root}/agents.json, override with agent_registry (or JSTACK_AGENT_REGISTRY). ide-bridge scans repo_root (default parent of agent_root) and reports the repos no entry owns — those open in the IDE as no agent until a line is added to some entry's `repos`. The ACP agent is registered in the IDE's UI, not via defaults — ide-bridge status detects it by looking for acp-agent's path in the Xcode domain. Requires `npm install -g @zed-industries/claude-code-acp`; overrides for both halves are JSTACK_CLAUDE_EXECUTABLE / JSTACK_ACP_ADAPTER in the environment or claude_executable / acp_adapter in the review config. Liveness: injection is live-session-only and an IDE chain holds no tty anywhere, so session-start-inject counts an IDE ancestor as live (JSTACK_IDE_ANCESTORS, default Xcode) — without that the seat resolves and nothing is injected. bin/pict resolves repo seats too, so it previews exactly what an IDE session in a repo would receive."
+    },
+    {
+      "id": "commit-identity-guard",
+      "kind": "system",
+      "name": "Commit identity guard",
+      "status": "live",
+      "description": "Pre-commit hook for the JStack checkout itself: this repo is public, and a commit made under the wrong local git identity once put a private employer email into its history. The hook refuses any commit whose author or committer email is off an explicit allowlist (the org agent account, the owner's GitHub noreply, and the historical agent@local), and the refusal message states the `git config user.email` fix. Default-deny: a new identity is added to the allowlist in the hook file, never forced past it. .git/hooks is untracked, so the versioned copy lives at githooks/pre-commit and a clone restores it with `ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit` — the same symlink pattern as the pre-push gate.",
+      "code": [
+        "githooks/pre-commit"
+      ],
+      "test": {
+        "type": "script",
+        "path": "tests/commit-identity.sh",
+        "description": "Hermetic fixture repo with the hook installed: an off-list author email is blocked with the fix in the message, an off-list committer is blocked even under a good author, and an on-list identity commits normally."
+      }
     }
   ]
 }

@@ -357,11 +357,18 @@ JStack/
 │   │   └── session-review-spawn           # review engine
 │   ├── scheduler/                         # RRULE daemon (one-time + recurring runs)
 │   ├── rules-stage/                       # rules installed via /install-rules
+│   ├── githooks/                          # hooks for THIS repo's checkout (commit identity gate)
 │   ├── systems.json                       # registry: every bundled system + its test
 │   ├── tests/                             # runnable system tests (*.sh, exit 0 = pass)
 │   └── docs/systems/                      # per-system deep docs
 ├── docs/                                  # architecture specs (not installed)
 └── README.md                              # this file
+```
+
+**Working on JStack itself?** This repo is public, and `.git/hooks/` does not travel with a clone — restore the commit identity gate first, so a commit under an off-list author email (a work or personal address that must never enter public history) is refused before it exists:
+
+```bash
+ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit
 ```
 
 ---

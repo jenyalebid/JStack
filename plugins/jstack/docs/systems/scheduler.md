@@ -22,7 +22,7 @@ Native `CronCreate` lives and dies with a session; cloud routines run in Anthrop
 
 ### 1. Point Python at the package
 
-The package ships inside the plugin. Any process that runs it — daemon, CLI, your own tooling — needs it importable and needs `SCHEDULER_HOME` set to the directory holding your `config/` and `state/`.
+The package ships inside the plugin. Any process that runs it — daemon, CLI, your own tooling — needs it importable and needs `SCHEDULER_HOME` set to the directory holding your `config/` and `state/` (unset, it defaults to `~/.scheduler`). One hard rule: that directory can never be inside the checkout that ships the package — the plugin lives in a public git repository, and `feed-token` writes a live secret under `$SCHEDULER_HOME/Credentials/`. Any config/state/credentials path resolving into the checkout is refused at import with a `RuntimeError`, deliberately: a loud failure beats a secret in a public working tree.
 
 The tidiest way, if you use a virtualenv, is one `.pth` file in its `site-packages`:
 

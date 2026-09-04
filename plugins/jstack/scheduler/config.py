@@ -11,9 +11,9 @@ Two layers, and they answer different questions:
       registry plus the defaults/categories a job's settings resolve through.
       Reloaded live on mtime change.
 
-`SCHEDULER_HOME` roots both dirs (default: the package's parent, which is the
-single-tree layout). The finer-grained SCHEDULER_*_DIR overrides win over it
-and exist so the e2e sandbox can point a real daemon at tmp dirs.
+`SCHEDULER_HOME` roots both dirs (default: `~/.scheduler` — never the package
+tree; see `_guarded_path`). The finer-grained SCHEDULER_*_DIR overrides win
+over it and exist so the e2e sandbox can point a real daemon at tmp dirs.
 """
 
 from __future__ import annotations
@@ -22,11 +22,62 @@ import json
 import os
 from pathlib import Path
 
-HOME = Path(os.environ.get("SCHEDULER_HOME", str(Path(__file__).resolve().parent.parent)))
 
-CONFIG_DIR = Path(os.environ.get("SCHEDULER_CONFIG_DIR", str(HOME / "config")))
-STATE_DIR = Path(os.environ.get("SCHEDULER_STATE_DIR", str(HOME / "state" / "scheduler")))
-CREDENTIALS_DIR = Path(os.environ.get("SCHEDULER_CREDENTIALS_DIR", str(HOME / "Credentials")))
+def _shipping_tree_roots() -> "tuple[Path, ...]":
+    """The trees no scheduler data may resolve into: the checkout shipping this file.
+
+    This package is distributed inside a PUBLIC git repository. A config/,
+    state/ or Credentials/ dir rooted in that checkout puts `feed-token`'s
+    live secret one `git add -A` from being published — so resolving there is
+    an error, never a fallback. Forbidden: the package's parent tree always
+    (a plugin-cache install has no .git, but is still wiped on update), plus
+    the nearest enclosing git checkout. The walk stops before $HOME so a user
+    whose home directory is itself a repo (dotfiles) keeps ~ usable.
+    """
+    pkg = Path(__file__).resolve().parent
+    roots = [pkg.parent]
+    home = Path.home()
+    for candidate in pkg.parents:
+        if candidate == home or candidate == candidate.parent:
+            break
+        if (candidate / ".git").exists():
+            if candidate not in roots:
+                roots.append(candidate)
+            break
+    return tuple(roots)
+
+
+_FORBIDDEN_ROOTS = _shipping_tree_roots()
+
+
+def _guarded_path(env_var: str, default: Path) -> Path:
+    """Env-or-default, refusing any path inside the shipping checkout.
+
+    Failing loudly beats silently choosing the repo: a secret written to a
+    wrong-but-safe place is recoverable; one written into a public working
+    tree is not. An env value pointing into the checkout fails the same way —
+    the repo is not a valid home even on purpose.
+    """
+    path = Path(os.environ.get(env_var, str(default)))
+    probe = Path(os.path.expanduser(str(path))).resolve()
+    for root in _FORBIDDEN_ROOTS:
+        if probe == root or root in probe.parents:
+            hint = ("SCHEDULER_HOME" if env_var == "SCHEDULER_HOME"
+                    else f"SCHEDULER_HOME (or the {env_var} override)")
+            raise RuntimeError(
+                f"{env_var}={path} resolves inside the checkout that ships this "
+                f"package ({root}) — a public git tree. Scheduler config, state "
+                f"and credentials must live outside it: set {hint} to a "
+                f"directory outside the repository, e.g. ~/.scheduler."
+            )
+    return path
+
+
+HOME = _guarded_path("SCHEDULER_HOME", Path.home() / ".scheduler")
+
+CONFIG_DIR = _guarded_path("SCHEDULER_CONFIG_DIR", HOME / "config")
+STATE_DIR = _guarded_path("SCHEDULER_STATE_DIR", HOME / "state" / "scheduler")
+CREDENTIALS_DIR = _guarded_path("SCHEDULER_CREDENTIALS_DIR", HOME / "Credentials")
 
 SCHEDULE_FILE = CONFIG_DIR / "schedule.json"
 INSTALL_FILE = Path(os.environ.get("SCHEDULER_INSTALL_FILE", str(CONFIG_DIR / "scheduler.json")))

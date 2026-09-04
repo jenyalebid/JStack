@@ -1,0 +1,55 @@
+#!/bin/sh
+# JStack pre-commit — the identity gate.
+#
+# This repository is PUBLIC. A commit made with the wrong local git identity
+# once put a private employer email address into its history, and the only
+# cure for that is a history rewrite. This hook is the cheap prevention: a
+# commit whose author or committer email is not on the allowlist below never
+# happens in the first place.
+#
+# Installed as .git/hooks/pre-commit — a symlink into the versioned tree, the
+# same pattern as the pre-push gate. A fresh clone restores it with:
+#
+#   ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit
+#
+# Default-deny: a genuinely new identity gets ADDED to this list by editing
+# this file, never by loosening the check or forcing past it.
+
+ALLOWED="
+271424658+jandj-agent@users.noreply.github.com
+61124137+jenyalebid@users.noreply.github.com
+agent@local
+"
+
+allowed() {
+    for a in $ALLOWED; do
+        [ "$1" = "$a" ] && return 0
+    done
+    return 1
+}
+
+bad=""
+for role in AUTHOR COMMITTER; do
+    ident="$(git var "GIT_${role}_IDENT" 2>/dev/null)"
+    email="$(printf '%s' "$ident" | sed -n 's/.*<\(.*\)>.*/\1/p' | tr '[:upper:]' '[:lower:]')"
+    if ! allowed "$email"; then
+        bad="$bad  ${role}: ${email:-<unset>}
+"
+    fi
+done
+
+[ -z "$bad" ] && exit 0
+
+cat >&2 <<EOF
+COMMIT BLOCKED — identity not on this repo's allowlist:
+$bad
+This repository is public. An off-list identity once published a private
+employer address into its history; nothing lands here under one again.
+
+  fix (agent seat):  git config user.email 271424658+jandj-agent@users.noreply.github.com
+  fix (owner):       git config user.email 61124137+jenyalebid@users.noreply.github.com
+
+A genuinely new identity is added to the allowlist in
+plugins/jstack/githooks/pre-commit — never forced past it.
+EOF
+exit 1

@@ -110,12 +110,22 @@ def root(cfg: "dict|None" = None) -> Path:
 
 
 def _derived(cfg: "dict|None", env_var: str, cfg_key: str, leaf: str,
-             guarded: bool) -> Path:
-    """One derived dir: its env override, else its cfg key, else root()/leaf."""
+             guarded: bool, base=None) -> Path:
+    """One derived dir: its env override, else its cfg key, else base()/leaf.
+
+    `base` defaults to root() — the top-level dirs hang straight off it. A dir
+    nested inside another one passes that other one's accessor, so it follows
+    its parent's override instead of re-deriving from the root: with
+    JSTACK_LOGS_DIR pointed elsewhere, the timeline goes with the logs rather
+    than staying behind in a Logs/ nobody is writing to.
+    """
     val = os.environ.get(env_var)
     if not val and cfg:
         val = cfg.get(cfg_key)
-    path = Path(str(val)).expanduser() if val else root(cfg) / leaf
+    if val:
+        path = Path(str(val)).expanduser()
+    else:
+        path = (root(cfg) if base is None else base(cfg)) / leaf
     if guarded:
         _refuse_shipping_tree(path, env_var)
     return path
@@ -153,6 +163,22 @@ def credentials_dir(cfg: "dict|None" = None) -> Path:
                     "Credentials", guarded=True)
 
 
+def timeline_dir(cfg: "dict|None" = None) -> Path:
+    """Where timeline.db lives — one answer, because it is one database.
+
+    Three tools wrote this default independently: bin/log_event (the writer),
+    bin/msg (which files an exchange into both seats' timelines) and the
+    session-end engine (which exports it to every spawn and reads the row count
+    back to prove a write happened). Three literals agreeing is not one
+    location; it is three locations that happen to collide. Move any one of
+    them and the tools do not fail — they succeed against different files, and
+    the timeline silently forks: mail written to one db, sessions to another,
+    the engine watching a third for growth that is happening somewhere else.
+    """
+    return _derived(cfg, "JSTACK_TIMELINE_DIR", "timeline_dir", "Timeline",
+                    guarded=True, base=logs_dir)
+
+
 # ----------------------------------------------------------------- agents
 #
 # Six places in three repos used to disagree about what an agent is. This is
@@ -167,8 +193,13 @@ def _has_claude_md(d: Path) -> bool:
     return (d / "CLAUDE.md").is_file()
 
 
-def _is_agent(d: Path) -> bool:
-    """CLAUDE.md at the top, or at least one non-dot seat subdir carrying one."""
+def is_agent(d: Path) -> bool:
+    """CLAUDE.md at the top, or at least one non-dot seat subdir carrying one.
+
+    Public because a caller that has already resolved its own agents dir needs
+    to ask the question about a directory it names itself, without handing over
+    a cfg that JSTACK_AGENTS_DIR could then outrank.
+    """
     if _has_claude_md(d):
         return True
     try:
@@ -193,7 +224,7 @@ def agents(cfg: "dict|None" = None) -> "list[str]":
         return []
     return sorted(
         d.name for d in children
-        if d.is_dir() and not d.name.startswith(".") and _is_agent(d)
+        if d.is_dir() and not d.name.startswith(".") and is_agent(d)
     )
 
 
@@ -258,10 +289,10 @@ def seat_of(path, cfg: "dict|None" = None, base=None) -> "tuple[str|None, str|No
         rel = Path(path).resolve().relative_to(base.resolve())
     except (ValueError, OSError):
         return None, None
-    # `_is_agent` directly, not `resolve_agent`: the name here was read off the
+    # `is_agent` directly, not `resolve_agent`: the name here was read off the
     # path, so it needs no fuzzy matching, and routing through a lookup would
     # re-resolve the agents dir and could answer about a different one.
-    if not rel.parts or not _is_agent(base / rel.parts[0]):
+    if not rel.parts or not is_agent(base / rel.parts[0]):
         return None, None
     submode = "/".join(p.lower() for p in rel.parts[1:]) or "chat"
     return rel.parts[0].lower(), submode

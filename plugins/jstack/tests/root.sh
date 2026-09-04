@@ -249,6 +249,97 @@ else
     fail "seat_of — $out"
 fi
 
+if out=$(env JSTACK_ROOT="$BR" HOME="$TMP/emptyhome" "$PY" -c '
+import root
+from pathlib import Path
+b = Path("'"$BR"'/Agents")
+assert root.is_agent(b / "topped") is True          # CLAUDE.md at the top
+assert root.is_agent(b / "seatonly") is True        # only a seat carries one
+assert root.is_agent(b / "notanagent") is False     # neither
+assert root.is_agent(b / "nope") is False           # not there at all
+' 2>&1); then
+    pass "is_agent is public, and answers about a directory named by the caller"
+else
+    fail "is_agent — $out"
+fi
+
+# --- the timeline is ONE db, so it gets ONE answer ---------------------------
+# log_event writes it, msg files exchanges into it, and the session-end engine
+# exports the path to every spawn and then reads the row count back to prove a
+# write happened. Three literals agreeing is not one location: move any one and
+# all three still succeed, against different files.
+
+if out=$(env JSTACK_ROOT="$ROOT_A" HOME="$FAKEHOME" "$PY" -c '
+import os, root
+from pathlib import Path
+r = Path(os.environ["JSTACK_ROOT"])
+assert root.timeline_dir() == r / "Logs" / "Timeline", root.timeline_dir()
+' 2>&1); then
+    pass "timeline_dir derives to {root}/Logs/Timeline"
+else
+    fail "timeline_dir derivation — $out"
+fi
+
+if out=$(env HOME="$FAKEHOME" "$PY" -c '
+import root
+from pathlib import Path
+# No root declared: the derived answer must be the literal these three tools
+# each shipped, or adopting the derivation silently moves every install.
+assert root.timeline_dir() == Path("'"$FAKEHOME"'/Logs/Timeline"), root.timeline_dir()
+' 2>&1); then
+    pass "with no JSTACK_ROOT the derived answer IS the pre-root literal ~/Logs/Timeline"
+else
+    fail "timeline_dir unconfigured — $out"
+fi
+
+if out=$(env JSTACK_ROOT="$ROOT_A" JSTACK_LOGS_DIR="$ROOT_B/logs-here" HOME="$FAKEHOME" "$PY" -c '
+import root
+from pathlib import Path
+# Nested under logs, not re-derived from the root: a host that moves its logs
+# must not leave the timeline behind in a Logs/ nobody writes to.
+assert root.timeline_dir() == Path("'"$ROOT_B"'/logs-here/Timeline"), root.timeline_dir()
+' 2>&1); then
+    pass "timeline_dir follows JSTACK_LOGS_DIR rather than re-deriving from the root"
+else
+    fail "timeline_dir under moved logs — $out"
+fi
+
+if out=$(env JSTACK_ROOT="$ROOT_A" JSTACK_TIMELINE_DIR="$ROOT_B/tl" HOME="$FAKEHOME" "$PY" -c '
+import root
+from pathlib import Path
+assert root.timeline_dir() == Path("'"$ROOT_B"'/tl"), root.timeline_dir()
+# cfg is consulted only when the env is silent — an explicit export outranks a
+# config file, the same order every other dir here uses.
+assert root.timeline_dir({"timeline_dir": "/nope"}) == Path("'"$ROOT_B"'/tl")
+' 2>&1); then
+    pass "JSTACK_TIMELINE_DIR outranks the derivation and the cfg key"
+else
+    fail "timeline_dir env precedence — $out"
+fi
+
+if out=$(env JSTACK_ROOT="$ROOT_A" HOME="$FAKEHOME" "$PY" -c '
+import root
+from pathlib import Path
+assert root.timeline_dir({"timeline_dir": "'"$ROOT_B"'/from-cfg"}) == Path("'"$ROOT_B"'/from-cfg")
+' 2>&1); then
+    pass "a cfg timeline_dir still wins over the derivation (review.json keeps its say)"
+else
+    fail "timeline_dir cfg precedence — $out"
+fi
+
+if out=$(env JSTACK_TIMELINE_DIR="$PLUGIN_ROOT/Timeline" HOME="$FAKEHOME" "$PY" -c '
+import root
+try:
+    root.timeline_dir()
+except RuntimeError as e:
+    assert "public git tree" in str(e), e
+else:
+    raise AssertionError("timeline_dir accepted a path inside the shipping checkout")
+' 2>&1); then
+    pass "timeline_dir refuses to put the db inside this public checkout"
+else
+    fail "timeline_dir guard — $out"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -133,7 +133,8 @@ Once the plugin is installed, the SessionEnd hook is live — but it only does a
 ### What makes an agent reviewable
 
 ```
-{agent_root}/{Name}/CLAUDE.md      ← this file existing IS the opt-in (the agent identity)
+{agent_root}/{Name}/CLAUDE.md          ← this file existing IS the opt-in (the agent identity)
+{agent_root}/{Name}/{seat}/CLAUDE.md   ← or one seat down, if the workspace keeps no top-level identity
 ```
 
 End a session inside that agent's tree → the engine resolves the owner and (default `session_end_action: "selfwrite"`) resumes the ended session for one turn so it logs its own seat-tagged timeline entry. Set `session_end_action: "review"` for the legacy fresh multi-phase review (`/jstack:post-session-review`, output machine-validated, retried once on rejection). Engine activity logs to `~/.claude/jstack/review-state/session-review.log` by default.
@@ -148,7 +149,7 @@ log_event tail <agent>/<submode> -n 10        # a seat's recent history (what in
 log_event verdict <agent>/<submode> blocked --note "do not repeat: ..."
 ```
 
-Store: `~/Logs/Timeline/timeline.db` (`JSTACK_TIMELINE_DIR` overrides); daily `{YYYY-MM-DD}.md` files are a one-way rendered view — never hand-edit them. Which seats get their history injected on session start, and how many entries, is the `timeline_inject` map in the review config. Format spec + editorial bar: the `timeline` rule (install via `/install-rules`).
+Store: `{root}/Logs/Timeline/timeline.db` — `~/Logs/Timeline/timeline.db` until an install declares a root (`JSTACK_TIMELINE_DIR` overrides either way); daily `{YYYY-MM-DD}.md` files are a one-way rendered view — never hand-edit them. Which seats get their history injected on session start, and how many entries, is the `timeline_inject` map in the review config. Format spec + editorial bar: the `timeline` rule (install via `/install-rules`).
 
 ### Machine config (optional — defaults are fully portable)
 

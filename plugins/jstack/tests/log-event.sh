@@ -629,6 +629,51 @@ JSTACK_TIMELINE_DIR="$OLD" "$LOG_EVENT" old --at 11:00 --date 2026-01-05 "Linked
 [[ $(python3 -c "import sqlite3; print(sqlite3.connect('$OLD/timeline.db').execute(\"SELECT commits FROM entries WHERE headline='Linked post-upgrade'\").fetchall())") == *"$C1"* ]] \
   && pass "commits column migrates onto a pre-commits db" || fail "commits schema migration"
 
+# 51. ONE db, three writers. log_event writes the timeline, msg files an
+#     exchange into both seats' timelines, and the session-end engine exports
+#     the path to every spawn and then reads the row count back to prove a
+#     write happened. Each carried its own literal default. Three literals
+#     agreeing is not one location — move any of them and all three keep
+#     succeeding, against different files: mail in one db, sessions in another,
+#     the engine watching a third for growth happening somewhere else. Asked of
+#     the three real scripts, not of root.py, because the bug was never in the
+#     derivation — it was in who bothered to ask.
+ONE_DB=$(env -u JSTACK_TIMELINE_DIR HOME="$TMP/onehome" JSTACK_ROOT="$TMP/oneroot" \
+  JSTACK_REVIEW_CONFIG="$TMP/no-such-review.json" python3 - "$PLUGIN_ROOT" <<'PY'
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+
+plugin = Path(sys.argv[1])
+seen = {}
+for name, script in (("log_event", "bin/log_event"), ("msg", "bin/msg"),
+                     ("engine", "bin/session-review-spawn")):
+    loader = importlib.machinery.SourceFileLoader(f"_probe_{name}", str(plugin / script))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    seen[name] = str(mod.CFG["timeline_dir"] if name == "engine" else mod.timeline_dir())
+print(seen["log_event"] if len(set(seen.values())) == 1 else f"SPLIT {seen}")
+PY
+) || ONE_DB="probe failed"
+[[ "$ONE_DB" == "$TMP/oneroot/Logs/Timeline" ]] \
+  && pass "log_event, msg and the session-end engine resolve one timeline dir" \
+  || fail "timeline dir forked across the three writers ($ONE_DB)"
+
+# 52. …and with no root declared that one answer is still the literal all three
+#     shipped, so adopting the derivation moved no existing install.
+LEGACY=$(env -u JSTACK_TIMELINE_DIR -u JSTACK_ROOT HOME="$TMP/legacyhome" \
+  JSTACK_REVIEW_CONFIG="$TMP/no-such-review.json" \
+  python3 -c "
+import importlib.machinery, importlib.util
+loader = importlib.machinery.SourceFileLoader('_probe_legacy', '$PLUGIN_ROOT/bin/log_event')
+spec = importlib.util.spec_from_loader(loader.name, loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+print(m.timeline_dir())
+") || LEGACY="probe failed"
+[[ "$LEGACY" == "$TMP/legacyhome/Logs/Timeline" ]] \
+  && pass "unconfigured, the derived answer is the pre-root ~/Logs/Timeline" \
+  || fail "derivation moved an unconfigured install ($LEGACY)"
+
 echo
 if [[ $fails -gt 0 ]]; then
   echo "log-event: $fails FAILED" >&2

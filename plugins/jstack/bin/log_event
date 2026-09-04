@@ -44,9 +44,11 @@ read from git rather than retyped, so the timeline's own `grep` can find work
 by what its commits said.
 
 Store: {timeline_dir}/timeline.db (sqlite, WAL — concurrent writers safe).
-Timeline dir: $JSTACK_TIMELINE_DIR (default ~/Logs/Timeline). Format spec lives
-in the jstack rule `timeline.md`. Source is `agent` or `agent/submode` — always
-pass the submode when the seat is known (e.g. alpha/chat).
+Timeline dir: $JSTACK_TIMELINE_DIR, else root.timeline_dir() — {root}/Logs/
+Timeline, which is ~/Logs/Timeline on an install that declares no root. Format
+spec lives in the jstack rule `timeline.md`. Source is `agent` or
+`agent/submode` — always pass the submode when the seat is known (e.g.
+alpha/chat).
 
 Self-contained: python3 stdlib only. No venv, no host imports.
 """
@@ -64,6 +66,14 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    import root as _root
+except ImportError:
+    # Older install without root.py — the literal pre-root default still
+    # answers, and answers identically on any machine that declares no root.
+    _root = None
 
 _VALID_VERDICTS = {"shipped", "drift", "blocked", "empty"}
 _VALID_ORIGINS = {"direct", "indirect"}
@@ -107,9 +117,19 @@ CREATE INDEX IF NOT EXISTS idx_session_tags_tag ON session_tags(tag_id);
 
 
 def timeline_dir() -> Path:
+    """The db's home, asked of root so every writer gets the same answer.
+
+    No config file is read here on purpose: this tool is shelled out to by
+    hooks, crons and spawns, and a second opinion about which config is
+    authoritative is what forked the location in the first place. A host that
+    moves the timeline exports JSTACK_TIMELINE_DIR (or JSTACK_ROOT) to the
+    processes that write it — which the session-end engine already does.
+    """
     env = os.environ.get("JSTACK_TIMELINE_DIR", "").strip()
     if env:
         return Path(env).expanduser()
+    if _root is not None:
+        return _root.timeline_dir()
     return Path.home() / "Logs" / "Timeline"
 
 

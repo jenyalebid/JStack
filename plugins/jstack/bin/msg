@@ -175,9 +175,18 @@ def _mail_config() -> dict:
 
 
 def timeline_dir() -> Path:
+    """Same db as bin/log_event's, and it has to be the same by construction.
+
+    An exchange is filed into both seats' timelines from here; the seat then
+    reads its own history through log_event. Two independently-written
+    defaults agreeing is not one location — move either and both tools still
+    succeed, against different files.
+    """
     env = os.environ.get("JSTACK_TIMELINE_DIR", "").strip()
     if env:
         return Path(env).expanduser()
+    if _root is not None:
+        return _root.timeline_dir(_config())
     return Path.home() / "Logs" / "Timeline"
 
 

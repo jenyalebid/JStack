@@ -31,7 +31,7 @@ The self-write turn uses `bin/log_event` (on the spawned PATH). The `review` ski
 
 ## Stack requirements (conventions assumed to exist)
 
-1. **Agent workspaces** under `agent_root`, one `{Name}/` each. An agent is **reviewable iff `{agent_root}/{Name}/review/` exists** — that directory is also the spawn cwd, so walk-up loads the agent's identity + review glue.
+1. **Agent workspaces** under `agent_root`, one `{Name}/` each. An agent is **reviewable iff `root.is_agent({agent_root}/{Name})`** — a `CLAUDE.md` at the workspace top, or in at least one of its seat subdirs. The second case is what a seat-only layout (`{agent_root}/{Name}/{seat}/CLAUDE.md`) looks like; the engine used to carry its own copy of this gate, requiring the top-level file, and found no agents at all on such a machine.
 2. **A review skill** resolvable by the spawned `claude` (plugin default or host-installed).
 3. **`log_event`** for timeline writes — the engine prepends its own `bin/` to the spawned PATH, so the plugin's copy is always available.
 
@@ -74,7 +74,7 @@ All keys optional; defaults are fully portable. Host-relevant keys:
 | `tg_classify_cmd` | none | Host TG classifier (exit 0 = telegram session) |
 | `escalate_cmd` | none (log only) | Called `<agent> <session_id> <reason>` after final failure |
 | `extra_path` | `[]` | Host tool dirs prepended to the spawned PATH |
-| `timeline_dir` | `~/Logs/Timeline` | Also exported as `JSTACK_TIMELINE_DIR` to spawns |
+| `timeline_dir` | `$JSTACK_TIMELINE_DIR`, else `root.timeline_dir()` | Also exported as `JSTACK_TIMELINE_DIR` to spawns |
 | `state_dir` | `~/.claude/jstack/review-state` | Claims, debounce markers, slots |
 | `log_file` | `{state_dir}/session-review.log` | Pin to a host path if a dashboard parses it |
 
@@ -100,4 +100,4 @@ Storage is sqlite (`{timeline_dir}/timeline.db`, WAL — concurrent session-ends
 
 Writing an entry is only half the loop: **a row in a db is not context in the session** — nothing reads it just because it exists. `hooks/session-start-inject.py` (a **SessionStart** hook) is the read half. On every new session it resolves the agent + sub-mode from cwd and injects the seat's last N timeline entries (via `log_event tail`) as `additionalContext`. Which seats, and how many entries, is the `timeline_inject` map in the review config — exact `"agent/submode"` keys win over `"*/submode"` wildcards; unlisted seats get nothing. So the write half (self-write / Stop hook) and the read half (this hook) together make the loop actually close.
 
-Sub-mode resolution is identical on both sides of the loop (and in the Stop hook's source tag): the first path segment of cwd under `{agent_root}/{Name}`, or **`chat`** when cwd is the agent root. Cockpit sessions run at the agent root and are the `chat` seat by default — they do **not** cd into `chat/` (that would change the Claude Code project-dir key and orphan transcripts + memory). The `review` sub-mode is skipped. Recognized only for agents with a root CLAUDE.md; any other cwd → silent no-op. Kill switch: `JSTACK_TIMELINE_INJECT_DISABLED=1` (legacy `JSTACK_CONTINUITY_INJECT_DISABLED` honored). Defensive: any error → exit 0, never blocks a session.
+Sub-mode resolution is identical on both sides of the loop (and in the Stop hook's source tag): the first path segment of cwd under `{agent_root}/{Name}`, or **`chat`** when cwd is the agent root. Cockpit sessions run at the agent root and are the `chat` seat by default — they do **not** cd into `chat/` (that would change the Claude Code project-dir key and orphan transcripts + memory). The `review` sub-mode is skipped. Recognized only for agents `root.is_agent` accepts; any other cwd → silent no-op. Kill switch: `JSTACK_TIMELINE_INJECT_DISABLED=1` (legacy `JSTACK_CONTINUITY_INJECT_DISABLED` honored). Defensive: any error → exit 0, never blocks a session.

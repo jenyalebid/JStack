@@ -101,7 +101,7 @@ Any spawner can set the variable; nothing else is required of it. A board UI tha
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `JSTACK_TIMELINE_DIR` | `~/Logs/Timeline` | Directory holding `timeline.db` |
+| `JSTACK_TIMELINE_DIR` | `root.timeline_dir()` — `{root}/Logs/Timeline` | Directory holding `timeline.db`. One answer for `log_event`, `msg` and the session-end engine alike |
 | `JSTACK_TIMELINE_ORIGIN` | unset (→ direct) | Default origin for writes in this process tree — spawn plumbing sets `indirect` on unattended sessions |
 | `JSTACK_TIMELINE_TAG` | unset (→ seat history) | Open this session **on a subject**: the injector serves the tag's cross-seat window instead of the seat's own, and the session tags itself so the thread continues (see Opening a session ON a subject) |
 | `timeline_inject` (review config) | none | `{"*/*": N, "agent/submode": N, "*/submode": N}` — fleet default plus optional exact/family overrides; nearest match wins. A new seat inherits `*/*` automatically. N = **sessions** deep |

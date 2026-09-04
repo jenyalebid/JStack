@@ -17,7 +17,8 @@ briefs, nightly reviews, and every seat's cold start. **Not a session log.
 Not a commit log. Not a build report.** It *links* to commits (see below) and
 is still none of those: one entry per sitting, not one per change.
 
-Store: sqlite at `{timeline_dir}/timeline.db` (default `~/Logs/Timeline/`) —
+Store: sqlite at `{timeline_dir}/timeline.db` (default `{root}/Logs/Timeline/`,
+so `~/Logs/Timeline/` on an install that declares no root) —
 the ONLY artifact; there are no rendered files. Everything goes through the
 jstack `log_event` tool (in the plugin's `bin/`, on PATH for review spawns):
 writes AND reads. Never write the db from other code — a second writer forks

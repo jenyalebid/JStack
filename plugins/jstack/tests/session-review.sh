@@ -44,7 +44,15 @@ agent_root = tmp / "Agents"
 for name in ("Alpha", "Beta"):
     (agent_root / name).mkdir(parents=True)
     (agent_root / name / "CLAUDE.md").write_text("# agent\n")
-(agent_root / "NoClaudeMd").mkdir(parents=True)  # workspace without CLAUDE.md — not reviewable
+# Seat-only layout: nothing at the agent top, the CLAUDE.md one level down.
+# This is what a fresh install looks like, and the engine's private copy of the
+# gate found no agents at all on it — so no session anywhere on such a machine
+# ever got its running memory written.
+(agent_root / "SeatOnly" / "chat").mkdir(parents=True)
+(agent_root / "SeatOnly" / "chat" / "CLAUDE.md").write_text("# seat\n")
+# Not an agent: no CLAUDE.md at the top and none in the subdir either — the
+# seat scan must not turn any directory that merely has children into an agent.
+(agent_root / "NoClaudeMd" / "notes").mkdir(parents=True)
 
 cfg_path = tmp / "review.json"
 cfg_path.write_text(json.dumps({
@@ -153,7 +161,12 @@ check("normal review output not flagged as session-limit", not eng.is_session_li
 
 # ---- agent resolution ---------------------------------------------------
 agents = eng.reviewable_agents(agent_root)
-check("reviewable = root-CLAUDE.md convention", sorted(agents) == ["alpha", "beta"])
+check("reviewable = root.is_agent, so a seat-only workspace counts",
+      sorted(agents) == ["alpha", "beta", "seatonly"])
+check("a directory with children but no CLAUDE.md anywhere is still not an agent",
+      "noclaudemd" not in agents)
+check("casing is preserved for the project-dir encoding",
+      agents["seatonly"] == "SeatOnly")
 
 enc_root = str(agent_root).replace("/", "-").replace(".", "-")
 def res(dirname):
@@ -164,6 +177,12 @@ check("umbrella sub-mode resolves", res(f"{enc_root}-Alpha-chat") == "alpha")
 check("umbrella root resolves", res(f"{enc_root}-Beta") == "beta")
 check("deep mission path resolves", res(f"{enc_root}-Alpha-missions-200-dau") == "alpha")
 check("non-reviewable workspace misses", res(f"{enc_root}-NoClaudeMd-chat") is None)
+check("a seat-only agent's session resolves to it",
+      res(f"{enc_root}-SeatOnly-chat") == "seatonly")
+seat_jsonl = tmp / "seatonly.jsonl"
+seat_jsonl.write_text(json.dumps({"cwd": str(agent_root / "SeatOnly" / "chat")}) + "\n")
+check("a seat-only agent's seat is named, not dropped",
+      eng.resolve_submode(seat_jsonl, agent_root, "SeatOnly") == "chat")
 check("project_dir_map resolves", res("-Users-x-Some-Project") == "beta")
 home_enc = str(Path.home()).replace("/", "-").replace(".", "-")
 check("home dir → default_agent", res(home_enc) == "alpha")

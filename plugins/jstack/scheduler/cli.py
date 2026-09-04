@@ -26,8 +26,15 @@ from . import config, journal, occurrences, registry, runner
 LOCAL_TZ = ZoneInfo(config.DEFAULT_TZ)
 
 
-def _tz_label() -> str:
-    return datetime.now(LOCAL_TZ).tzname() or config.DEFAULT_TZ
+def _tz_label(at: "datetime|None" = None) -> str:
+    """The zone abbreviation for the instant being named — not for now.
+
+    A label reads as a fact about the time beside it, so it has to be computed
+    at that time. Booked from `now` instead, a wake for August written in
+    January is named PST and fires in PDT: an hour of apparent drift that is
+    really just the name being wrong, and the kind of thing a reader spends an
+    afternoon on before noticing the job fired exactly when it said."""
+    return (at or datetime.now(LOCAL_TZ)).replace(tzinfo=LOCAL_TZ).tzname() or config.DEFAULT_TZ
 
 
 _MIN_PREFIX = 8
@@ -90,7 +97,7 @@ def cmd_add_once(args) -> None:
     except ValueError:
         _fail(f"--at must be 'YYYY-MM-DD HH:MM' ({config.DEFAULT_TZ} wall clock), "
               f"got {args.at!r}")
-    name = args.name or f"{args.agent} wake {args.at} {_tz_label()}"
+    name = args.name or f"{args.agent} wake {args.at} {_tz_label(dt)}"
     job = _base_job(args.agent, name, args.message, args.timeout_seconds, args.workspace)
     if args.category:
         job["category"] = args.category
@@ -105,7 +112,7 @@ def cmd_add_once(args) -> None:
     if getattr(args, "locked", False):
         job["locked"] = True
     registry.mutate(lambda reg: reg["jobs"].append(job))
-    _emit(args, job, f"added once job {job['id']} — fires {args.at} {_tz_label()}")
+    _emit(args, job, f"added once job {job['id']} — fires {args.at} {_tz_label(dt)}")
 
 
 def cmd_add_recurring(args) -> None:

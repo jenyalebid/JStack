@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""schedule-self — book the calling agent a wake at a wall-clock time.
+
+    schedule-self "YYYY-MM-DD HH:MM" "context message" [timeout_seconds] [category]
+    schedule-self "YYYY-MM-DD HH:MM" "context message" --resume
+
+A stated intention is only real once the wake is booked: "I'll check back at
+three" is a lie unless a job exists that fires at three. This command is that
+booking — a one-shot on the host scheduler, landing on its schedule like any
+other job, spawning a fresh session in the calling seat with the context
+message as its opening prompt.
+
+Times are read in the scheduler's configured timezone — the same zone
+`add-once` files them under, never a region typed here. A time is a
+wall-clock FACT: book one you have read from somewhere, not one you forecast
+against a clock somebody else will draw later. A time already past is an
+error that says so, not a job that never fires.
+
+--resume: the wake fork-resumes THIS conversation (session id read from
+$CLAUDE_CODE_SESSION_ID — nothing to pass) instead of starting fresh. The
+woken session carries the calling conversation's full context under a new
+session id. Default stays a fresh session: a wake should stand alone on its
+context message; resume is for short follow-ups and verifications where the
+calling session's context is the value. The job's workspace is pinned to the
+directory this session STARTED in, because that is the string the CLI hashed
+into the transcript's project slug — a fork handed any other workspace
+cannot find the conversation it is supposed to continue.
+
+timeout_seconds (optional): how long the spawned session may run. When
+omitted the wake carries NO per-job timeout, so the resolver chain applies
+its category's runway (job → category → global default). Runway is
+calibrated once per category in the registry, not remembered by every
+caller: a wake that legitimately runs long gets a long ceiling by
+inheritance. Pinning the global default here instead would silently override
+the category and kill such a wake mid-flight. Pass a value only to override
+the category.
+
+category (optional): run-category from the registry's categories map — sets
+the wake's model/timeout through that same chain. Omitted means no category
+layer; nothing here guesses one from the message.
+
+Agent identity is inferred from cwd against root.agents_dir(): the first
+component below it is the agent, the next — when it is a real seat — the
+seat, and the wake fires the EXACT seat that booked it. Called from anywhere
+else this errors naming what it looked for, because a wake booked against a
+guessed workspace fires a session nowhere.
+
+Booking goes through `scheduler.cli add-once`, the same subprocess the inbox
+wake uses — one way to book a job, never two. A booking that fails exits
+non-zero and says so: the worst outcome this tool can produce is an agent
+that believes it has a wake and does not.
+
+Self-contained python3 stdlib — no venv, no imports beyond this plugin's own
+tree. Safe to call from hooks, crons, spawned sessions, or interactively.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT))
+import root  # noqa: E402
+
+
+def _fail(msg: str, code: int = 2) -> "None":
+    print(f"error: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _config() -> dict:
+    """Host config — the same file msg and the review engine read."""
+    path = Path(os.environ.get(
+        "JSTACK_REVIEW_CONFIG",
+        str(Path.home() / ".claude" / "jstack" / "review.json"),
+    )).expanduser()
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _mail(cfg: dict) -> dict:
+    m = cfg.get("mail")
+    return m if isinstance(m, dict) else {}
+
+
+# ------------------------------------------------------------------- identity
+
+
+def _identity(cfg: dict) -> "tuple[str, Path]":
+    """(job agent id, workspace dir) for the calling cwd, or a loud exit.
+
+    The cwd sits somewhere under agents_dir(); the first component below it
+    is the agent and the next — when it is a real seat — the seat. Anything
+    deeper is just where the session happens to be standing: the wake runs in
+    the seat, not in whatever subdirectory booked it. From an agent dir with
+    no seat, the wake runs in the agent dir itself. From outside the tree
+    there is no honest answer, and a guessed one would book a session that
+    boots nowhere — so that is an error naming what was looked for.
+    """
+    base = root.agents_dir(cfg)
+    cwd = Path.cwd()
+    try:
+        rel = cwd.relative_to(base)
+    except ValueError:
+        # The shell reports the physical path while the declared root may
+        # spell the same place through a symlink (/tmp vs /private/tmp is
+        # the everyday case) — compare resolved before concluding "outside".
+        try:
+            rel = cwd.resolve().relative_to(base.resolve())
+        except (ValueError, OSError):
+            _fail(f"cwd {cwd} is not inside an agent workspace — looked for "
+                  f"{base}/<agent>[/<seat>]. A wake is booked for the seat "
+                  f"that asks; run this from one.")
+    if not rel.parts:
+        _fail(f"cwd is {base} itself, not an agent inside it — looked for "
+              f"{base}/<agent>[/<seat>].")
+    name = rel.parts[0]
+    ws = root.resolve_agent(name, cfg)
+    if ws is None:
+        _fail(f"{base / name} is not an agent (no CLAUDE.md there or in any "
+              f"seat below it) — nothing would boot for this wake.")
+    agent = name.lower()
+    if len(rel.parts) > 1 and rel.parts[1] in root.seats(name, cfg):
+        return f"{agent}-{rel.parts[1].lower()}", ws / rel.parts[1]
+    return agent, ws
+
+
+# ------------------------------------------------------------------ scheduler
+
+
+def _sched_config(cfg: dict):
+    """Import scheduler.config with the environment settled FIRST.
+
+    config resolves its dirs and timezone at import, from the environment,
+    and the add-once subprocess below inherits this same environment — so
+    settling it before the import is what makes the past-time check, the
+    dedupe read and the booking all answer from one registry instead of
+    three different opinions.
+
+    SCHEDULER_HOME: the env wins over the host's mail.scheduler_home. An
+    explicit env var is the top rung of the whole precedence ladder, and a
+    test that points the registry at a tmpdir must never be silently
+    re-aimed at the live one by a config file it did not write.
+    """
+    os.environ["PYTHONPATH"] = (
+        f"{PLUGIN_ROOT}:{os.environ.get('PYTHONPATH', '')}".rstrip(":"))
+    if not os.environ.get("SCHEDULER_HOME"):
+        home = _mail(cfg).get("scheduler_home")
+        if home:
+            os.environ["SCHEDULER_HOME"] = str(Path(str(home)).expanduser())
+    try:
+        from scheduler import config as sched_config  # noqa: E402
+    except RuntimeError as e:
+        _fail(str(e))
+    return sched_config
+
+
+def _python(cfg: dict) -> str:
+    """The interpreter for scheduler.cli: the host's declared one, else our own."""
+    return str(Path(
+        _mail(cfg).get("python") or sys.executable or "python3").expanduser())
+
+
+# ----------------------------------------------------------------- validation
+
+
+def _check_time(when: str, sched_config) -> None:
+    try:
+        dt = datetime.strptime(when, "%Y-%m-%d %H:%M")
+    except ValueError:
+        _fail(f'bad time {when!r} — use "YYYY-MM-DD HH:MM" '
+              f"({sched_config.DEFAULT_TZ} wall clock)")
+    try:
+        now = datetime.now(ZoneInfo(sched_config.DEFAULT_TZ))
+    except KeyError:
+        now = datetime.now().astimezone()
+    # Floored to the minute: the current minute may still fire on the next
+    # tick, and refusing the present would make "wake me now-ish" impossible.
+    # Anything earlier is a job that never fires, booked by an agent that now
+    # believes it has a check-back.
+    if dt.replace(tzinfo=now.tzinfo) < now.replace(second=0, microsecond=0):
+        _fail(f"{when} is already past — it is "
+              f"{now.strftime('%Y-%m-%d %H:%M')} {sched_config.DEFAULT_TZ}. "
+              f"A wake in the past never fires; nothing was booked.")
+
+
+def _check_timeout(timeout: "int|None", sched_config) -> None:
+    """Validate only a SUPPLIED timeout; omitted stays omitted so the flag is
+    dropped from the booking and the category's runway governs.
+
+    The lower bound is the registry's own global runway, read here rather
+    than typed: a per-job value below it outranks the category and strands
+    the run's work when it trips — timeouts never retry — so the refusal
+    belongs at the booking, before the damage is scheduled.
+    """
+    if timeout is None:
+        return
+    floor = sched_config.load_defaults().get("timeout_seconds") or 1800
+    if timeout < floor:
+        _fail(f"timeout_seconds {timeout} is below the global runway "
+              f"({floor}s) — a wake killed mid-flight strands its work. Omit "
+              f"the argument and let the category carry the runway; pass a "
+              f"value only to give this wake a LONGER one.")
+
+
+# -------------------------------------------------------------------- resume
+
+
+def _resume_pin(cwd: Path) -> "tuple[str, Path]":
+    """(session id, pinned workspace) for a fork-resume wake, or a loud exit.
+
+    The session id comes from the harness env, never from the agent — a
+    typed id would fork someone else's conversation, and its absence means
+    there is no conversation here to resume: refusing beats silently booking
+    a fresh session and calling it a resume.
+
+    The workspace is the directory the session STARTED in, read from its own
+    transcript in the transcript's own spelling — cwd is wherever the agent
+    last cd'd, which is routinely somewhere else, and the CLI finds a
+    transcript by hashing the start directory's exact string into a project
+    slug. Pin anything else and the fork boots fresh, certain it has context
+    it does not have.
+    """
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    if not sid:
+        _fail("--resume requires $CLAUDE_CODE_SESSION_ID, which is set only "
+              "inside a live session — there is no conversation here to "
+              "resume, so nothing was booked. Drop --resume for a fresh wake.")
+    projects = Path(os.environ.get(
+        "CLAUDE_PROJECTS_DIR", str(Path.home() / ".claude" / "projects"),
+    )).expanduser()
+    started = None
+    try:
+        hits = sorted(projects.glob(f"*/{sid}.jsonl"))
+    except OSError:
+        hits = []
+    for path in hits:
+        try:
+            with path.open() as fh:
+                for _ in range(40):
+                    line = fh.readline()
+                    if not line:
+                        break
+                    c = (json.loads(line) or {}).get("cwd")
+                    if c:
+                        started = Path(c)
+                        break
+        except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+            continue
+        if started is not None:
+            break
+    if started is None:
+        _fail(f"--resume: no transcript for session {sid} under {projects} — "
+              f"there is nothing a fork could resume, so nothing was booked.")
+    try:
+        same = started.expanduser().resolve() == cwd.resolve()
+    except OSError:
+        same = False
+    if not same:
+        _fail(f"--resume: this session started in {started}, not here — run "
+              f"schedule-self from there, so the pinned workspace and the "
+              f"transcript's project slug agree.")
+    return sid, started
+
+
+# ---------------------------------------------------------------------- main
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="schedule-self", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("when", metavar='"YYYY-MM-DD HH:MM"',
+                   help="wall-clock time in the scheduler's configured zone")
+    p.add_argument("message", help="context the woken session opens on")
+    p.add_argument("timeout", nargs="?", default="", metavar="timeout_seconds",
+                   help="per-job override; omit ('' counts) to inherit the "
+                        "category's runway")
+    p.add_argument("category", nargs="?", default="",
+                   help="run-category for model/timeout resolution")
+    p.add_argument("--resume", action="store_true",
+                   help="fork-resume this conversation instead of starting fresh")
+    args = p.parse_args()
+
+    timeout = None
+    if args.timeout:
+        try:
+            timeout = int(args.timeout)
+        except ValueError:
+            _fail(f"timeout_seconds must be an integer, got {args.timeout!r}")
+    if not args.message.strip():
+        _fail("empty context message — it is all the woken session opens on")
+
+    cfg = _config()
+    agent, workspace = _identity(cfg)
+    sched_config = _sched_config(cfg)
+    _check_time(args.when, sched_config)
+    _check_timeout(timeout, sched_config)
+
+    sid = ""
+    if args.resume:
+        sid, workspace = _resume_pin(Path.cwd())
+
+    name = f"{agent} wake {args.when}" + (" (resume)" if args.resume else "")
+
+    # Idempotent: the name is deterministic from (agent, time), so a matching
+    # enabled job in the registry IS this wake, already booked — re-running
+    # with the same args is a no-op success, never a double fire.
+    try:
+        jobs = json.loads(sched_config.SCHEDULE_FILE.read_text()).get("jobs", [])
+    except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+        jobs = []
+    for job in jobs:
+        if job.get("name") == name and job.get("enabled", True):
+            print(f"already booked: {name} (job {(job.get('id') or '')[:8]}) "
+                  f"— skipping duplicate")
+            return 0
+
+    argv = [_python(cfg), "-m", "scheduler.cli", "add-once",
+            "--agent", agent,
+            "--at", args.when,
+            "--workspace", str(workspace),
+            "--message", args.message,
+            "--name", name,
+            "--delete-after-run",
+            "--json"]
+    if timeout is not None:
+        argv += ["--timeout-seconds", str(timeout)]
+    if args.category:
+        argv += ["--category", args.category]
+    if sid:
+        argv += ["--resume-session", sid]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                           cwd=str(PLUGIN_ROOT))
+    except (OSError, subprocess.SubprocessError) as e:
+        _fail(f"the wake was NOT booked ({e}) — do not report a check-back "
+              f"you do not have.", code=1)
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip() or "scheduler refused"
+        _fail(f"the wake was NOT booked: {detail}", code=1)
+    try:
+        job_id = (json.loads(r.stdout) or {}).get("id") or ""
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        job_id = ""
+    if not job_id:
+        _fail(f"add-once exited 0 but returned no job id — verify the "
+              f"registry before trusting this wake:\n{r.stdout}", code=1)
+
+    print(f"booked: {agent} wakes {args.when} ({sched_config.DEFAULT_TZ}), "
+          f"job {job_id[:8]}"
+          + (f", fork-resuming session {sid[:8]}" if sid else "")
+          + f" — {args.message}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -12,7 +12,7 @@ The bar for a task is that it needs a worker: a separable unit someone can take 
 
 ## 1. Compose
 
-- **Repo** — where the work lands. Default `Jarvis-and-J/jarvis` for anything without an obvious home.
+- **Repo** — where the work lands. Default `$JSTACK_TASK_REPO` for anything without an obvious home.
 - **Title** — imperative: what done looks like, not a topic.
 - **Body** — the worker's whole brief; your session's prose does not travel. Context (what exists, where, why this matters) + acceptance criteria they can be reviewed against. Digest style.
 - **Type label**, exactly one: `bug` = restore claimed behaviour · `optimization` = same behaviour, better · `feature` = build what does not exist.

@@ -4,7 +4,7 @@ A seat is normally a directory under {agent_root}: the session's cwd names it,
 and everything keyed to a seat (the timeline injected on entry, the entry
 written on exit, auto-memory) follows from that. A session started by an IDE
 never gets that choice — the editor fixes cwd to the checked-out repo, so an
-agent's own work done from Xcode lands in WBIS-iOS/ and resolves to no seat at
+agent's own work done from Xcode lands in Acme-iOS/ and resolves to no seat at
 all: it starts cold and leaves no record. Disposable worktrees fall in the same
 hole.
 
@@ -22,8 +22,8 @@ Resolution, first hit wins:
      a `<Repo>-issue-42` worktree that has no origin of its own
 
 Normalized = case folded, `_` and `-` equivalent, any leading `owner/` and a
-trailing `.git` dropped — so `WBIS_iOS`, `WBIS-iOS` and
-`git@github.com:org/WBIS_iOS.git` are one name.
+trailing `.git` dropped — so `Acme_iOS`, `Acme-iOS` and
+`git@github.com:org/Acme_iOS.git` are one name.
 
 The seat an IDE session joins is the agent's own registered `workspace`, read
 back as a seat under {agent_root} — so the work joins the agent's one running
@@ -43,7 +43,7 @@ DEFAULT_SEAT = "chat"
 
 def _norm(name: str) -> str:
     """A repo name reduced to its comparable form. Registries spell the same
-    repo `WBIS_iOS`, `WBIS-iOS`, or as a full clone URL; all three are one."""
+    repo `Acme_iOS`, `Acme-iOS`, or as a full clone URL; all three are one."""
     n = str(name).strip().rstrip("/")
     for sep in ("/", ":"):
         n = n.rsplit(sep, 1)[-1]

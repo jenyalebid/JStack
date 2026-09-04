@@ -4,13 +4,13 @@
 
 ## The problem
 
-A seat is a directory. `Agents/WBIS/chat/` is a seat; the session's cwd names it,
+A seat is a directory. `Agents/Acme/chat/` is a seat; the session's cwd names it,
 and everything keyed to a seat follows — the timeline injected on entry, the
 entry written on exit, the auto-memory the agent accumulates.
 
 A session started by an IDE never gets that choice. Xcode (and every editor that
-embeds a coding agent) fixes cwd to the checked-out repo, so a WBIS session
-launched from the IDE lands in `WBIS-iOS/`, which is outside `{agent_root}`,
+embeds a coding agent) fixes cwd to the checked-out repo, so an Acme session
+launched from the IDE lands in `Acme-iOS/`, which is outside `{agent_root}`,
 which resolves to no seat at all. That session:
 
 - starts cold — no timeline, no idea what the agent did yesterday
@@ -18,7 +18,7 @@ which resolves to no seat at all. That session:
 - remembers separately — auto-memory files under the repo's own project key,
   invisible to the cockpit and vice versa
 
-The same hole swallows disposable worktrees (`WBIS-iOS-issue-288/`).
+The same hole swallows disposable worktrees (`Acme-iOS-issue-288/`).
 
 ## The answer
 
@@ -28,9 +28,9 @@ to a seat instead of being treated as nobody's.
 
 ```
 {agent_root}/agents.json
-  "wbis": { "workspace": ".../Agents/WBIS/chat", "repos": ["WBIS_iOS", ...] }
+  "acme": { "workspace": ".../Agents/Acme/chat", "repos": ["Acme_iOS", ...] }
 
-/Users/.../WBIS-iOS  →  wbis/chat
+/Users/.../Acme-iOS  →  acme/chat
 ```
 
 The seat is the agent's own registered `workspace`, read back as a seat under
@@ -49,8 +49,8 @@ a second history nobody thinks to read.
 | 4 | longest normalized prefix on a `-` boundary | `<Repo>-issue-42` with no origin |
 
 Normalized = case folded, `_` and `-` equivalent, any leading `owner/` and a
-trailing `.git` dropped — so `WBIS_iOS`, `WBIS-iOS` and
-`git@github.com:org/WBIS_iOS.git` are one name.
+trailing `.git` dropped — so `Acme_iOS`, `Acme-iOS` and
+`git@github.com:org/Acme_iOS.git` are one name.
 
 Two rules hold the edges: **a real seat directory always wins** — the registry is
 consulted only after the normal `{agent_root}`-relative resolution comes up
@@ -102,7 +102,7 @@ plugins — no hooks, so no seat, no timeline, no identity, and the SDK's model
 defaults rather than your settings. `CLAUDE_CODE_EXECUTABLE` points it at the
 CLI you actually installed. This is the difference between a session that
 answers *"I'm on the main conversation seat"* and one that answers *"seat
-`wbis/chat`"*.
+`acme/chat`"*.
 
 **An IDE launches subprocesses with a login-less environment** — PATH is usually
 just `/usr/bin:/bin:/usr/sbin:/sbin`, so node, `claude` and the adapter are all

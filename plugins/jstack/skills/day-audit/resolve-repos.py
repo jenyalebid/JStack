@@ -12,7 +12,7 @@ agent_root, repo_root, registry = sys.argv[1:4]
 
 
 def norm(s):
-    # WBIS_iOS and WBIS-iOS are the same repo
+    # Acme_iOS and Acme-iOS are the same repo
     return os.path.basename(s.rstrip("/")).lower().replace("_", "-")
 
 

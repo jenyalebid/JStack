@@ -339,7 +339,7 @@ CLAUDE_CODE_SESSION_ID="$BOB_S" JSTACK_MAIL_FROM=bob/chat \
 # holds the conversation, so the answer path is the issue and a dead creator
 # session degrades to seat news.
 : > "$TMP/wake.argv"
-"$MSG" inject "$ALICE_S" "Done, PR is up." --issue "Acme/widgets#7" --author jandj-agent >/dev/null \
+"$MSG" inject "$ALICE_S" "Done, PR is up." --issue "Acme/widgets#7" --author acme-agent >/dev/null \
   || fail "inject exit"
 IID=$(SQL "SELECT MAX(id) FROM messages WHERE state='inject'" | grep -oE '[0-9]+')
 [[ -n "$IID" ]] && pass "inject files an inject-state row" || fail "inject files an inject-state row"
@@ -368,10 +368,10 @@ grep -q "scheduler.cli rm $IJOB" "$TMP/wake.argv" \
 
 # a chatty issue stops waking the creator — comments still file, still show
 for i in 2 3 4 5 6 7 8; do
-  "$MSG" inject "$ALICE_S" "note $i" --issue "Acme/widgets#7" --author jandj-agent >/dev/null 2>&1
+  "$MSG" inject "$ALICE_S" "note $i" --issue "Acme/widgets#7" --author acme-agent >/dev/null 2>&1
 done
 : > "$TMP/wake.argv"
-out=$("$MSG" inject "$ALICE_S" "note 9" --issue "Acme/widgets#7" --author jandj-agent 2>&1)
+out=$("$MSG" inject "$ALICE_S" "note 9" --issue "Acme/widgets#7" --author acme-agent 2>&1)
 [[ "$out" == *"no wake was booked"* ]] \
   && pass "a chatty issue stops waking the creator" || fail "a chatty issue stops waking the creator ($out)"
 [[ ! -s "$TMP/wake.argv" ]] && pass "past the ceiling nothing is booked" || fail "past the ceiling nothing is booked"
@@ -382,7 +382,7 @@ python3 -c "import sqlite3;c=sqlite3.connect('$DB');c.execute(\"UPDATE messages 
 
 # a dead creator session degrades to seat news — the comment is already
 # permanent on the issue, so nothing pretends at a channel
-out=$("$MSG" inject dead-sess-1 "Worker died, exit 143." --issue "Acme/widgets#9" --author jandj-agent --seat alice/chat 2>&1) \
+out=$("$MSG" inject dead-sess-1 "Worker died, exit 143." --issue "Acme/widgets#9" --author acme-agent --seat alice/chat 2>&1) \
   || fail "degraded inject exit"
 DGID=$(SQL "SELECT MAX(id) FROM messages WHERE subject LIKE 'Acme/widgets#9%'" | grep -oE '[0-9]+')
 [[ "$out" == *"no transcript left"* ]] \

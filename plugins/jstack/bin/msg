@@ -47,13 +47,13 @@ the row here is only the delivery.
 
 Addressing — `@agent` is the agent's cockpit, hyphens walk down to a sub-seat:
 
-    @mario                 -> mario/chat
-    @lynda-social          -> lynda/social/chat   (descends into chat/)
-    @lynda-pm              -> lynda/pm            (no pm/chat dir)
-    @jarvis-service-call   -> jarvis/service-call
+    @bob                   -> bob/chat
+    @alice-social          -> alice/social/chat   (descends into chat/)
+    @alice-pm              -> alice/pm            (no pm/chat dir)
+    @alice-service-call    -> alice/service-call
     @self                  -> the sender's own seat
 
-The trailing descent into `chat/` is the rule that makes `@lynda-social` mean
+The trailing descent into `chat/` is the rule that makes `@alice-social` mean
 the social OPERATOR seat rather than the social container — the same
 `{base}-social-chat` convention the rest of the stack already uses.
 
@@ -85,7 +85,7 @@ def _is_seat(path: Path) -> bool:
     injector and review engine use to recognize one.
 
     This is the gate, not a blocklist of storage dir names: `Junior/ideas`
-    is a real seat and `Mario/pad` is not, and only the file on disk knows
+    is a real seat and `Bob/pad` is not, and only the file on disk knows
     which is which. Addressing a dir no session ever boots in would file a
     message that could never be read — so it must fail at send time."""
     return (path / "CLAUDE.md").is_file()
@@ -254,7 +254,7 @@ def _walk_segments(root: Path, segs: list) -> "str|None":
 
 
 def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
-    """'@lynda-social' -> ('lynda', 'social/chat', Path(...)).
+    """'@alice-social' -> ('alice', 'social/chat', Path(...)).
 
     Raises SystemExit with a usable message when the seat is not a real dir —
     a message addressed to nowhere must fail loudly at send time, never land
@@ -303,7 +303,7 @@ def resolve_seat(spec: str, sender: "str|None" = None) -> tuple:
               f"Seats there: {', '.join(_seats_under(root)) or '(none)'}")
 
     # The cockpit descent: a seat that itself holds a chat/ dir means the
-    # operator seat, not the container. @lynda-social -> lynda/social/chat.
+    # operator seat, not the container. @alice-social -> alice/social/chat.
     if not submode:
         submode = "chat" if _is_seat(root / "chat") else ""
     elif _is_seat(root / submode / "chat"):
@@ -581,7 +581,7 @@ def _wake_prompt(row) -> str:
 
 
 def seat_dir_for(seat: str) -> "Path|None":
-    """'mario/chat' -> its workspace dir, or None if it is no longer a seat.
+    """'bob/chat' -> its workspace dir, or None if it is no longer a seat.
 
     The stored seat string is the identity; a wake has to be booked against a
     directory. A seat that has since been renamed away returns None rather

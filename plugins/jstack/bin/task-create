@@ -4,8 +4,8 @@
 # Contract:
 #   task-create --title <t> (--body <text> | --body-file <p>)
 #               --label <bug|optimization|feature> [--label L]...
-#               [--repo owner/name]   default Jarvis-and-J/jarvis
-#               [--assign <login>]    default jandj-agent
+#               [--repo owner/name]   default $JSTACK_TASK_REPO
+#               [--assign <login>]    default $JSTACK_TASK_ASSIGNEE
 #               [--no-assign] [--project N] [--no-board] [--dry-run]
 #
 # A task is an issue with two extras a plain filing does not have:
@@ -40,8 +40,8 @@ set -euo pipefail
 
 BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-REPO="Jarvis-and-J/jarvis" TITLE="" BODY="" BODY_FILE=""
-ASSIGNEE="jandj-agent" NO_ASSIGN=0 PROJECT="" NO_BOARD=0 DRY=0
+REPO="${JSTACK_TASK_REPO:-}" TITLE="" BODY="" BODY_FILE=""
+ASSIGNEE="${JSTACK_TASK_ASSIGNEE:-}" NO_ASSIGN=0 PROJECT="" NO_BOARD=0 DRY=0
 LABELS=()
 
 die() { echo "task-create: $*" >&2; exit 64; }
@@ -64,7 +64,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$TITLE" ]] || die "--title is required"
+[[ -n "$REPO" ]] || die "no target repo — pass --repo owner/name or set JSTACK_TASK_REPO"
 [[ "$REPO" == */* ]] || die "--repo must be owner/name, got '$REPO'"
+[[ -n "$ASSIGNEE" || "$NO_ASSIGN" == "1" ]] \
+  || die "no executor — pass --assign <login>, set JSTACK_TASK_ASSIGNEE, or use --no-assign"
 
 if [[ -n "$BODY_FILE" ]]; then
   [[ -r "$BODY_FILE" ]] || die "--body-file '$BODY_FILE' is not readable"

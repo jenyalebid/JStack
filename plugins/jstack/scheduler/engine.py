@@ -132,7 +132,7 @@ class Engine:
                 # from "the job was switched off for that occurrence" (nothing to
                 # judge); without it, the first morning after a pause false-fails
                 # fired_within_window against an occurrence the job was off for
-                # (SC-2026-08-19-001, lynda-social-plan). First sight of a job
+                # (a job renamed while its old spelling was still booked). First sight of a job
                 # SEEDS the flag and claims no transition — a stamp means an
                 # observed flip, never merely "the engine restarted".
                 is_enabled = bool(job.get("enabled", True))

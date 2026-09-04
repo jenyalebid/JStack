@@ -11,7 +11,7 @@
 #
 #   (a) repo dir named in the registry     → the owning agent's workspace seat
 #   (b) a subdirectory of that checkout    → same seat (resolves as the repo)
-#   (c) registry spelling differs from the directory (WBIS_iOS vs WBIS-iOS)
+#   (c) registry spelling differs from the directory (Acme_iOS vs Acme-iOS)
 #   (d) a worktree-style clone whose directory name is unknown → seat by origin
 #   (e) `<Repo>-issue-42` with no origin   → seat by longest-prefix
 #   (f) a repo no entry owns               → no seat, exit 3

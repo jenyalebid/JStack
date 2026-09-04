@@ -91,9 +91,9 @@ exists to prevent, because both look reasonable from inside:
 holds its own `chat/` resolves to that operator seat.
 
 ```
-@mario                -> mario/chat
-@lynda-social         -> lynda/social/chat      (descends into chat/)
-@lynda-pm             -> lynda/pm               (no pm/chat exists)
+@bob                  -> bob/chat
+@alice-social         -> alice/social/chat      (descends into chat/)
+@alice-pm             -> alice/pm               (no pm/chat exists)
 @alice-service-call   -> alice/service-call     (hyphen inside a real dir name)
 @self                 -> the sending seat
 ```

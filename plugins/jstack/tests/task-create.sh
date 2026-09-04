@@ -62,6 +62,7 @@ BIN="$STUB/task-create"
 
 # ── a fake HOME with one seat and one transcript ─────────────────────────────
 export HOME="$TMP/home"
+export JSTACK_TASK_REPO="Acme/home" JSTACK_TASK_ASSIGNEE="acme-agent"
 SID="aaaa1111-2222-3333-4444-555566667777"
 SEAT_DIR="$HOME/Agents/Testa/chat"
 mkdir -p "$SEAT_DIR" "$HOME/.claude/projects/x"
@@ -80,12 +81,12 @@ if [[ "$BODY" == *"the brief"* && \
 else
   bad "creator marker embedded in the filed body" "body was: $BODY"
 fi
-if [[ "$OUT" == *"TASK https://github.com/O/R/issues/77 board=Todo type=bug assigned=jandj-agent creator=testa/chat"* ]]; then
+if [[ "$OUT" == *"TASK https://github.com/O/R/issues/77 board=Todo type=bug assigned=acme-agent creator=testa/chat"* ]]; then
   ok "receipt names url, assignee, and creator seat"
 else
   bad "receipt names url, assignee, and creator seat" "$OUT"
 fi
-if grep -q "issue edit 77 --repo Jarvis-and-J/jarvis --add-assignee jandj-agent" "$GH_CALLS"; then
+if grep -q "issue edit 77 --repo Acme/home --add-assignee acme-agent" "$GH_CALLS"; then
   ok "assignment is the spawn — executor assigned on the default repo"
 else
   bad "assignment is the spawn — executor assigned on the default repo" "$(cat "$GH_CALLS" 2>/dev/null)"
@@ -132,7 +133,7 @@ fi
 # ── dry-run: nothing filed, nothing assigned, receipt still whole ────────────
 reset
 OUT=$(CLAUDE_CODE_SESSION_ID="$SID" "$BIN" --title T --body B --label bug --dry-run 2>&1); rc=$?
-if [[ $rc -eq 0 && "$OUT" == *"TASK <dry-run> board=none type=bug assigned=jandj-agent creator=testa/chat"* \
+if [[ $rc -eq 0 && "$OUT" == *"TASK <dry-run> board=none type=bug assigned=acme-agent creator=testa/chat"* \
       && ! -s "$GH_CALLS" ]]; then
   ok "dry-run previews the assignment without making it"
 else
@@ -157,6 +158,18 @@ if [[ $rc1 -eq 64 && $rc2 -eq 64 && ! -s "$FI_CALLS" && ! -s "$GH_CALLS" ]]; the
   ok "no title / no body refuse with nothing filed"
 else
   bad "no title / no body refuse with nothing filed" "rc1=$rc1 rc2=$rc2"
+fi
+
+# ── no configured repo or executor: refuse loudly, name the knob ─────────────
+reset
+OUT=$(env -u JSTACK_TASK_REPO "$BIN" --title T --body B --label bug 2>&1); rc1=$?
+OUT2=$(env -u JSTACK_TASK_ASSIGNEE "$BIN" --title T --body B --label bug 2>&1); rc2=$?
+env -u JSTACK_TASK_ASSIGNEE "$BIN" --title T --body B --label bug --no-assign >/dev/null 2>&1; rc3=$?
+if [[ $rc1 -eq 64 && "$OUT" == *"JSTACK_TASK_REPO"* \
+      && $rc2 -eq 64 && "$OUT2" == *"JSTACK_TASK_ASSIGNEE"* && $rc3 -eq 0 ]]; then
+  ok "unset env refuses with the knob named; --no-assign needs no executor"
+else
+  bad "unset env refuses with the knob named; --no-assign needs no executor" "rc=$rc1/$rc2/$rc3 out=$OUT | $OUT2"
 fi
 
 echo ""

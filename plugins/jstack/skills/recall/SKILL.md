@@ -19,7 +19,7 @@ Three parts, all optional, any order:
   the rest (macOS `date -v-1d +%F`, GNU `date -d yesterday +%F`). A weekday
   or bare "jan 24" means the most recent past occurrence. "last week" and
   friends become a `from..to` range.
-- **Who** — an agent (`lynda`), a seat (`lynda/social`), or `all`. Default:
+- **Who** — an agent (`alice`), a seat (`alice/social`), or `all`. Default:
   the agent this session belongs to (its workspace's name under the agents
   root, lowercased — spanning all its seats); not in an agent workspace →
   `all`.

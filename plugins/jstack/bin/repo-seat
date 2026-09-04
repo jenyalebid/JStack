@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """repo-seat — which agent seat owns a directory of code.
 
-  repo-seat [dir]           "wbis/chat", or exit 3 if nothing owns it
+  repo-seat [dir]           "acme/chat", or exit 3 if nothing owns it
   repo-seat [dir] --json    {"agent","submode","seat","repo","via","dir"}
 
 dir defaults to the working directory. Resolution and the reasoning behind it

@@ -167,7 +167,7 @@ out=$(run "$A1" "$TMP/user.jsonl" "$ALICE")
 A2=aaaa3333-aaaa-3333-aaaa-333333333333
 transcript "$A2" "$ALICE"
 "$MSG" inject "$A2" "Tests are red on CI, need a call." \
-  --issue "Acme/widgets#12" --author jandj-agent >/dev/null
+  --issue "Acme/widgets#12" --author acme-agent >/dev/null
 out=$(run "$A2" "$TMP/user.jsonl" "$ALICE")
 [[ "$(printf '%s' "$out" | decision)" == "block" ]] \
   && pass "the creator session is handed the comment" || fail "the creator session is handed the comment"

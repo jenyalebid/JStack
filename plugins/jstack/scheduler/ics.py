@@ -199,7 +199,11 @@ def build_feed() -> str:
         summary = f"{job.get('name', '')} · {job.get('agent_id', '')}"
         description = (job.get("payload") or {}).get("message", "")
         lines.append("BEGIN:VEVENT")
-        lines.append(f"UID:{job['id']}@jj-scheduler")
+        # The UID domain names the stack, not the first deployment that ran it.
+        # Changing it re-mints every event once: a subscriber replaces the whole
+        # calendar on refresh, so the old UIDs leave with the old feed rather
+        # than lingering as ghosts beside the new ones.
+        lines.append(f"UID:{job['id']}@jstack-scheduler")
         lines.append(f"DTSTAMP:{dtstamp}")
         lines.append(f"SUMMARY:{escape_text(summary)}")
         if description:

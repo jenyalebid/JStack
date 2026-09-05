@@ -90,6 +90,34 @@ Set them in Claude Code's plugin config UI, or directly in `settings.json`:
 
 If you leave `agent_root` at the default, JStack uses `~/Agents/`.
 
+#### Declaring a root (optional — skip it and everything still works)
+
+`agent_root` names one directory. A host that keeps its whole stack together can
+instead declare **one** root and let the rest derive by structure:
+
+```bash
+export JSTACK_ROOT=/Users/you/Stack      # in your shell profile, and in any
+                                         # launchd/systemd unit that spawns sessions
+```
+
+```
+$JSTACK_ROOT/
+├── Agents/   workspaces      ├── State/   runtime state, runs, locks
+├── Systems/  Systems/<slug>/ ├── Logs/    timeline db (Logs/Timeline/timeline.db)
+├── Config/   *.json          └── Credentials/  tokens (never in the checkout)
+```
+
+Declaring nothing is a supported install: with no `JSTACK_ROOT` the root is
+`$HOME` and every derived path equals the literal the tools shipped with
+(`~/Agents`, `~/Logs/Timeline`, …). Any single directory can still be pinned
+independently — `JSTACK_LOGS_DIR`, `JSTACK_STATE_DIR`, `JSTACK_CREDENTIALS_DIR`
+and friends outrank the derivation, so an install that already names its paths is
+untouched. `Config/`, `State/`, `Logs/` and `Credentials/` refuse to resolve
+inside the git checkout that ships the plugin — this is a public repo, and a
+token there is one `git add -A` from being published.
+
+Full contract, including what counts as an agent: **[docs/systems/root-derivation.md](plugins/jstack/docs/systems/root-derivation.md)**.
+
 ### 4. Create at least one agent workspace
 
 ```bash

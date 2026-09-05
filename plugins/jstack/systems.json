@@ -543,7 +543,9 @@
         "root.py"
       ],
       "config": [],
-      "docs": [],
+      "docs": [
+        "docs/systems/root-derivation.md"
+      ],
       "test": {
         "type": "script",
         "path": "tests/root.sh",

@@ -45,6 +45,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections import deque
@@ -367,6 +368,21 @@ def cmd_install(args) -> int:
         return rc
     print(f"installed. `jstack-scheduler status --label {r.label}` verifies "
           f"the process is up and the API answers.")
+
+    # `launchctl load` returns as soon as the job is accepted, not when the
+    # daemon has bound its port — so anything that checks immediately catches a
+    # process that is running and an API that is not yet listening, and calls a
+    # good install broken. Wait for the thing that actually matters.
+    port = int(r.port_flag or r.env.get("SCHEDULER_API_PORT") or sched_config.API_PORT)
+    for _ in range(20):
+        if probe_api(port)[1]:
+            break
+        time.sleep(0.5)
+    else:
+        print(f"warning: the service loaded but nothing is answering on "
+              f"127.0.0.1:{port} after 10s — `jstack-scheduler logs` has the "
+              f"daemon's own account of why.", file=sys.stderr)
+
     # A loaded service is not a working stack: the daemon can be up and firing
     # into an install whose agents dir is empty or whose `claude` it cannot
     # resolve, and every one of those runs fails silently at the hour. So the
@@ -376,6 +392,9 @@ def cmd_install(args) -> int:
     doctor = Path(__file__).resolve().parent / "jstack-doctor"
     if doctor.exists():
         print()
+        # The child writes straight to the same fd; without this the parent's
+        # buffered lines land after it and the transcript reads out of order.
+        sys.stdout.flush()
         try:
             subprocess.run([sys.executable, str(doctor)], timeout=120)
         except (OSError, subprocess.SubprocessError) as e:

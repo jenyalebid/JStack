@@ -367,6 +367,19 @@ def cmd_install(args) -> int:
         return rc
     print(f"installed. `jstack-scheduler status --label {r.label}` verifies "
           f"the process is up and the API answers.")
+    # A loaded service is not a working stack: the daemon can be up and firing
+    # into an install whose agents dir is empty or whose `claude` it cannot
+    # resolve, and every one of those runs fails silently at the hour. So the
+    # install ends by looking at the whole machine, not just at what it wrote.
+    # Advisory — the install itself succeeded, and the doctor's own exit status
+    # is its own business.
+    doctor = Path(__file__).resolve().parent / "jstack-doctor"
+    if doctor.exists():
+        print()
+        try:
+            subprocess.run([sys.executable, str(doctor)], timeout=120)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"(jstack-doctor did not run: {e})", file=sys.stderr)
     return 0
 
 

@@ -33,7 +33,7 @@ Plus four **whole systems** that run themselves once installed:
 - **Agent inbox** — addressed seat-to-seat messaging with a tracked outcome: `bin/msg` sends `@agent` / `@agent-seat` a message that lands in a `messages` table beside the timeline, injects at the top of that seat's next session, and cannot be walked past — a Stop hook blocks the first stop that would leave it open, and closing it requires recording what was done. Optional rungs type into a live session or wake the receiver outright. Where the timeline answers *what did this seat do*, the inbox answers *what is it being asked to do, by whom, and what came of it*. Full contract: **[docs/systems/agent-inbox.md](plugins/jstack/docs/systems/agent-inbox.md)**.
 - **Scheduler** — the piece that *starts* a session rather than reviewing or remembering one: a daemon firing one-time and recurring agent runs on RRULE schedules, with the timeout counted from spawn, TTFT/stall watchdogs on hung turns, authoritative process-group kills, catch-up after downtime, per-job concurrency policy, and rate-limit deferral. One package, every machine — a host declares its timezone, spawn environment, and workspace resolution in `config/scheduler.json` and nothing host-specific lives in the code. Needs `python-dateutil`. Setup and the full contract: **[docs/systems/scheduler.md](plugins/jstack/docs/systems/scheduler.md)**.
 
-And the supporting machinery: 17 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, 17 bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `file-issue`, `place-issue`, `task-create`, `log_event`, `msg`, `schedule-self`, `jstack-scheduler`, `session-review-spawn`, `session-files`, `dub-session`, `open-artifact`, `pict`, `repo-seat`, `ide-bridge`, `acp-agent`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
+And the supporting machinery: 17 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, 18 bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `file-issue`, `place-issue`, `task-create`, `log_event`, `msg`, `schedule-self`, `jstack-scheduler`, `jstack-doctor`, `session-review-spawn`, `session-files`, `dub-session`, `open-artifact`, `pict`, `repo-seat`, `ide-bridge`, `acp-agent`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
 
 ---
 
@@ -143,14 +143,34 @@ Confirms and symlinks 17 rules into `~/.claude/rules/` (canvas, claude-md-editin
 
 ### 6. Verify end-to-end
 
-Restart Claude Code, then in a session inside an agent directory:
+Every step above fails in a way that is invisible from inside a session, so check
+them from outside first:
+
+```bash
+jstack-doctor          # or: <plugin>/bin/jstack-doctor if bin/ isn't on PATH yet
+```
+
+Thirteen checks, each reading the same seam the tools read at runtime — where the
+root resolves, which agents the resolver actually finds, whether `claude` is on
+the spawn path (not just your shell's), whether the rules symlinks still point at
+something, whether the daemon is running. Graded `ok` / `warn` / `fail`, worst
+grade is the exit status: **0** all good, **1** working with capabilities still
+absent, **2** something is broken. `--json` for a script. It reports; it never
+changes anything.
+
+`warn` on a fresh install is normal — no timeline rows yet, no scheduler daemon.
+`fail` names the step to go back to.
+
+Then, in a session inside an agent directory:
 
 ```bash
 cd "$AGENT_ROOT"/{YourAgentName}
 claude
 ```
 
-In the session, run `/jstack:work <any topic>`. If it reports you're not inside an agent tree, check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists.
+Run `/jstack:work <any topic>`. If it reports you're not inside an agent tree,
+check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists —
+`jstack-doctor`'s `agents` line tells you which of the two it is.
 
 ---
 

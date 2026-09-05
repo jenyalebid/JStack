@@ -555,6 +555,25 @@
       "notes": "Imports nothing from the package and reads no config file — callers pass their own parsed cfg, so there is one opinion about which file is authoritative. scheduler/config.py carries its own copy of the shipping-tree guard deliberately: it must keep working on an older install where root.py is absent, and importing the other way would be a cycle. Only Config/State/Logs/Credentials are guarded; Agents/ and Systems/ may legitimately live inside a repo. Resolution is never cached at import — a constant captured at import answers with the environment of a process start nobody remembers."
     },
     {
+      "id": "doctor",
+      "kind": "tool",
+      "name": "Doctor",
+      "status": "live",
+      "description": "Install validator — one command that answers 'is this JStack working, and if not which part'. Thirteen checks over the same seams the tools read at runtime (root derivation, agent resolution, the spawn path, hooks.json, the rules/commands stages, the scheduler service), graded ok/warn/fail with the worst grade as the exit status. Read-only: it never creates the paths it reports on.",
+      "code": [
+        "bin/jstack-doctor"
+      ],
+      "config": [],
+      "docs": [],
+      "test": {
+        "type": "script",
+        "path": "tests/doctor.sh",
+        "description": "Proves the two properties a validator is believed on: that a full run against an empty sandbox root creates and removes nothing (the probe used to mkdir its own subject and then call it healthy), and that the exit status is the worst individual grade with the JSON agreeing. Plus the gradings that decide a fresh install's diagnosis — no agents is a failure, absent-but-creatable dirs are not, a dead rules symlink is a failure rather than an installed rule, an unparseable scheduler.json is a failure because both readers swallow it silently, and a check that raises surfaces as fail instead of vanishing from the list."
+      },
+      "subsystems": [],
+      "notes": "`jstack-doctor` for the table, `jstack-doctor --json` for a harness. Exit 0 ok / 1 warn / 2 fail. Run it before anything else when diagnosing an install, and after `jstack-scheduler install`. Stdlib-only; imports `root` and `scheduler.config`/`scheduler.spawn` out of the plugin root so every answer comes from the module that owns it."
+    },
+    {
       "id": "scheduler",
       "kind": "system",
       "name": "Scheduler",

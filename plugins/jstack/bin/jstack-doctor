@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""jstack-doctor — does this machine have a working JStack, and if not, which part?
+
+A fresh install is six steps across two surfaces: a marketplace install, plugin
+config, an agent workspace, `/jstack:install-rules`, `jstack-scheduler install`,
+and a python that can import what the daemon needs. Every one of them fails in a
+way that is invisible from inside a session — a PATH that resolves no `claude`,
+an `agent_root` holding nothing the resolver accepts (so every seat resolves to
+nobody and the timeline writes nothing), rules symlinked into a plugin version
+that was reaped seven days later. Each is observable in well under a second, and
+without this tool the only way to find one is to hit it.
+
+Three grades, because two would collapse the distinction that matters most on a
+fresh install. **fail** is something JStack cannot work without. **warn** is a
+capability that will be honestly absent until the thing arrives — no rules
+installed yet, no scheduler daemon, no timeline rows. **ok** is ok. The exit
+status is the worst grade: 0 / 1 / 2, so a script can gate on it and a person can
+read it.
+
+    jstack-doctor            the table
+    jstack-doctor --json     the same results as JSON, for a test harness
+
+Every check reads the SAME seam the tools read at runtime — `root.py` for paths,
+`scheduler.spawn` for the binary search path, `hooks.json` for the hooks — so a
+green doctor and a working install are the same fact rather than two things that
+usually agree. A check that cannot observe its subject says so; it never reports
+a state it had to guess. A check that raises is a check that FAILS: a validator
+that hides a broken machine is worse than no validator.
+
+Self-contained python3 stdlib. Imports two siblings out of the plugin root, both
+stdlib-only, for the same reason `jstack-scheduler` does: asking the module that
+owns an answer beats restating it here and being wrong the day it changes.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT))
+
+import root  # noqa: E402
+from scheduler import config as sched_config  # noqa: E402
+from scheduler import spawn  # noqa: E402
+
+OK, WARN, FAIL = "ok", "warn", "fail"
+_RANK = {OK: 0, WARN: 1, FAIL: 2}
+
+# Where the two things a plugin cannot ship have to land, because Claude Code
+# loads them from user scope only. `/jstack:install-rules` puts them there.
+USER_CLAUDE = Path.home() / ".claude"
+
+
+def _check(name: str, grade: str, detail: str, hint: str = "") -> dict:
+    return {"name": name, "grade": grade, "detail": detail, "hint": hint}
+
+
+def _which(binary: str) -> "str|None":
+    """Resolved against the SPAWN path, not this shell's.
+
+    A binary only the interactive shell can see is precisely the failure this
+    tool exists to catch: launchd hands a daemon a stripped PATH, so the
+    scheduler's children reach `claude` through `spawn_dirs` or not at all.
+    """
+    return shutil.which(binary, path=spawn.spawn_path())
+
+
+def _version(argv: list) -> str:
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        out = r.stdout or r.stderr
+        return out.strip().splitlines()[0] if out.strip() else ""
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return ""
+
+
+def _writable(d: Path) -> bool:
+    """Can this path be written when the tools first need it?
+
+    Writability by TRYING it, because os.access lies under ACLs and on read-only
+    mounts — but never by creating the directory being asked about. A doctor
+    that mkdir's its subject reports on the machine it just changed: the first
+    run of this check created three empty dirs at the root and then called them
+    healthy. So an absent dir is answered by probing the nearest ancestor that
+    does exist, which is the real question anyway — every one of these dirs is
+    created on first use, and absent-but-creatable is a normal fresh install.
+    """
+    probe_dir = d
+    while not probe_dir.exists() and probe_dir != probe_dir.parent:
+        probe_dir = probe_dir.parent
+    if not probe_dir.is_dir():
+        return False
+    probe = probe_dir / ".jstack-doctor-probe"
+    try:
+        probe.write_text("")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+# ── the checks ──
+
+
+def check_python() -> dict:
+    """3.9 is the floor: `zoneinfo` (the scheduler's whole notion of wall-clock
+    time) and `str.removeprefix` both arrive there."""
+    v = sys.version_info
+    if v < (3, 9):
+        return _check("python", FAIL,
+                      f"{v.major}.{v.minor} at {sys.executable} — needs 3.9 or newer",
+                      "install a newer python3 and re-run; zoneinfo (3.9) is not optional "
+                      "for the scheduler")
+    return _check("python", OK, f"{v.major}.{v.minor}.{v.micro} ({sys.executable})")
+
+
+def check_claude() -> dict:
+    path = spawn.claude_resolvable()
+    if not path:
+        return _check("claude", FAIL, "not on the spawn path",
+                      f"install Claude Code, or add its dir to `spawn_dirs` in "
+                      f"{sched_config.INSTALL_FILE} — the search path is: "
+                      f"{spawn.spawn_path()}")
+    return _check("claude", OK,
+                  f"{path} — {_version([path, '--version']) or 'version unknown'}")
+
+
+def check_git() -> dict:
+    """A warning, not a failure: the timeline, the scheduler and the hooks all
+    work without git. Only the delivery skills (push, day-audit, session-files)
+    need it, and an install that never commits is a legitimate install."""
+    path = _which("git")
+    if not path:
+        return _check("git", WARN, "not on the spawn path",
+                      "install git — /jstack:push, /jstack:day-audit and session-files "
+                      "cannot run without it; everything else can")
+    return _check("git", OK, f"{path} — {_version([path, '--version']) or 'version unknown'}")
+
+
+def check_dateutil() -> dict:
+    """The package's one third-party dependency, needed by RECURRING jobs and
+    nothing else — so its absence is a warning for the same reason
+    `jstack-scheduler install` refuses to treat it as fatal."""
+    try:
+        import dateutil  # noqa: F401
+    except ImportError:
+        return _check("dateutil", WARN, f"{sys.executable} cannot import dateutil",
+                      f"{sys.executable} -m pip install python-dateutil — recurring "
+                      f"jobs will not book without it; one-shot wakes work fine")
+    return _check("dateutil", OK, "importable")
+
+
+def check_root() -> dict:
+    """The one declaration everything else derives from.
+
+    Reports where each of the six dirs actually lands, and fails on the two
+    states that are silently wrong rather than loudly broken: a root that
+    resolves inside the shipping checkout (root.py raises — caught here so the
+    message arrives now instead of at the first write), and a root nobody can
+    write to.
+    """
+    declared = os.environ.get("JSTACK_ROOT")
+    r = root.root()
+    source = "$JSTACK_ROOT" if declared else "$HOME (no root declared)"
+    dirs = {
+        "Agents": root.agents_dir(),
+        "Systems": root.systems_dir(),
+        "Config": root.config_dir(),
+        "State": root.state_dir(),
+        "Logs": root.logs_dir(),
+        "Credentials": root.credentials_dir(),
+    }
+    unwritable = [n for n, d in dirs.items() if not _writable(d)]
+    if unwritable:
+        return _check("root", FAIL, f"{r} (from {source}) — cannot write: "
+                                    f"{', '.join(unwritable)}",
+                      "check ownership and permissions, or declare a JSTACK_ROOT "
+                      "somewhere writable")
+    # Absent is not a problem — every one of these is created on first use — but
+    # it IS the difference between a stack that has run and one that has not, so
+    # it gets said rather than flattened into a list of six paths.
+    listing = ", ".join(f"{n}={d}" + ("" if d.is_dir() else " (not yet created)")
+                        for n, d in dirs.items())
+    return _check("root", OK, f"{r} (from {source}) — {listing}")
+
+
+def check_agents() -> dict:
+    """0 agents is the failure that reads as the tools being broken.
+
+    Every seat-aware tool resolves through `root.agents()`; with an empty
+    agents dir they all succeed against nobody — log_event writes an entry for
+    an agent that does not exist, the session-end engine reviews nothing. So
+    the names get printed: "found 3: …" is the only form of this answer that
+    lets a reader tell a working install from a plausible one.
+    """
+    d = root.agents_dir()
+    if not d.is_dir():
+        return _check("agents", FAIL, f"no agents dir at {d}",
+                      f"create {d}/<Name>/CLAUDE.md, or point `agent_root` at the "
+                      f"directory that already holds your workspaces")
+    found = root.agents()
+    if not found:
+        return _check("agents", FAIL, f"{d} exists but holds no agents",
+                      "an agent is a directory here with a CLAUDE.md, or with one "
+                      "immediate subdirectory that has one (Agents/<id>/<seat>/CLAUDE.md)")
+    return _check("agents", OK, f"{len(found)} in {d}: {', '.join(sorted(found))}")
+
+
+def check_timeline() -> dict:
+    d = root.timeline_dir()
+    db = d / "timeline.db"
+    if not _writable(d):
+        return _check("timeline", FAIL, f"cannot write {d}",
+                      "log_event, msg and the session-end engine all write here")
+    if not db.exists():
+        return _check("timeline", WARN, f"no timeline.db yet at {db}",
+                      "expected on a fresh install — the first `log_event` creates it")
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            rows = conn.execute("SELECT count(*) FROM entries").fetchone()[0]
+    except sqlite3.Error as e:
+        return _check("timeline", FAIL, f"{db} is not a readable timeline: {e}",
+                      "move it aside and let log_event recreate it")
+    return _check("timeline", OK, f"{db} — {rows} entr{'y' if rows == 1 else 'ies'}")
+
+
+def _stage_report(stage: str, dest: Path) -> "tuple[int, int, list, list]":
+    """(installed, staged, missing names, broken link names) for one stage dir.
+
+    A broken link is the version-cache rot: `/jstack:install-rules` run against
+    a versioned plugin-cache path instead of a checkout leaves links that work
+    until the old version is reaped, then point at nothing. The file still
+    appears in `ls`; only following it shows the failure.
+    """
+    staged = sorted(p.name for p in (PLUGIN_ROOT / stage).glob("*.md"))
+    installed, missing, broken = 0, [], []
+    for name in staged:
+        target = dest / name
+        if target.is_symlink() and not target.exists():
+            broken.append(name)
+        elif target.exists():
+            installed += 1
+        else:
+            missing.append(name)
+    return installed, len(staged), missing, broken
+
+
+def _stage_check(name: str, stage: str, dest: Path, what: str) -> dict:
+    installed, staged, missing, broken = _stage_report(stage, dest)
+    if broken:
+        return _check(name, FAIL,
+                      f"{len(broken)} dead symlink(s) in {dest}: {', '.join(broken)}",
+                      "these point at a plugin version that no longer exists — re-run "
+                      "/jstack:install-rules --force, and link to the CHECKOUT, not a "
+                      "versioned cache path")
+    if installed == 0:
+        return _check(name, WARN, f"none of {staged} {what} installed in {dest}",
+                      "run /jstack:install-rules — a plugin cannot deliver these, "
+                      f"Claude Code loads {what} from user scope only")
+    if missing:
+        return _check(name, WARN, f"{installed}/{staged} in {dest} — "
+                                  f"missing: {', '.join(missing)}",
+                      "run /jstack:install-rules to link the rest")
+    return _check(name, OK, f"{installed}/{staged} {what} in {dest}")
+
+
+def check_rules() -> dict:
+    return _stage_check("rules", "rules-stage", USER_CLAUDE / "rules", "rules")
+
+
+def check_commands() -> dict:
+    return _stage_check("commands", "commands-stage", USER_CLAUDE / "commands",
+                        "bare commands")
+
+
+def check_hooks() -> dict:
+    """Every command in hooks.json resolves to a file that exists and can run.
+
+    A hook whose script is missing is not a quiet degradation: Claude Code
+    reports the failure per event, so a single bad entry turns every session
+    start, every edit and every stop into an error the user cannot place.
+    """
+    manifest = PLUGIN_ROOT / "hooks" / "hooks.json"
+    try:
+        spec = json.loads(manifest.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return _check("hooks", FAIL, f"{manifest} unreadable: {e}",
+                      "the plugin install is incomplete — reinstall it")
+    commands = [h.get("command", "")
+                for group in (spec.get("hooks") or {}).values()
+                for entry in group
+                for h in (entry.get("hooks") or [])]
+    bad = []
+    for cmd in commands:
+        p = Path(cmd.replace("${CLAUDE_PLUGIN_ROOT}", str(PLUGIN_ROOT)))
+        if not p.is_file():
+            bad.append(f"{p.name} (missing)")
+        elif not os.access(p, os.X_OK):
+            bad.append(f"{p.name} (not executable)")
+    if bad:
+        return _check("hooks", FAIL, f"{len(bad)}/{len(commands)} broken: {', '.join(bad)}",
+                      f"chmod +x the scripts in {PLUGIN_ROOT}/hooks, or reinstall the plugin")
+    return _check("hooks", OK, f"{len(commands)} hook commands, all present and executable")
+
+
+def check_bin() -> dict:
+    """The adapters are only reachable if their dir is on PATH.
+
+    This one asks the SHELL's PATH rather than the spawn path, and deliberately:
+    these are the tools an agent invokes by bare name from inside a session, so
+    the shell's answer is the one that decides whether `log_event` works.
+    """
+    bin_dir = PLUGIN_ROOT / "bin"
+    adapters = sorted(p.name for p in bin_dir.iterdir()
+                      if p.is_file() and os.access(p, os.X_OK))
+    on_path = shutil.which("log_event")
+    if not on_path:
+        return _check("bin", WARN, f"{bin_dir} is not on PATH ({len(adapters)} adapters)",
+                      f"add it to PATH — without it `log_event`, `msg`, `schedule-self` "
+                      f"and {len(adapters) - 3} others are unreachable by name")
+    resolved = Path(on_path).resolve()
+    if resolved != (bin_dir / "log_event").resolve():
+        return _check("bin", WARN, f"`log_event` on PATH resolves to {resolved}, "
+                                   f"not {bin_dir}/log_event",
+                      "another install owns these names — put this plugin's bin dir "
+                      "earlier in PATH if that is not what you want")
+    return _check("bin", OK, f"{bin_dir} on PATH — {len(adapters)} adapters")
+
+
+def check_config() -> dict:
+    """Both config files are optional; being present-but-unparseable is not.
+
+    A JSONDecodeError here is the worst kind of silent failure: `install()` and
+    `load_defaults()` both swallow it and fall back to built-ins, so a typo in
+    scheduler.json costs the machine its whole config with no message anywhere.
+    """
+    broken = []
+    for label, path in (("scheduler.json", sched_config.INSTALL_FILE),
+                        ("schedule.json", sched_config.SCHEDULE_FILE)):
+        if not path.exists():
+            continue
+        try:
+            json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            broken.append(f"{label}: {e}")
+    if broken:
+        return _check("config", FAIL, "; ".join(broken),
+                      "both readers fall back to built-ins on a parse error and say "
+                      "nothing — fix the file, the defaults are not what you configured")
+    present = [label for label, path in (("scheduler.json", sched_config.INSTALL_FILE),
+                                         ("schedule.json", sched_config.SCHEDULE_FILE))
+               if path.exists()]
+    where = sched_config.CONFIG_DIR
+    if not present:
+        return _check("config", OK, f"none in {where} — built-in defaults, "
+                                    f"timezone {sched_config.DEFAULT_TZ}")
+    return _check("config", OK, f"{', '.join(present)} in {where}, valid — "
+                                f"timezone {sched_config.DEFAULT_TZ}")
+
+
+def check_scheduler() -> dict:
+    """Booking a job and running one are different facts.
+
+    On a fresh install the registry accepts a job, `list` shows it, and the hour
+    passes in silence because nothing is running to fire it. So this reports the
+    daemon, not the CLI — and separates "no daemon installed" (a warning: wakes
+    are the only thing that stop working) from "installed but not answering" (a
+    failure: something that was supposed to be running is not).
+    """
+    tool = PLUGIN_ROOT / "bin" / "jstack-scheduler"
+    try:
+        p = subprocess.run([sys.executable, str(tool), "status"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return _check("scheduler", FAIL, f"cannot run jstack-scheduler status: {e}")
+    summary = "; ".join(line.strip() for line in p.stdout.splitlines() if line.strip())
+    if p.returncode == 3:
+        # `status` prints a note here when something IS serving the API port
+        # under a label this tool did not write — a machine running its own
+        # hand-rolled daemon is a working machine, and dropping that line would
+        # turn the one fact that distinguishes it from a dead install into
+        # "jobs never fire", which would simply be false.
+        return _check("scheduler", WARN,
+                      f"no daemon under the default label — {summary}",
+                      "jstack-scheduler install, unless another label already owns it")
+    if p.returncode == 2:
+        return _check("scheduler", WARN, f"unsupported platform for the service manager: "
+                                         f"{(p.stderr or '').strip().splitlines()[0]}",
+                      "run the daemon in the foreground — `jstack-scheduler install "
+                      "--dry-run` prints the exact command")
+    if p.returncode != 0:
+        return _check("scheduler", FAIL, summary or "status reported unhealthy",
+                      "jstack-scheduler logs — the daemon has a definition but is not "
+                      "both running and answering")
+    return _check("scheduler", OK, summary)
+
+
+CHECKS = (check_python, check_claude, check_git, check_dateutil, check_root,
+          check_agents, check_timeline, check_rules, check_commands, check_hooks,
+          check_bin, check_config, check_scheduler)
+
+
+def checks() -> list:
+    out = []
+    for fn in CHECKS:
+        name = fn.__name__[len("check_"):].replace("_", " ")
+        try:
+            out.append(fn())
+        except Exception as e:                              # noqa: BLE001
+            # A crashed check is a FAILED check. The alternative — skipping it —
+            # is a doctor that goes green on the machine it was needed for.
+            out.append(_check(name, FAIL, f"check crashed: {type(e).__name__}: {e}"))
+    return out
+
+
+def worst(results: list) -> str:
+    return max((r["grade"] for r in results), key=lambda g: _RANK[g], default=OK)
+
+
+def report(as_json: bool = False, out=None) -> int:
+    out = out or sys.stdout
+    results = checks()
+    grade = worst(results)
+    if as_json:
+        json.dump({"grade": grade, "exit": _RANK[grade], "checks": results},
+                  out, indent=2)
+        out.write("\n")
+        return _RANK[grade]
+    mark = {OK: "ok  ", WARN: "warn", FAIL: "FAIL"}
+    for r in results:
+        print(f"{mark[r['grade']]}  {r['name']:<10} {r['detail']}", file=out)
+        if r["hint"] and r["grade"] != OK:
+            print(f"      → {r['hint']}", file=out)
+    summary = {
+        OK: "every check passed",
+        WARN: "working; the warnings above are capabilities that stay absent until fixed",
+        FAIL: "JStack will not work correctly until the failures above are fixed",
+    }
+    print(f"\n{summary[grade]}", file=out)
+    return _RANK[grade]
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="jstack-doctor", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--json", action="store_true",
+                   help="emit the results as JSON instead of a table")
+    args = p.parse_args()
+    return report(as_json=args.json)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

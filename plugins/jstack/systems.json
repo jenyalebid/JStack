@@ -614,7 +614,7 @@
       "test": {
         "type": "script",
         "path": "tests/scheduler.sh",
-        "description": "Runs the real package against a hermetic temp SCHEDULER_HOME: install config drives timezone/spawn env/spawn PATH; workspace resolution (override > resolver hook > registry > agent_root) with seat_rules applied only when the seat is real; a broken resolver spec raises rather than silently relocating every run; permission_mode defaults to bypassPermissions and resolves job>category>default; VTIMEZONE derived for US-DST, last-Sunday and no-DST zones; registry add/list/remove round-trip through the CLI; and a real daemon boot serving /health. Skips with a clear message when the host python lacks python-dateutil. Never touches a real registry, state dir, or running daemon."
+        "description": "Runs the real package against a hermetic temp SCHEDULER_HOME: install config drives timezone/spawn env/spawn PATH; workspace resolution (override > resolver hook > registry > agent_root) with seat_rules applied only when the seat is real; a broken resolver spec raises rather than silently relocating every run; permission_mode defaults to bypassPermissions and resolves job>category>default; a printed job time labelled with the zone abbreviation of that instant rather than of now, asserted on both sides of the DST transition; VTIMEZONE derived for US-DST, last-Sunday and no-DST zones; registry add/list/remove round-trip through the CLI; and a real daemon boot serving /health. Skips with a clear message when the host python lacks python-dateutil. Never touches a real registry, state dir, or running daemon."
       },
       "subsystems": [
         {
@@ -703,7 +703,7 @@
       "test": {
         "type": "script",
         "path": "tests/msg.sh",
-        "description": "Runs the real bin/msg against a temp timeline dir, temp agent tree and its own HOME: seat addressing (cockpit descent, hyphenated seat dirs, @self), refusal of non-seat dirs / unknown agents / @boss, send-read-reply-thread roundtrip, attachments copied into the receiver's pad (and recorded in place when already there), a task that cannot be delivered filing nothing at all, and THE CHANNEL — the sender's session on the row with no receiver until one claims it, the stamp a woken run leaves, the reply binding to the session that asked rather than to its seat, the resume wake booked against that session's own workspace, delivery consuming the answer and cancelling the wake it beat, a runaway channel that stops waking anyone, and one timeline entry per seat at close."
+        "description": "Runs the real bin/msg against a temp timeline dir, temp agent tree and its own HOME: seat addressing (cockpit descent, hyphenated seat dirs, @self), refusal of non-seat dirs / unknown agents / @boss, send-read-reply-thread roundtrip, attachments copied into the receiver's pad (and recorded in place when already there), a task that cannot be delivered filing nothing at all, and THE CHANNEL — the sender's session on the row with no receiver until one claims it, the stamp a woken run leaves, the reply binding to the session that asked rather than to its seat, the resume wake booked against that session's own workspace, delivery consuming the answer and cancelling the wake it beat, a runaway channel that stops waking anyone, one timeline entry per seat at close, and a printed wake time labelled with the zone abbreviation of that instant rather than of now, asserted on both sides of the DST transition."
       },
       "subsystems": [
         {

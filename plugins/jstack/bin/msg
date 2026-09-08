@@ -734,6 +734,12 @@ MAX_CHANNEL_TURNS = 8
 #: answer nobody reads.
 REPLY_WAKE_MINUTES = 3
 
+#: How a wake time is written on the wire and read back off it. `_book_wake`
+#: hands the scheduler this shape and returns it in `delivery`, which is what
+#: gets stored on the row and printed back — so it is now parsed as well as
+#: formatted, and the two halves have to agree in one place.
+WAKE_FMT = "%Y-%m-%d %H:%M"
+
 
 def _scheduler_home() -> "Path|None":
     """Where msg itself READS scheduler state (`msg check`) — never a place it
@@ -773,13 +779,29 @@ def _sched_argv(sub: list) -> "tuple|None":
     return [python, "-m", "scheduler.cli"] + sub, env, str(plugin_root)
 
 
-def _tz_label() -> str:
-    """The machine's own timezone abbreviation (PDT, CET, …).
+def _tz_label(at: "datetime|str|None" = None) -> str:
+    """The zone abbreviation for the instant being named — not for now.
 
-    Wake times are local wall clock (`datetime.now()`), so the label printed
-    beside them must be the local zone's — a hardcoded region name would lie
-    to every install outside it."""
-    return datetime.now().astimezone().tzname() or "local time"
+    The machine's own zone (PDT, CET, …), because a hardcoded region name would
+    lie to every install outside it. But a label reads as a fact about the time
+    printed beside it, so it has to be computed AT that time: every caller here
+    is naming a future wake, and one booked in August for a January morning is
+    labelled PDT and fires in PST — an hour of apparent drift that is only the
+    name being wrong.
+
+    `at` is the wake in either form it exists in — the `WAKE_FMT` wall-clock
+    string carried on the row, or the datetime it parses to. Both are naive
+    local time, and `.astimezone()` on a naive value resolves the local offset
+    for THAT instant rather than for now, which is the whole of the fix.
+
+    A string that will not parse falls back to now's label: no worse than the
+    bug this replaces, and not worth raising over a cosmetic suffix."""
+    if isinstance(at, str):
+        try:
+            at = datetime.strptime(at.strip(), WAKE_FMT)
+        except ValueError:
+            at = None
+    return (at or datetime.now()).astimezone().tzname() or "local time"
 
 
 def _book_wake(seat: str, workspace: Path, prompt: str, name: str,
@@ -804,7 +826,7 @@ def _book_wake(seat: str, workspace: Path, prompt: str, name: str,
     if built is None:
         return "", ""
     _, env, cwd = built
-    at = at or (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M")
+    at = at or (datetime.now() + timedelta(minutes=1)).strftime(WAKE_FMT)
     sub = [
         "add-once",
         "--agent", seat.replace("/", "-"),
@@ -974,8 +996,9 @@ def cmd_send(args) -> int:
     con.execute("UPDATE messages SET delivery = ?, wake_job = ? WHERE id = ?",
                 (delivery, job, mid))
     con.commit()
+    when = delivery.split(":", 1)[1]
     print(f"#{mid} → {seat} — session spawning at "
-          f"{delivery.split(':', 1)[1]} {_tz_label()}, tied to this one. Their reply comes "
+          f"{when} {_tz_label(when)}, tied to this one. Their reply comes "
           f"back here; `msg check {mid}` says where it has got to.")
     return 0
 
@@ -1027,16 +1050,17 @@ def _return_leg(con, row, seat: str, parent) -> int:
     # the live one is cheaper — it costs a hook call rather than a spawned
     # session — so the wake gives the asking session a few minutes to finish its
     # turn and take the answer itself before a fork is made to hand it over.
-    at = (datetime.now() + timedelta(minutes=REPLY_WAKE_MINUTES)).strftime("%Y-%m-%d %H:%M")
+    at = (datetime.now() + timedelta(minutes=REPLY_WAKE_MINUTES)).strftime(WAKE_FMT)
     delivery, job = _book_wake(seat, work, _reply_prompt(row, parent),
                               f"reply #{mid} → {seat}", at=at, resume=target)
     con.execute("UPDATE messages SET delivery = ?, wake_job = ? WHERE id = ?",
                 (delivery, job, mid))
     con.commit()
     if delivery:
+        when = delivery.split(":", 1)[1]
         print(f"#{mid} → {seat} — answer bound to session {target[:8]}. It reaches "
               f"them at their next stop, or resumes that conversation at "
-              f"{delivery.split(':', 1)[1]} {_tz_label()}, whichever comes first.")
+              f"{when} {_tz_label(when)}, whichever comes first.")
     else:
         # Not fatal the way a task's failed wake is: the message is an answer,
         # it is already bound to the right session, and that session picks it
@@ -1194,16 +1218,17 @@ def cmd_inject(args) -> int:
               f"if that session stops again; the thread is on the issue.")
         return 0
 
-    at = (datetime.now() + timedelta(minutes=REPLY_WAKE_MINUTES)).strftime("%Y-%m-%d %H:%M")
+    at = (datetime.now() + timedelta(minutes=REPLY_WAKE_MINUTES)).strftime(WAKE_FMT)
     delivery, job = _book_wake(seat, work, _inject_prompt(row, repo, num, author),
                                f"issue {ref} → {seat}", at=at, resume=sid)
     con.execute("UPDATE messages SET delivery = ?, wake_job = ? WHERE id = ?",
                 (delivery, job, mid))
     con.commit()
     if delivery:
+        when = delivery.split(":", 1)[1]
         print(f"#{mid} → {seat} — comment bound to session {sid[:8]}. It "
               f"reaches them at their next stop, or resumes that conversation "
-              f"at {delivery.split(':', 1)[1]} {_tz_label()}, whichever comes first.")
+              f"at {when} {_tz_label(when)}, whichever comes first.")
     else:
         print(f"#{mid} → {seat} — comment bound to session {sid[:8]}; no "
               f"resume wake could be booked, so it lands only if that session "
@@ -1375,7 +1400,7 @@ def cmd_check(args) -> int:
     if row["wake_job"]:
         when = (row["delivery"] or "").split(":", 1)[-1]
         print(f"  wake           job {row['wake_job'][:8]}"
-              f"{f', booked {when} {_tz_label()}' if when else ''}")
+              f"{f', booked {when} {_tz_label(when)}' if when else ''}")
     if row["state"] == "task":
         if not run.get("known"):
             print("  → not started yet. Nothing has run for it; the wake is still ahead.")

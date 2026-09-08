@@ -12,6 +12,8 @@
 #     predates it
 #   - a broken resolver spec raises instead of silently running elsewhere
 #   - permission_mode defaults to bypassPermissions and resolves job>category>default
+#   - a printed job time is labelled with the zone abbreviation of THAT
+#     instant, not of now — both sides of the DST transition, in one run
 #   - VTIMEZONE is derived from the zone (DST, last-Sunday, and no-DST cases)
 #   - registry round-trip: add a job, read it back, remove it
 #   - the daemon actually boots and serves /health
@@ -65,7 +67,15 @@ pass() { echo "ok: $1"; }
 
 check() {  # check <name> <python expression asserting truth>
     local name="$1"; shift
-    if out=$("$PY" -c "$1" 2>&1); then
+    # sys.path, not PYTHONPATH alone. An install is entitled to drop a .pth in
+    # site-packages that inserts ITS copy of the plugin at position 0 — the
+    # scheduler's own installer does exactly that — and site processes .pth
+    # files after PYTHONPATH, so the installed copy wins. A suite that imports
+    # it is green about a checkout nobody pointed it at: it passes here and the
+    # edit under test is never executed. PLUGIN_ROOT is the subject, so it goes
+    # first, and the one-line preamble offsets reported line numbers by one.
+    if out=$("$PY" -c "import sys; sys.path.insert(0, '$PLUGIN_ROOT')
+$1" 2>&1); then
         pass "$name"
     else
         fail "$name — $out"
@@ -291,6 +301,40 @@ c = {"tight": {"permission_mode": "acceptEdits"}}
 assert "permission_mode" in resolve.INHERITED_KEYS
 assert resolve.resolve_setting({"category": "tight"}, "permission_mode", d, c) == "acceptEdits"
 assert resolve.resolve_setting({"category": "tight", "permission_mode": "plan"}, "permission_mode", d, c) == "plan"
+'
+
+# ── the zone label names the instant, not now ──
+
+check "_tz_label names the instant it labels, across the DST boundary" '
+from datetime import datetime
+from scheduler.cli import _tz_label
+# Both sides asserted in the same run under the config zone: whatever today
+# is, one of these is out of season, so an implementation reading `now`
+# cannot get both right.
+assert _tz_label(datetime(2026, 1, 15, 9, 0)) == "PST", _tz_label(datetime(2026, 1, 15, 9, 0))
+assert _tz_label(datetime(2026, 7, 15, 9, 0)) == "PDT", _tz_label(datetime(2026, 7, 15, 9, 0))
+# and to the minute at the transition itself — 2026-11-01 02:00 local is when
+# the clocks go back.
+assert _tz_label(datetime(2026, 11, 1, 1, 59)) == "PDT", _tz_label(datetime(2026, 11, 1, 1, 59))
+assert _tz_label(datetime(2026, 11, 1, 3, 0)) == "PST", _tz_label(datetime(2026, 11, 1, 3, 0))
+# no argument is still the honest answer for now, not a crash
+assert _tz_label() in ("PST", "PDT"), _tz_label()
+'
+
+check "add-once names the fires-at time in the fires-at zone" '
+import argparse, io, contextlib
+from scheduler import cli, registry
+args = argparse.Namespace(
+    agent="demo", at="2026-01-15 09:00", message="m", name=None, workspace=None,
+    timeout_seconds=60, category=None, resume_session=None, delete_after_run=True,
+    locked=False, json=False)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli.cmd_add_once(args)
+out = buf.getvalue()
+assert "fires 2026-01-15 09:00 PST" in out, out
+job = [j for j in registry.load_registry()["jobs"] if j["name"].startswith("demo wake")][-1]
+assert job["name"] == "demo wake 2026-01-15 09:00 PST", job["name"]
 '
 
 # ── ics VTIMEZONE derivation ──

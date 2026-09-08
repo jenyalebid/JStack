@@ -17,6 +17,8 @@
 #     wake is booked against that session's own workspace, delivery consumes
 #     the reply and cancels the wake, and a channel that will not end stops
 #     waking anyone
+#   - a printed wake time carries the zone abbreviation of THAT instant, not
+#     of now — asserted on both sides of the DST transition in one run
 #   - a finished exchange writes itself into BOTH seats' timelines, once
 #   - THE CREATOR LEG: `msg inject` binds a GitHub issue comment to the
 #     session that created the issue, wakes it with the issue as the answer
@@ -277,6 +279,50 @@ CLAUDE_CODE_SESSION_ID=an-idle-session "$MSG" pending-for bob/chat >/dev/null; [
   || fail "the session that took it is stamped on the task"
 [[ "$("$MSG" check "$TID")" == *"${BOB_S:0:8}"* ]] \
   && pass "check names the session doing the work" || fail "check names the session doing the work"
+
+# ------------------------------------- the label belongs to the time beside it
+# Every wake this file prints is in the future, and a zone abbreviation taken
+# from `now` is wrong for any of them booked across the local DST transition —
+# an hour of apparent drift that is really only the name. So the cases below
+# are labelled in the SAME run, under one pinned zone, on either side of the
+# US transition: whatever today is, half of them are out of season, and an
+# implementation reading `now` cannot get both seasons right.
+setwake() {  # setwake <delivery> [wake_job]  — the row is restored afterwards
+    python3 - "$DB" "$TID" "$1" "${2-}" <<'PYEOF'
+import sqlite3, sys
+db, mid, delivery, job = sys.argv[1:5]
+con = sqlite3.connect(db)
+if job:
+    con.execute("UPDATE messages SET delivery = ?, wake_job = ? WHERE id = ?",
+                (delivery, job, mid))
+else:
+    con.execute("UPDATE messages SET delivery = ? WHERE id = ?", (delivery, mid))
+con.commit()
+PYEOF
+}
+ORIG_WAKE=$(python3 -c "import sqlite3,sys
+r = sqlite3.connect(sys.argv[1]).execute('SELECT delivery, wake_job FROM messages WHERE id=?', (sys.argv[2],)).fetchone()
+print('%s\t%s' % (r[0] or '', r[1] or ''))" "$DB" "$TID")
+
+tz_check() {  # tz_check <wall clock> <expected abbrev>
+    setwake "spawned:$1" deadbeefcafe
+    if [[ "$(TZ=America/Los_Angeles "$MSG" check "$TID")" == *"booked $1 $2"* ]]; then
+        pass "a wake in $2 is labelled $2"
+    else
+        fail "a wake in $2 is labelled $2 — got: $(TZ=America/Los_Angeles "$MSG" check "$TID" | grep wake)"
+    fi
+}
+tz_check "2026-01-15 09:00" PST     # winter: standard time
+tz_check "2026-07-15 09:00" PDT     # summer: daylight time
+# and the boundary itself, to the minute — 2026-11-01 02:00 local is when the
+# clocks go back, so 01:59 is still PDT and 03:00 is PST.
+tz_check "2026-11-01 01:59" PDT
+tz_check "2026-11-01 03:00" PST
+# a delivery string that never parses must still print, not raise
+setwake "spawned:not a time"
+TZ=America/Los_Angeles "$MSG" check "$TID" >/dev/null 2>&1 \
+  && pass "an unparseable wake time still prints" || fail "an unparseable wake time still prints"
+setwake "${ORIG_WAKE%%$'\t'*}" "${ORIG_WAKE##*$'\t'}"   # put the real booking back
 
 # ------------------------- the return leg: back to the SESSION, not the seat
 : > "$TMP/wake.argv"

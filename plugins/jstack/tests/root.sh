@@ -22,7 +22,11 @@ command -v "$PY" >/dev/null 2>&1 || { echo "FAIL: no python3 on PATH (set JSTACK
 TMP=$(mktemp -d /tmp/jstack-root.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
-export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# Every `import root` below must be THIS tree's root.py. PYTHONPATH does not
+# settle that on its own — the pre-push gate's interpreter carries a .pth that
+# fronts the main checkout, which is how the shipping-tree guard below came to
+# compare two different trees and fail. See tests/lib/pin-plugin-root.sh.
+. "$PLUGIN_ROOT/tests/lib/pin-plugin-root.sh"
 # Hermetic baseline: the ambient machine may declare any of these, and every
 # check below states its own environment outright.
 unset JSTACK_ROOT JSTACK_AGENTS_DIR JSTACK_SYSTEMS_DIR JSTACK_CONFIG_DIR \

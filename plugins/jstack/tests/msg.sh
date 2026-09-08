@@ -31,6 +31,21 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MSG="$PLUGIN_ROOT/bin/msg"
 LOG_EVENT="$PLUGIN_ROOT/bin/log_event"
 
+# Two checks below ask the scheduler package itself where it would book. That
+# answer has to come from THIS tree — an interpreter carrying the host's .pth
+# fronts the main checkout, and it outranks PYTHONPATH. See
+# tests/lib/pin-plugin-root.sh.
+#
+# Not JSTACK_PYTHON, unlike the rest of the suite: bin/msg is the subject here
+# and its shebang is `env python3`, so a probe asking where the subject would
+# book has to be the same interpreter. The host venv the gate passes in also
+# carries `SCHEDULER_HOME` (its .pth setdefaults it), which the bare-root check
+# below deliberately runs without — probe it with that and the probe answers
+# about an environment the subject never had.
+PY=python3
+command -v "$PY" >/dev/null 2>&1 || { echo "FAIL: no python3 on PATH — bin/msg's own shebang needs it"; exit 1; }
+. "$PLUGIN_ROOT/tests/lib/pin-plugin-root.sh"
+
 TMP=$(mktemp -d /tmp/jstack-msg-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 export JSTACK_TIMELINE_DIR="$TMP/timeline"
@@ -458,8 +473,8 @@ out=$(bare_msg send @ben "Bare task" --wake 2>&1); rc=$?
   || fail "bare root: @ben resolves through \$JSTACK_ROOT/Agents (rc=$rc: $out)"
 # where the child actually books: ask the scheduler's own resolution, in the
 # same environment the child ran with — not a path restated here
-BARE_SCHED=$(env -u SCHEDULER_HOME JSTACK_ROOT="$BROOT" PYTHONPATH="$PLUGIN_ROOT" \
-  python3 -c "from scheduler import config; print(config.SCHEDULE_FILE)")
+BARE_SCHED=$(env -u SCHEDULER_HOME JSTACK_ROOT="$BROOT" \
+  "$PY" -c "from scheduler import config; print(config.SCHEDULE_FILE)")
 case "$BARE_SCHED" in
   "$BROOT"/*) pass "bare root: the registry derives from the declared root" ;;
   *) fail "bare root: registry derived outside the root ($BARE_SCHED)" ;;
@@ -487,8 +502,8 @@ out=$( (cd "$BROOT/Agents/Ann" && \
   env -u SCHEDULER_HOME JSTACK_ROOT="$BROOT" JSTACK_REVIEW_CONFIG="$BARE_CFG2" \
       JSTACK_TIMELINE_DIR="$BARE_TL" "$MSG" send @ben "Configured task" --wake 2>&1) ); rc=$?
 CJOB=$(BSQL "SELECT wake_job FROM messages WHERE subject='Configured task'" | grep -oE '[a-f0-9-]{36}')
-CONF_SCHED=$(env -u JSTACK_ROOT SCHEDULER_HOME="$MHOME" PYTHONPATH="$PLUGIN_ROOT" \
-  python3 -c "from scheduler import config; print(config.SCHEDULE_FILE)")
+CONF_SCHED=$(env -u JSTACK_ROOT SCHEDULER_HOME="$MHOME" \
+  "$PY" -c "from scheduler import config; print(config.SCHEDULE_FILE)")
 [[ $rc -eq 0 && -n "$CJOB" ]] && grep -q "$CJOB" "$CONF_SCHED" 2>/dev/null \
   && pass "mail.scheduler_home still wins: booked into the configured home" \
   || fail "mail.scheduler_home still wins (rc=$rc job='$CJOB' file=$CONF_SCHED: $out)"

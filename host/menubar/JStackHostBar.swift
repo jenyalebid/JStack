@@ -334,15 +334,22 @@ final class HostProbe {
         return d
     }
 
-    /// End a session through the host's own close route — the same one the app
-    /// and the board use, so a kill from here goes through the identical
-    /// teardown (window closed, end-of-session hook run) instead of a second
-    /// implementation that gets one of those wrong.
-    func close(sid: String, token: String,
-               _ done: @escaping (Bool, String) -> Void) {
+    /// Kill a session, through the host's own close route so the teardown is
+    /// the one the app and the board already use — not a second implementation
+    /// that gets the window or the registry wrong.
+    ///
+    /// `review=false`, and that is the whole difference between the two words.
+    /// `review=true` is *Close*: EOF, `claude` exits cleanly, its SessionEnd
+    /// hook fires and spawns a review of the session you just ended. Kill is
+    /// not a polite exit — asking for one and getting a review agent is the
+    /// opposite of what the word promises. False SIGKILLs the pane, no hook
+    /// runs, nothing is spawned. The transcript is append-only and resume
+    /// tolerates a truncated tail, so the work is still there.
+    func kill(sid: String, token: String,
+              _ done: @escaping (Bool, String) -> Void) {
         let port = HostAgent.port()
         guard let url = URL(string:
-            "http://127.0.0.1:\(port)\(Self.apiPrefix)/sessions/\(sid)/close?review=true")
+            "http://127.0.0.1:\(port)\(Self.apiPrefix)/sessions/\(sid)/close?review=false")
         else { return done(false, "could not build the request") }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -828,13 +835,12 @@ final class StatusController: NSObject {
 
     @objc private func doRefresh() { refresh() }
 
-    /// End a session, after asking.
+    /// Kill a session, after asking.
     ///
     /// A confirmation because this is not undoable and the menu is a place the
     /// pointer passes through: the transcript survives, but the turn in flight
     /// does not, and "which one was highlighted" is not a question to answer
-    /// after the fact. `review=true` — the session's own end-of-session hook
-    /// runs, the same as closing its window by hand.
+    /// after the fact.
     @objc private func doKill(_ sender: NSMenuItem) {
         guard let session = sender.representedObject as? Session,
               let sid = session.sessionId, !sid.isEmpty,
@@ -843,14 +849,14 @@ final class StatusController: NSObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Kill \(session.title)?"
-        alert.informativeText = "The session ends now. Its transcript is kept, "
-            + "so it can be resumed later."
+        alert.informativeText = "It stops mid-turn — no clean exit, no review. "
+            + "The transcript is kept, so it can be resumed later."
         alert.addButton(withTitle: "Kill")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        probe.close(sid: sid, token: token) { [weak self] ok, detail in
+        probe.kill(sid: sid, token: token) { [weak self] ok, detail in
             if !ok {
                 let failed = NSAlert()
                 failed.alertStyle = .warning

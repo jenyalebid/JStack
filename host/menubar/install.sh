@@ -41,11 +41,19 @@ usage: menubar/install.sh [options]
   --dry-run          print what would happen and change nothing
   --uninstall        unload the agent and remove the app
   --apps-dir DIR     where to install the app (default ~/Applications)
+  --state-dir DIR    the host's state dir, if it is not the default
+  --token-path FILE  the bearer token to read, if it is not inside the state dir
   --help, -h         this
 
 The app shows whether this Mac's host is up, what it is serving, and which
 sessions are running on it right now. It can restart, stop and start the host,
 because it is a locally built app and not a sandboxed one.
+
+The two path options are for a host this script cannot interrogate. The app
+normally reads them off the installed `com.jremote.host` agent's own plist, but
+a host embedded in a larger application has no such agent — nothing on disk
+says where its state went, so it must be told. Any `JREMOTE_*` variable
+exported when you run this is carried into the agent too.
 EOF
 }
 
@@ -54,6 +62,8 @@ while [ $# -gt 0 ]; do
         --dry-run)   DRY_RUN=1 ;;
         --uninstall) DO_UNINSTALL=1 ;;
         --apps-dir)  APPS_DIR="${2:-}"; shift ;;
+        --state-dir)  JREMOTE_STATE_DIR="${2:-}"; export JREMOTE_STATE_DIR; shift ;;
+        --token-path) JREMOTE_TOKEN_PATH="${2:-}"; export JREMOTE_TOKEN_PATH; shift ;;
         -h|--help)   usage; exit 0 ;;
         *)           echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -198,6 +208,40 @@ if [ -n "$HOST_BIN" ]; then
         <string>$HOST_BIN</string>"
 fi
 
+# The host-configuration variables, baked into the agent.
+#
+# Under launchd a GUI agent inherits nothing, so a variable that was exported
+# in the shell here would be gone by the time the app looks for it — and the
+# app's fallback is the *installed host agent's* plist, which a host embedded
+# in a larger application does not have. On such a machine the app resolves
+# the stock defaults, finds no token beside them and reports "no token" while
+# the host it is pointed at is serving perfectly well. Writing them down is
+# what makes the indicator true on a host this script cannot interrogate.
+#
+# Named one by one rather than swept up by prefix. `JREMOTE_` is not only the
+# config namespace: `managed.py` exports `JREMOTE_SID` and
+# `JREMOTE_COMPOSE_DIR` into every managed session's shell, so a prefix sweep
+# run from inside one — which is exactly where an agent installs this — writes
+# that session's id into a permanent LaunchAgent, and the indicator outlives
+# the session it was pinned to. This list mirrors the seam in `hostenv.py`;
+# extend it there and here together.
+ENV_VARS="JREMOTE_STATE_DIR JREMOTE_TOKEN_PATH JREMOTE_CREDENTIALS_DIR
+          JREMOTE_RELEASES_DIR JREMOTE_INSTANCE_ROOT JREMOTE_PROFILE_MODULE
+          JREMOTE_HOST_ID JREMOTE_HOST_NAME JREMOTE_HOST_PROFILE
+          JREMOTE_PEER_SCRIPT"
+ENV_XML=""
+for var in $ENV_VARS; do
+    eval "val=\${$var:-}"
+    [ -n "$val" ] || continue
+    ENV_XML="$ENV_XML
+        <key>$var</key><string>$val</string>"
+done
+if [ -n "$ENV_XML" ]; then
+    ENV_XML="    <key>EnvironmentVariables</key>
+    <dict>$ENV_XML
+    </dict>"
+fi
+
 mkdir -p "$(dirname "$PLIST")"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -209,6 +253,7 @@ cat > "$PLIST" <<EOF
     <array>
 $ARGS_XML
     </array>
+$ENV_XML
     <key>RunAtLoad</key><true/>
     <!-- Restart it when it crashes, never when it was quit. A plain
          KeepAlive would make the menu's own Quit item a no-op: launchd would

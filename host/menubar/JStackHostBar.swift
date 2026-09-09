@@ -193,6 +193,9 @@ struct Session: Decodable {
     var live: Bool?
     var managed: Bool?
     var onMac: Bool?
+    /// Alive — a process is holding this session — whether or not it is
+    /// producing anything this second. `live` is the narrower claim.
+    var running: Bool?
 
     /// What to call it, in the order the answer is most specific: the window's
     /// own title, then the agent it belongs to, then nothing anyone can act on.
@@ -682,8 +685,10 @@ final class StatusController: NSObject {
             menu.addItem(Self.action("Open Log Folder", #selector(doLogs), self,
                                      symbol: "folder"))
         }
-        menu.addItem(Self.action("Refresh Now", #selector(doRefresh), self,
-                                 symbol: "arrow.triangle.2.circlepath"))
+        // No Refresh. `menuWillOpen` re-polls, so everything below the pointer
+        // was fetched on the way to it — a button that re-fetches data a
+        // fraction of a second old is a button that can only ever appear to do
+        // nothing, and teaches that the numbers need convincing to be true.
 
         // No Quit by default. This is the hub's indicator, and the hub runs
         // whether or not anyone is looking at it — so "quit" here never meant
@@ -772,7 +777,9 @@ final class StatusController: NSObject {
             // in the title so every row's text starts at the same x — a list
             // whose left edge moves with the status is one you cannot scan.
             row.image = Self.dot(live: session.live == true,
-                                 idle: session.onMac == true || session.managed == true)
+                                 idle: session.running == true
+                                       || session.onMac == true
+                                       || session.managed == true)
 
             // Kill hangs off the process rather than sitting beside its name:
             // a one-click kill in a list you are scrolling is a session ended
@@ -785,10 +792,23 @@ final class StatusController: NSObject {
             row.submenu = actions
             sub.addItem(row)
         }
-        // "23 active processes" — the count is the whole point of the row, so
-        // it is the row, and the names are what opens off it.
-        let title = "\(sorted.count) Active "
-            + (sorted.count == 1 ? "Process" : "Processes")
+        // "2 working, 3 running" rather than one total.
+        //
+        // The two states are what you opened the menu to tell apart — a
+        // machine with five sessions where none are producing is idle, and a
+        // machine with five where two are mid-turn is busy, and "5 Active
+        // Processes" says the same thing about both. They partition the list:
+        // working is a subset of running everywhere else, so counting it in
+        // both places here would mean the numbers never add up to the rows
+        // underneath them.
+        let working = sorted.filter { $0.live == true }.count
+        let idle = sorted.count - working
+        let title: String
+        switch (working, idle) {
+        case (0, _): title = "\(idle) running"
+        case (_, 0): title = "\(working) working"
+        default:     title = "\(working) working, \(idle) running"
+        }
         return Self.opener(title, symbol: "list.bullet.rectangle", submenu: sub)
     }
 
@@ -900,8 +920,6 @@ final class StatusController: NSObject {
         HostControl.start()
         after(2.0) { self.refresh() }
     }
-
-    @objc private func doRefresh() { refresh() }
 
     /// Kill a session, after asking.
     ///

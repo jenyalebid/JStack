@@ -39,7 +39,8 @@ def _identity(cwd: str) -> tuple[str, str, str]:
 
 
 def create(cwd: str, sid: str | None = None, resume: bool = False,
-           extra: str = "", prelude: str = "", name: str = "") -> str:
+           extra: str = "", prelude: str = "", name: str = "",
+           nudge: str = "") -> str:
     """The buttons' create: a fresh (or materialized) managed session in
     `cwd`, registered-first and windowless — the board row is the visibility,
     the caller decides which device shows a window. Returns the sid.
@@ -47,12 +48,20 @@ def create(cwd: str, sid: str | None = None, resume: bool = False,
     `extra`/`prelude` are `open_managed`'s pass-throughs (model flags, an
     argv first-prompt, an env prefix) — the caller quotes them for the
     pane's shell. A session already open is left as it is (`open_managed`
-    is idempotent)."""
+    is idempotent).
+
+    `nudge` is a first prompt typed INTO the running session rather than
+    handed to the CLI as an argument, which is what makes it survive a pane
+    whose shell would have to quote it. It is how a session can be opened
+    already working on something — `jstack-host welcome` is the one caller
+    that needs it, and it needs it because a window that opens empty on a
+    machine nobody has used yet is a window nobody knows what to type in."""
     import uuid
     from . import board_watch, managed
     sid = sid or str(uuid.uuid4())
     managed.record_open(sid, _identity(cwd)[0], name=name)
-    managed.open_managed(sid, cwd, resume=resume, extra=extra, prelude=prelude)
+    managed.open_managed(sid, cwd, resume=resume, extra=extra, prelude=prelude,
+                         nudge=nudge or None)
     board_watch.poke()
     return sid
 

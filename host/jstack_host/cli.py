@@ -3,6 +3,7 @@
     jstack-host install          turn this Mac into a host, and keep it one
     jstack-host pair "iPhone"    a code to type into the app
     jstack-host pair --open      pair the app on this Mac, no code typed
+    jstack-host welcome          open the app on a session that checks this Mac
     jstack-host status           is it up, and what does it know
     jstack-host doctor           what is missing, and how to fix each thing
     jstack-host uninstall        take it back off
@@ -98,28 +99,97 @@ def _hand_to_app(row: dict) -> int:
     with no app installed is a normal outcome of `--open` (the app step is
     declinable), and the code is already minted and still good — so the
     fallback is to print it exactly as the plain form would.
+
+    `desk.open_url` rather than a bare `open`, because it pins the link to
+    the copy in /Applications. On a machine that has ever built the app, a
+    stale bundle in derivedData is registered for the same URL scheme and
+    Launch Services is free to prefer it — a pairing that lands in a build
+    nobody is looking at, reported here as success.
     """
-    import shutil
-    import subprocess
-    from . import install_host
+    from . import desk, install_host
 
     port = install_host.installed_port() or install_host.DEFAULT_PORT
     link = pair_link(row["code"], port, hostenv.host_name())
-    opener = shutil.which("open")
-    if opener:
-        try:
-            subprocess.run([opener, link], check=True, capture_output=True,
-                           timeout=20)
-            print(f"paired the app on this Mac as {row['name']} — it should be "
-                  "opening now")
-            return 0
-        except (OSError, subprocess.SubprocessError):
-            pass
+    if desk.open_url(link):
+        print(f"paired the app on this Mac as {row['name']} — it should be "
+              "opening now")
+        return 0
     mins = row["expires_in"] // 60
     print("no app on this Mac answered that link — install it, then type this "
           "code into it:")
     print(f"\n    {row['code']}\n")
     print(f"good for {mins} minute{'' if mins == 1 else 's'}.")
+    return 0
+
+
+# The first thing anyone sees after an install finishes. Addressed to the
+# agent, not to the person: the session opens already working, and what it is
+# working on is the machine it was just installed on.
+#
+# It says "check, then say" and not "say" on purpose. An agent that opens by
+# congratulating someone on a working install it never looked at is worse than
+# an empty window — the empty window at least does not lie, and the first
+# impression this makes is the one that decides whether anything it says later
+# gets believed.
+WELCOME_PROMPT = (
+    "You have just been installed on this Mac and this window is the first "
+    "thing your owner sees. Do not greet them with a status you have not "
+    "checked.\n\n"
+    "Run `jstack-doctor` first. Read what it actually says, then tell them in "
+    "plain words what works and what does not — no jargon they did not ask "
+    "for, and no clean bill of health you did not verify. Repair what you can "
+    "repair from here, and say plainly which parts need them.\n\n"
+    "Then, briefly: what they now have. This app is where sessions like this "
+    "one open; the host running on this Mac is what serves it; you are an "
+    "agent with a workspace of your own, and this is it. Keep it to a few "
+    "sentences.\n\n"
+    "Finish by asking what they want to know, and answer it."
+)
+
+
+def _cmd_welcome(args) -> int:
+    """Open the app on a session that explains the install that just ran.
+
+    The install ends with a working machine and no idea what to do with it.
+    This is the difference between the two: a session that comes up already
+    running, in a real workspace, with the first prompt spent on checking the
+    machine rather than on being typed.
+
+    Everything here is a part that already existed — `desk.create` makes the
+    managed session, `desk.open_thread` puts it in front of someone. The only
+    new thing is which agent gets it and what it is asked to do first.
+    """
+    _adopt(args)
+    import os.path
+    from . import desk
+    agents = hostenv.active_agents()
+    if not agents:
+        print("no agent workspaces on this host yet — nothing to open a "
+              "session for.", file=sys.stderr)
+        return 1
+    agent_id = args.agent or sorted(agents)[0]
+    if agent_id not in agents:
+        known = ", ".join(sorted(agents))
+        print(f"no agent {agent_id!r} on this host — there is: {known}",
+              file=sys.stderr)
+        return 1
+    cwd = str(hostenv.workspace(agent_id))
+    if not os.path.isdir(cwd):
+        print(f"{agent_id}'s workspace is missing at {cwd}", file=sys.stderr)
+        return 1
+    try:
+        sid = desk.create(cwd, nudge=WELCOME_PROMPT)
+    except (OSError, RuntimeError) as e:
+        print(f"could not start a session: {e}", file=sys.stderr)
+        return 1
+    if desk.open_thread(sid, cwd):
+        print(f"opened a session with {agents[agent_id].get('name') or agent_id}"
+              " — it is checking this install over now")
+        return 0
+    # The session is real and on the board whether or not a window came up, so
+    # this is a note about the window, not a failure of the command.
+    print(f"started a session ({sid[:8]}) — no app on this Mac took the link, "
+          "so open it from the board when you have one.")
     return 0
 
 
@@ -225,6 +295,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "printing it — it pairs itself and opens")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_pair)
+
+    p = sub.add_parser("welcome",
+                       help="open the app on a session that checks this install")
+    p.add_argument("--agent", default="",
+                   help="which agent gets the session (default: the first one "
+                        "on this host)")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_welcome)
 
     p = sub.add_parser("token", help="print this host's bearer token")
     p.add_argument("--state-dir", default=None)

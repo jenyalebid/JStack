@@ -674,6 +674,16 @@ if [ "$HOST_INSTALLED" = "1" ] && [ "$APP_INSTALLED" = "1" ] && [ "$DRY_RUN" = "
         warn "jstack-host is not on this Mac — pair by hand with \`jstack-host pair\`"
     elif "$HOSTBIN" pair "$device_name" --open >/dev/null 2>&1; then
         ok "the app is open and connected to this Mac — nothing to type"
+        # And the app opens on something rather than on nothing. The session
+        # comes up already checking the machine it was just installed on, so
+        # the first thing in the window is a report someone can ask questions
+        # about — not an empty prompt on a stack they have not learned yet.
+        #
+        # Never fatal, and deliberately after pairing: a session opened before
+        # the app has a credential is a board row nobody can see.
+        if [ -n "$AGENT_NAME" ] && "$HOSTBIN" welcome >/dev/null 2>&1; then
+            ok "$AGENT_NAME is in the app going over the install with you"
+        fi
     else
         warn "could not pair the app — run \`jstack-host pair --open\` to retry"
     fi

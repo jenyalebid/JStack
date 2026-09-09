@@ -157,7 +157,15 @@ if [ -z "$TAG" ]; then
         | grep -o "\"tag_name\": *\"${TAG_PREFIX}[^\"]*\"" \
         | head -1 | sed -E 's/.*"([^"]*)"$/\1/')"
 fi
-[ -n "$TAG" ] || die "no ${TAG_PREFIX}* release found in $REPO — pass --tag, or check that a release has been published"
+if [ -z "$TAG" ]; then
+    # Exit 3, not 1: "no release has been published yet" is a fact about the
+    # repository, not a fault in this machine. The top-level installer treats
+    # 1 as a problem worth a warning line and 3 as a note, because a warning
+    # the reader cannot act on is how the actionable ones get skimmed past.
+    note "no ${TAG_PREFIX}* release published in $REPO yet — nothing to install"
+    note "pass --tag to install a specific one, or re-run this script once a release exists"
+    exit 3
+fi
 note "release: $TAG"
 
 # ── 3. the manifest ─────────────────────────────────────────────────────────

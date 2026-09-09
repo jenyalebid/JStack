@@ -341,6 +341,44 @@ else
     fail "timeline_dir guard — $out"
 fi
 
+# A relative root is refused, not repaired.
+#
+# It was accepted, and it reached launchd: WorkingDirectory and
+# StandardErrorPath must be absolute, so the daemon exited 78 before running a
+# line and the install ended on a FAIL naming the scheduler rather than the
+# answer that broke it. Anchoring it to $HOME instead would make one string
+# mean two directories, so the rule is refusal — and the message has to carry
+# the absolute path to type, or the reader is left where the FAIL left them.
+if out=$(env JSTACK_ROOT="dfredsf" HOME="$FAKEHOME" "$PY" -c '
+import root
+try:
+    root.root()
+except ValueError as e:
+    assert "absolute" in str(e), e
+    assert "dfredsf" in str(e), e
+else:
+    raise AssertionError("root() accepted a relative JSTACK_ROOT")
+' 2>&1); then
+    pass "a relative JSTACK_ROOT is refused with the absolute path to type"
+else
+    fail "relative root guard — $out"
+fi
+
+# Same rule on the per-dir overrides, which reach the same plist fields.
+if out=$(env JSTACK_ROOT="$ROOT_A" JSTACK_STATE_DIR="State" HOME="$FAKEHOME" "$PY" -c '
+import root
+try:
+    root.state_dir()
+except ValueError as e:
+    assert "JSTACK_STATE_DIR" in str(e), e
+else:
+    raise AssertionError("state_dir accepted a relative override")
+' 2>&1); then
+    pass "a relative dir override is refused and names itself, not the root"
+else
+    fail "relative override guard — $out"
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "PASS — one declaration, the whole tree derives; precedence holds the live install"

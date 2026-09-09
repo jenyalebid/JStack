@@ -105,8 +105,32 @@ def root(cfg: "dict|None" = None) -> Path:
     if not val and cfg:
         val = cfg.get("root")
     if val:
-        return Path(str(val)).expanduser()
+        return _absolute(val)
     return Path.home()
+
+
+def _absolute(val, name: str = "JSTACK_ROOT") -> Path:
+    """A declared root is absolute or it is refused.
+
+    A relative one reaches launchd, which requires absolute paths in
+    WorkingDirectory and StandardErrorPath and refuses to spawn without them:
+    the job exits 78 (EX_CONFIG) before it runs a line, KeepAlive retries it
+    forever, and the only symptom is a daemon that is "loaded but not running".
+    That was a whole install ending on a red FAIL because a root was typed
+    without a leading slash.
+
+    Anchoring it to $HOME instead would be worse — the same string would then
+    mean two different directories depending on which one of these two paths
+    the reader took. It refuses, and names what to type instead.
+    """
+    path = Path(str(val)).expanduser()
+    if not path.is_absolute():
+        raise ValueError(
+            f"{name} must be an absolute path, got {val!r} — "
+            f"launchd refuses a relative one and the daemons will not start. "
+            f"Try {Path.home() / str(val).lstrip('./')}"
+        )
+    return path
 
 
 def _derived(cfg: "dict|None", env_var: str, cfg_key: str, leaf: str,
@@ -123,7 +147,7 @@ def _derived(cfg: "dict|None", env_var: str, cfg_key: str, leaf: str,
     if not val and cfg:
         val = cfg.get(cfg_key)
     if val:
-        path = Path(str(val)).expanduser()
+        path = _absolute(val, env_var)
     else:
         path = (root(cfg) if base is None else base(cfg)) / leaf
     if guarded:

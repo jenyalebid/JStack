@@ -208,10 +208,35 @@ ok "python — $("$PY" --version 2>&1) at $PY"
 step "What this install needs to know"
 
 if [ -n "${JSTACK_ROOT:-}" ]; then
-    ok "root declared in the environment — $JSTACK_ROOT"
-else
-    JSTACK_ROOT="$(ask_value "Root for Agents, Logs, Config, State and Credentials" "$HOME")"
     JSTACK_ROOT="${JSTACK_ROOT/#\~/$HOME}"
+    case "$JSTACK_ROOT" in
+        /*) ok "root declared in the environment — $JSTACK_ROOT" ;;
+        *)  die "JSTACK_ROOT=$JSTACK_ROOT is not an absolute path — launchd refuses a relative one and the daemons will not start. Try $HOME/${JSTACK_ROOT#./}" ;;
+    esac
+else
+    # Re-asked until it is absolute, rather than accepted and repaired.
+    #
+    # A typed "work" used to be taken literally: every derived dir became a
+    # relative string, and the plist the scheduler writes put that string in
+    # WorkingDirectory and StandardErrorPath — two fields launchd requires to
+    # be absolute. The job exited 78 before running a line, KeepAlive retried
+    # it forever, and the install ended on a red FAIL naming the daemon rather
+    # than the answer that broke it.
+    #
+    # Silently anchoring it to $HOME would hide the same typo behind a tree
+    # nobody meant to create, so the loop says why and shows the fix. Under
+    # --yes or with no terminal, ask_value returns the default, which is
+    # absolute — so this cannot spin.
+    while :; do
+        JSTACK_ROOT="$(ask_value "Root for Agents, Logs, Config, State and Credentials" "$HOME")"
+        JSTACK_ROOT="${JSTACK_ROOT/#\~/$HOME}"
+        case "$JSTACK_ROOT" in
+            /*) break ;;
+            "") warn "the root cannot be empty" ;;
+            *)  warn "a root must be an absolute path — try $HOME/${JSTACK_ROOT#./}" ;;
+        esac
+        interactive || die "JSTACK_ROOT must be an absolute path"
+    done
     if [ "$JSTACK_ROOT" != "$HOME" ]; then
         DECLARE_ROOT=1
         ok "root — $JSTACK_ROOT (declared in your shell profile below)"
@@ -549,10 +574,16 @@ elif [ "$WANT_APP" = "0" ]; then
     note "skipped by --no-app — run $APP_INSTALLER any time"
 elif [ "$DRY_RUN" = "1" ]; then
     would "$APP_INSTALLER"
-elif run_long "downloading and verifying the app" bash "$APP_INSTALLER"; then
-    ok "app installed in ${LAST_ELAPSED}s"
 else
-    warn "app install reported a problem — re-run $APP_INSTALLER to see it: $LAST_LOG"
+    run_long "downloading and verifying the app" bash "$APP_INSTALLER"
+    case $? in
+        0) ok "app installed in ${LAST_ELAPSED}s" ;;
+        # 3 is "no release published yet" — a fact about the repository that no
+        # reader of this output can act on. It gets a note; a warn here would
+        # end a clean install on a line that looks like something to fix.
+        3) note "no signed release published yet — the app is not part of this install" ;;
+        *) warn "app install reported a problem — re-run $APP_INSTALLER to see it: $LAST_LOG" ;;
+    esac
 fi
 
 # ── 10. the verdict ─────────────────────────────────────────────────────────
@@ -566,14 +597,23 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 echo
-"$PY" "$BIN/jstack-doctor"
-rc=$?
+doctor_out="$(mktemp -t jstack-doctor)"
+"$PY" "$BIN/jstack-doctor" | tee "$doctor_out"
+rc=${PIPESTATUS[0]}
+
+# The failing checks, by name. The last line used to read "something above is
+# broken", which hands the reader a scroll-and-hunt in the one place they most
+# need a name — and the doctor already printed every name, so the installer was
+# being vaguer than the tool it had just run.
+broken="$(awk '$1 == "FAIL" { print $2 }' "$doctor_out" | tr '\n' ' ')"
+broken="${broken% }"
+rm -f "$doctor_out"
 
 echo
 case "$rc" in
     0) printf '%sJStack is installed and every check passed.%s\n' "$GRN$B" "$Z" ;;
     1) printf '%sJStack is installed and working.%s The warnings above are capabilities\nthat stay absent until you add them — normal on a fresh machine.\n' "$GRN$B" "$Z" ;;
-    *) printf '%sInstalled, but something above is broken.%s Each failure names its fix;\nre-run `jstack-doctor` after each one.\n' "$YEL$B" "$Z" ;;
+    *) printf '%sInstalled, but %s is broken.%s Its FAIL line above names the fix;\nre-run `jstack-doctor` after it.\n' "$YEL$B" "${broken:-a check above}" "$Z" ;;
 esac
 
 cat <<EOF

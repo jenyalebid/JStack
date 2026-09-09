@@ -20,10 +20,10 @@ Where it lands:
   is not left quiet: it has no board row to be found by later.
 
 The link carries the path, never the text. The app asks the host for the file
-back through `/context/file`, which is where the read fence lives — so a doc
-outside that fence would open a window onto an error. It is refused here
-instead, before a window exists, and the fence is asked rather than restated
-(`context_inventory.fenced_path`).
+back through `/context/file` — so a doc outside the read fence would open a
+window onto an error. It is refused here instead, before a window exists, and
+the fence is asked rather than restated: both routes call `docfence`, which is
+the only way the two can be relied on to agree.
 """
 
 import argparse
@@ -77,7 +77,7 @@ def show(path: str, title: str = "") -> tuple[str, str]:
     Raises PermissionError when the file is outside the read fence and
     FileNotFoundError when it isn't there — both before any window opens,
     because a window onto an error is worse than a clear refusal."""
-    from ..shared.context_inventory import fenced_path
+    from .docfence import fenced_path
     from . import desk
     from .spawn import origin_sid
 

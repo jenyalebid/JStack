@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .auth import current_device, require_token
-from . import board, devices, hostenv, plugin_paths
+from . import board, devices, docfence, hostenv, plugin_paths
 from .turns import stream_turn, TurnError
 from .messages import _blocks_to_segments, _flatten, _is_noise
 
@@ -296,20 +296,21 @@ def get_context():
 def get_context_file(path: str):
     """The text behind one row — a rule, a skill, a SYSTEM.md, a CLAUDE.md.
 
-    Fenced to the roots the inventory itself walks, and to markdown. The screen
-    only ever asks for a path the same payload just handed it, but this is a
+    Fenced to the roots in `docfence`, and to markdown. The screen only ever
+    asks for a path the same payload just handed it, but this is a
     token-authenticated read route on a machine that also stores credentials:
     the fence has to live here, not in the caller's good manners.
+
+    Served by the package rather than by the optional inventory above, and not
+    guarded by `_optional`. *Listing* what a session loads is the embedding
+    host's knowledge; reading one fenced markdown file is not, and a host that
+    503'd here would accept a `jremote://doc` link — `showdoc` fences the path
+    and opens the window — and then fail to hand back the file the window was
+    opened onto. The link route and the read route have to agree about the
+    fence, so they ask the same module.
     """
-    ci = _optional("dashboard.shared.context_inventory")
-    if ci is None:
-        # 503, not an empty body: the inventory that would have handed out this
-        # path does not exist here, so any path being asked for is one this host
-        # never served. An empty string would read as "the file is blank".
-        raise HTTPException(status_code=503,
-                            detail="the context inventory is not available on this host")
     try:
-        return ci.file_text(path)
+        return docfence.file_text(path)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except FileNotFoundError as e:

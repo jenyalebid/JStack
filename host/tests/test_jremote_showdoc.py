@@ -14,6 +14,19 @@ import pytest
 from jstack_host import showdoc
 
 
+def _fence_to(monkeypatch, root):
+    """Point the read fence at one directory, for the length of a test.
+
+    `docfence.read_roots()` is asked rather than a constant patched: the roots
+    are composed at call time from the profile's instance root and whatever
+    marketplaces are installed, so there is no tuple sitting still to swap.
+    Patching the function is also the honest seam — it is what `fenced_path`
+    actually calls.
+    """
+    from jstack_host import docfence
+    monkeypatch.setattr(docfence, "read_roots", lambda: (root.resolve(),))
+
+
 # ── the link ──
 
 def test_doc_url_carries_the_path_not_the_text():
@@ -46,8 +59,7 @@ def test_show_refuses_a_file_outside_the_read_roots(tmp_path):
 
 
 def test_show_refuses_a_non_markdown_file(monkeypatch, tmp_path):
-    from dashboard.shared import context_inventory
-    monkeypatch.setattr(context_inventory, "_READ_ROOTS", (tmp_path,))
+    _fence_to(monkeypatch, tmp_path)
     doc = tmp_path / "render.txt"
     doc.write_text("plain")
     with pytest.raises(PermissionError):
@@ -55,8 +67,7 @@ def test_show_refuses_a_non_markdown_file(monkeypatch, tmp_path):
 
 
 def test_show_refuses_a_missing_file(monkeypatch, tmp_path):
-    from dashboard.shared import context_inventory
-    monkeypatch.setattr(context_inventory, "_READ_ROOTS", (tmp_path,))
+    _fence_to(monkeypatch, tmp_path)
     with pytest.raises(FileNotFoundError):
         showdoc.show(str(tmp_path / "gone.md"))
 
@@ -66,8 +77,7 @@ def test_show_refuses_a_missing_file(monkeypatch, tmp_path):
 @pytest.fixture
 def fenced(monkeypatch, tmp_path):
     """A real markdown file the fence accepts."""
-    from dashboard.shared import context_inventory
-    monkeypatch.setattr(context_inventory, "_READ_ROOTS", (tmp_path.resolve(),))
+    _fence_to(monkeypatch, tmp_path)
     doc = tmp_path / "pict-chat.md"
     doc.write_text("# render")
     return doc
@@ -147,8 +157,7 @@ def test_main_exits_77_outside_the_fence(tmp_path, capsys):
 
 
 def test_main_exits_66_for_a_missing_file(monkeypatch, tmp_path, capsys):
-    from dashboard.shared import context_inventory
-    monkeypatch.setattr(context_inventory, "_READ_ROOTS", (tmp_path.resolve(),))
+    _fence_to(monkeypatch, tmp_path)
     assert showdoc.main([str(tmp_path / "gone.md")]) == 66
     assert "no such file" in capsys.readouterr().err
 

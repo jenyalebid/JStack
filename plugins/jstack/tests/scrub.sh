@@ -88,6 +88,8 @@ ALLOW = {
 ALLOW_PREFIX = {
     ("host/", "jremote"):
         "the host of that app, open-sourced deliberately — it names itself",
+    ("app/", "jremote"):
+        "the installer for that app — closed binary, open install path",
 }
 
 SELF = "plugins/jstack/tests/scrub.sh"  # holds the term list; cannot scan itself

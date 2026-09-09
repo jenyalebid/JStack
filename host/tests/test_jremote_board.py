@@ -103,8 +103,8 @@ def test_unknown_session_resolves_to_nothing(ws, monkeypatch):
 # Regression for the home-screen bug: `window` was `source in ("cli","vscode")`
 # — an argv shape meaning "launched interactively", which inside tmux stays
 # true forever. Closing the iTerm window kills only the tmux *client*; the
-# pane, its tty and the claude all survive, so every window Boss closed kept
-# reporting itself open and the app's board drifted from his screen.
+# pane, its tty and the claude all survive, so every window the user closed kept
+# reporting itself open and the app's board drifted from their screen.
 
 _PANES = {"/dev/ttys002": "jr-aaaa0001", "/dev/ttys004": "jr-bbbb0002"}
 
@@ -192,7 +192,7 @@ def test_headless_worker_stays_live_mid_tool_call():
 #
 # Long tool calls write nothing for minutes; the dot must not flicker off
 # mid-build. But a session waiting on a permission prompt / question is
-# waiting on Boss, not working — the discriminator for an open tool_use is a
+# waiting on the user, not working — the discriminator for an open tool_use is a
 # child process younger than the tool_use line.
 
 import datetime as _dt
@@ -266,7 +266,7 @@ def test_a_delivery_compaction_leaves_the_session_idle(tmp_path):
 
     Read as prompts, the compaction summary and the command's own stdout mean
     "claude owes a reply", and the dot stayed green for the rest of the
-    session's life — never orange, on exactly the deliveries Boss is watching
+    session's life — never orange, on exactly the deliveries the user is watching
     for. `/compact` submits no prompt, so no turn marker vouches for it
     either: the tail was the whole story, and it has to say idle by itself."""
     p = _transcript(
@@ -289,7 +289,7 @@ def test_a_delivery_compaction_leaves_the_session_idle(tmp_path):
 
 def test_a_compaction_does_not_bury_the_error_it_landed_on(tmp_path):
     """Skipping bookkeeping walks to the last real word, whatever it is — an
-    API failure still outranks, because nothing moves until Boss does."""
+    API failure still outranks, because nothing moves until the user does."""
     p = _transcript(
         tmp_path,
         json.dumps({"type": "assistant", "timestamp": _ts(),
@@ -303,12 +303,12 @@ def test_a_compaction_does_not_bury_the_error_it_landed_on(tmp_path):
 
 
 def test_a_typed_path_is_a_prompt_not_a_command(tmp_path):
-    """Boss pastes absolute paths as whole messages. The bookkeeping test is a
+    """The user pastes absolute paths as whole messages. The bookkeeping test is a
     closed list of tags for this reason — `startswith('/')` would read a real
     prompt as an echo and draw a working session at rest."""
     p = _transcript(tmp_path,
                     _line("assistant", [{"type": "text", "text": "done."}]),
-                    _user_str("/Users/jarvis/.claude/projects/x.jsonl"))
+                    _user_str("/Users/x/.claude/projects/x.jsonl"))
     assert board._turn_sampled(p, [os.getpid()]) == "working"
 
 
@@ -466,7 +466,7 @@ def test_a_growing_transcript_still_reads_as_a_turn_in_flight(tmp_path):
 
 
 def test_a_typed_prompt_owes_a_reply_however_long_it_waits(tmp_path):
-    """The clock is on tool results ONLY. A prompt Boss typed is owed a reply
+    """The clock is on tool results ONLY. A prompt the user typed is owed a reply
     no matter how long claude has been thinking — that row stays working."""
     p = _transcript(tmp_path,
                     _line("user", [{"type": "text", "text": "do it"}],
@@ -486,7 +486,7 @@ def test_open_tool_use_with_young_child_is_working(tmp_path):
         child.wait()
 
 
-def test_open_tool_use_without_child_is_waiting_on_boss(tmp_path):
+def test_open_tool_use_without_child_is_waiting_on_the_user(tmp_path):
     # Permission prompt / AskUserQuestion: tool_use at the tail, nothing
     # executing underneath. That's waiting, not working.
     p = _transcript(tmp_path,
@@ -522,7 +522,7 @@ def test_api_error_tail_is_error(tmp_path):
 
 
 def test_a_message_past_the_error_clears_it(tmp_path):
-    # Boss typed on — the tail moved past the failure, red dies by itself.
+    # The user typed on — the tail moved past the failure, red dies by itself.
     p = _transcript(tmp_path,
                     _error_line(ts=_ts(-60)),
                     _line("user", [{"type": "text", "text": "try again"}]))
@@ -677,7 +677,7 @@ def test_is_live_consults_the_tail_when_the_transcript_goes_quiet(tmp_path):
 # One path signals the process holding a session (`end_raw_holders`), shared by
 # the close endpoint and by the takeover that moves a session onto the phone.
 # The takeover's whole correctness is an ordering: the window first, the kill
-# second — so a take that can't get a terminal costs Boss nothing.
+# second — so a take that can't get a terminal costs the user nothing.
 
 import signal as _signal
 
@@ -937,9 +937,9 @@ def test_a_headless_process_has_no_tty():
 
 # ── a live window never adopts a dead session's transcript ──────────────────
 #
-# The incident this section exists for: Boss closed a chat, and the Jarvis
-# window still open beside it took over the closed session's transcript. On his
-# phone the closed session sat in On Mac with a working dot, and the session he
+# The incident this section exists for: The user closed a chat, and the Nova
+# window still open beside it took over the closed session's transcript. On their
+# phone the closed session sat in On Mac with a working dot, and the session they
 # was actually typing into was nowhere on the board. Both facts wrong, from one
 # rule: "the newest transcript born since this process started" answers a
 # question about the workspace, not about this process.
@@ -1035,14 +1035,14 @@ def test_the_close_path_and_the_board_name_the_same_owner(ws, monkeypatch):
 #
 # Claude Code writes the JSONL on the **first message**, not at startup. Every
 # session spawned from the phone therefore runs at an empty prompt — process
-# up, window on the desk, no transcript — until Boss types into it. The board
+# up, window on the desk, no transcript — until the user types into it. The board
 # has to place that row somewhere sane the whole time, or the phone shows a
 # nameless session with no age and no position.
 
 
 def test_a_session_with_no_transcript_is_dated_by_its_process(ws, monkeypatch):
     """The live bug: a phone-spawned session sat three minutes between
-    `claude` starting and Boss's first message, and every board frame in that
+    `claude` starting and the user's first message, and every board frame in that
     window carried `spawned: ""` — so the row had no age and no place in a
     board sorted by spawn. The process is the only thing that knows the
     session exists yet; date the row by it."""
@@ -1096,14 +1096,14 @@ def test_history_rows_carry_spawned(ws, monkeypatch):
     loc, pd = ws
     _mk(pd, "hist0001")
     monkeypatch.setattr(board, "project_dir_to_agent",
-                        lambda name: ("jarvis", "chat"))
+                        lambda name: ("nova", "chat"))
     monkeypatch.setattr(board, "get_session_summary",
                         lambda f: {"total_tokens": 3, "last_context": 1})
     _birth_times(monkeypatch, {"hist0001": -3600})
     _windows(monkeypatch, attached=set())
     _procs(monkeypatch, [])
 
-    rows = board.list_sessions("jarvis")
+    rows = board.list_sessions("nova")
     assert [r["session_id"] for r in rows] == ["hist0001"]
     born = _dt.datetime.fromisoformat(rows[0]["spawned"]).timestamp()
     assert abs(born - (time.time() - 3600)) < 5, "spawned is the transcript's birth"
@@ -1219,7 +1219,7 @@ def test_tty_map_failure_raises_instead_of_blinding_every_session(monkeypatch):
 # where `last_reply` comes from) and again, further down, for the turn state.
 # The turn's final text landing between the two reads gave the watcher a
 # fresh idle married to the PREVIOUS turn's answer — and the done-push told
-# Boss something he had already been told. The reply must never be older than
+# The user something they had already been told. The reply must never be older than
 # the verdict it ships with.
 
 
@@ -1260,7 +1260,7 @@ def test_a_closed_turn_reports_the_reply_its_verdict_saw(ws, tmp_path,
 
 # ── Coverage: a process spending tokens is a row, no exceptions ────────────
 #
-# Boss's rule, in his words: "if it's using tokens, it must be shown." The
+# The user's rule, in their words: "if it's using tokens, it must be shown." The
 # board used to keep an unidentified process only `if window`, so three real
 # shapes ran on this Mac while the app showed nothing: a raw `claude` in a
 # detached tmux, a headless worker whose argv carries no sid, and every Codex
@@ -1346,7 +1346,7 @@ def test_a_managed_pane_names_its_own_codex_process(ws, monkeypatch):
     loc, _ = ws
     _windows(monkeypatch, attached=set())
     sid = "aaaa0001-1111-2222-3333-444444444444"
-    _reg(monkeypatch, {sid: {"agent": "jarvis", "engine": "codex",
+    _reg(monkeypatch, {sid: {"agent": "nova", "engine": "codex",
                              "name": "", "transcript": ""}})
     _procs(monkeypatch, [_raw(13, loc) | {"tty": "/dev/ttys002",
                                           "engine": "codex"}])
@@ -1367,7 +1367,7 @@ def test_pids_holding_resolves_a_codex_pane(ws, monkeypatch):
     loc, _ = ws
     _windows(monkeypatch, attached=set())
     sid = "aaaa0001-1111-2222-3333-444444444444"
-    _reg(monkeypatch, {sid: {"agent": "jarvis", "engine": "codex"}})
+    _reg(monkeypatch, {sid: {"agent": "nova", "engine": "codex"}})
     _procs(monkeypatch, [_raw(13, loc) | {"tty": "/dev/ttys002",
                                           "engine": "codex"}])
 
@@ -1376,7 +1376,7 @@ def test_pids_holding_resolves_a_codex_pane(ws, monkeypatch):
 
 # ── Correlation may only name what the process could have written ─────────
 #
-# Boss's report: a blank card in Active, no agent, no messages, 188k ctx —
+# The user's report: a blank card in Active, no agent, no messages, 188k ctx —
 # the 01:30 social-control cron round, which had exited at 01:57. The comment
 # above ("Codex ... can NEVER be named that way") was the wrong half of the
 # truth. `correlate_raw` does not ask whether THIS process wrote the file; it
@@ -1418,7 +1418,7 @@ def test_the_pane_keeps_its_codex_when_a_stray_transcript_sits_beside_it(
     _mk(pd, "dead0001")
     _windows(monkeypatch, attached=set())
     sid = "aaaa0001-1111-2222-3333-444444444444"
-    _reg(monkeypatch, {sid: {"agent": "jarvis", "engine": "codex"}})
+    _reg(monkeypatch, {sid: {"agent": "nova", "engine": "codex"}})
     _procs(monkeypatch, [_raw(13, loc) | {"tty": "/dev/ttys002",
                                           "engine": "codex"}])
 
@@ -1499,12 +1499,12 @@ def test_a_pane_that_closes_mid_scan_does_not_leave_a_managed_row(
     session that ends between the two reads puts a sid in `procs` that `reg`
     no longer has. `managed: True` was hardcoded on codex rows, so that race
     published a card claiming a tmux nobody could observe — exactly the shape
-    Boss saw. The row may be wrong about being alive; it must not be wrong
+    the user saw. The row may be wrong about being alive; it must not be wrong
     about what holds it."""
     from jstack_host import managed
     loc, _ = ws
     sid = "aaaa0001-1111-2222-3333-444444444444"
-    entry = {sid: {"agent": "jarvis", "engine": "codex"}}
+    entry = {sid: {"agent": "nova", "engine": "codex"}}
     reads = []
 
     def registry():
@@ -1558,7 +1558,7 @@ def test_a_codex_row_never_claims_a_turn_verdict(ws, monkeypatch):
     loc, _ = ws
     sid = "bbbb0002-1111-2222-3333-444444444444"
     monkeypatch.setattr(managed, "open_registry",
-                        lambda: {sid: {"agent": "jarvis", "engine": "codex"}})
+                        lambda: {sid: {"agent": "nova", "engine": "codex"}})
     monkeypatch.setattr(managed, "attached_names", lambda: set())
     _windows(monkeypatch, attached=set())
     _procs(monkeypatch, [_raw(22, loc) | {"tty": "/dev/ttys002",
@@ -1574,7 +1574,7 @@ def test_a_codex_row_never_claims_a_turn_verdict(ws, monkeypatch):
 # The timeline's third axis, read onto every board row. What is guarded here is
 # the read contract, not the vocabulary: an unreachable or absent store must
 # cost the tags and never the board, because a card that fails to render is a
-# session Boss cannot reach from his phone.
+# session the user cannot reach from their phone.
 
 def _tag_db(tmp_path, rows=(), broken=False):
     """A timeline store holding `rows` of (session_id, tag)."""
@@ -1702,11 +1702,11 @@ def test_the_scan_carries_the_argv_title_onto_the_session_row(ws, monkeypatch):
     _windows(monkeypatch, attached=set())
     _procs(monkeypatch, [
         {"pid": 10, "session_id": "bbbb0001", "location": loc, "source": "cli-pipe",
-         "tty": None, "uptime_minutes": 1, "window_name": "jarvis - #6",
+         "tty": None, "uptime_minutes": 1, "window_name": "nova - #6",
          "model": "opus"},
     ])
     sessions, orphans = board._proc_scan()
-    assert sessions["bbbb0001"]["name"] == "jarvis - #6"
+    assert sessions["bbbb0001"]["name"] == "nova - #6"
     assert sessions["bbbb0001"]["model"] == "opus"
     assert orphans == [], "an identified worker must never also be an orphan"
 
@@ -1720,18 +1720,18 @@ def test_a_resume_that_omits_the_title_does_not_blank_it(ws, monkeypatch):
     _windows(monkeypatch, attached=set())
     _procs(monkeypatch, [
         {"pid": 10, "session_id": "bbbb0002", "location": loc, "source": "cli-pipe",
-         "tty": None, "uptime_minutes": 9, "window_name": "jarvis - #6",
+         "tty": None, "uptime_minutes": 9, "window_name": "nova - #6",
          "model": "opus"},
         {"pid": 11, "session_id": "bbbb0002", "location": loc, "source": "cli-pipe",
          "tty": None, "uptime_minutes": 1, "window_name": "", "model": ""},
     ])
     sessions, _ = board._proc_scan()
-    assert sessions["bbbb0002"]["name"] == "jarvis - #6"
+    assert sessions["bbbb0002"]["name"] == "nova - #6"
     assert sessions["bbbb0002"]["model"] == "opus"
 
 
 def test_a_worker_row_shows_its_argv_title_with_no_registry(ws, monkeypatch):
-    """The regression, at the surface Boss actually looks at. `open_registry`
+    """The regression, at the surface the user actually looks at. `open_registry`
     is emptied here on purpose — that is exactly what it answers for a headless
     run, and the title still has to arrive."""
     from jstack_host import managed
@@ -1741,10 +1741,10 @@ def test_a_worker_row_shows_its_argv_title_with_no_registry(ws, monkeypatch):
     monkeypatch.setattr(managed, "open_registry", lambda: {})
     _procs(monkeypatch, [
         {"pid": 10, "session_id": "bbbb0003", "location": loc, "source": "cli-pipe",
-         "tty": None, "uptime_minutes": 1, "window_name": "jarvis - #6",
+         "tty": None, "uptime_minutes": 1, "window_name": "nova - #6",
          "model": "opus"},
     ])
     row = next(r for r in board.active_sessions() if r["session_id"] == "bbbb0003")
-    assert row["window_name"] == "jarvis - #6"
+    assert row["window_name"] == "nova - #6"
     assert row["model"] == "opus"
     assert row["hold"] == "headless", "the shape this had to work for"

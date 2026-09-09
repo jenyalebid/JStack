@@ -79,7 +79,7 @@ def test_download_with_nothing_published_is_404(client, release_dir):
 
 # ── A host that is not a publisher at all
 #
-# This is the one that cost Boss a build. The work Mac runs the standalone
+# This is the one that cost the user a build. A leaf runs the standalone
 # host, so the app on it asked *itself* for updates, got the same empty a
 # home host gives before its first release, and drew "Up to date" on build 34
 # while 35 sat on the machine that builds them.

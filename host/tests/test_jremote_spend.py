@@ -45,10 +45,10 @@ DAILY = {
     "autonomous_pct": 19.5,
     "catch_all_sessions": 0,
     "categories": [
-        {"category": "chat", "label": "Boss chat", "kind": "interactive",
+        {"category": "chat", "label": "Main chat", "kind": "interactive",
          "pct": 80.5, "total": 209_200_000, "output": 900_000,
          "cache_read": 200_000_000, "sub_tokens": 12_000, "turns": 310,
-         "sessions": 3, "agents": [{"agent": "mario", "total": 209_200_000}]},
+         "sessions": 3, "agents": [{"agent": "atlas", "total": 209_200_000}]},
         {"category": "social-control", "label": "Social · control",
          "kind": "autonomous", "pct": 12.9, "total": 33_600_000,
          "output": 400_000, "cache_read": 30_000_000, "sub_tokens": 0,
@@ -195,7 +195,7 @@ def test_live_route_answers_off_the_real_machine(client):
     The shape is asserted, not the numbers — a quiet day is legitimately zero.
     This is the half a mocked test cannot cover: that `spend.py` still
     returns the keys this route reaches into, so a rename there surfaces here
-    rather than as an empty section on Boss's phone.
+    rather than as an empty section on the user's phone.
     """
     body = client.get("/api/jremote/v1/usage/spend").json()
     assert set(body) == {"day", "total", "output", "sessions", "autonomous_pct",

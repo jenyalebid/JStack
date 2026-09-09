@@ -713,7 +713,7 @@ def host_id() -> str:
 
     That last case is the one that bites. Local-first routing wants to prefer
     loopback whenever this Mac is itself a host, but an app configured for the
-    work Mac and *running* on the dashboard Mac would then quietly draw the
+    second host and *running* on this one would then quietly draw the
     wrong machine's board — every session real, none of them the ones asked
     for. Comparing ids is what makes that impossible.
 

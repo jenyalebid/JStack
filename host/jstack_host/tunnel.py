@@ -72,7 +72,7 @@ def can_pair() -> bool:
     Absence, not failure. Answering on the script's presence was right while
     only hubs carried it and became wrong the moment the payload did: every
     leaf would have offered a pairing button that could only fail, on a file
-    it has no business owning. Before either, the work Mac's Settings showed
+    it has no business owning. Before either, a leaf's Settings showed
     `cannot read the pairing script at …/wg_peer.py` — a missing-file error
     for a file that was never meant to be there.
     """

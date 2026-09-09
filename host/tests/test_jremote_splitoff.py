@@ -20,7 +20,7 @@ from jstack_host import auth, managed
 
 # A project key that maps back to a real, existing cwd — _find_session_cwd
 # requires the decoded path to exist on disk.
-KEY = "-Users-jarvis-Agents-Jarvis-chat"
+KEY = "-Users-nova-Agents-Nova-chat"
 SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000"
 
 
@@ -73,10 +73,10 @@ def test_splitoff_dubs_and_opens_managed(client, home, opened):
     assert all(row["sessionId"] == SID for row in src_rows)
 
     # The copy opened managed, resuming its own transcript, in the source cwd.
-    assert opened == [(new_sid, "/Users/jarvis/Agents/Jarvis/chat",
+    assert opened == [(new_sid, "/Users/x/Agents/Nova/chat",
                        {"resume": True})]
     # Registered under the workspace's agent — the board shows a CLI row.
-    assert managed._reg_load()[new_sid] == {"agent": "jarvis"}
+    assert managed._reg_load()[new_sid] == {"agent": "nova"}
 
 
 def test_splitoff_without_transcript_404s(client, home, opened):

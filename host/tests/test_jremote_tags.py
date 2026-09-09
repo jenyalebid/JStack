@@ -399,7 +399,7 @@ def test_an_unminted_carried_tag_is_refused_before_the_spawn(client, vocabulary,
 def test_a_filing_that_fails_does_not_cost_the_session(client, spawn_env,
                                                        monkeypatch, tmp_path):
     """By the time the filing runs the chat is up. A refusal from the writer
-    is logged and swallowed — raising here would show Boss an error for a
+    is logged and swallowed — raising here would show the user an error for a
     session that is running fine."""
     binary, _ = _vocabulary_and_recorder(tmp_path, ["infra"], rc=1)
     monkeypatch.setattr(timeline, "log_event_bin", lambda: binary)
@@ -448,8 +448,8 @@ def reg(tmp_path, monkeypatch):
 
 
 def test_registry_records_the_pin(reg):
-    managed.record_open("s1", "jarvis", tag="jremote")
-    assert json.loads(reg.read_text())["s1"] == {"agent": "jarvis",
+    managed.record_open("s1", "nova", tag="jremote")
+    assert json.loads(reg.read_text())["s1"] == {"agent": "nova",
                                                  "tag": "jremote"}
 
 
@@ -459,25 +459,25 @@ def test_reopen_keeps_the_pin_the_engine_and_the_model(reg):
     knows. A plain overwrite drops three facts the spawn is the only witness
     to: a reopened Codex row would relabel itself claude, and a pinned session
     would come back up reading its seat's history instead of its subject's."""
-    managed.record_open("s1", "jarvis", engine="codex", model="gpt-5",
+    managed.record_open("s1", "nova", engine="codex", model="gpt-5",
                         tag="jremote")
-    managed.record_open("s1", "jarvis")          # the reopen
+    managed.record_open("s1", "nova")          # the reopen
     assert json.loads(reg.read_text())["s1"] == {
-        "agent": "jarvis", "engine": "codex", "model": "gpt-5",
+        "agent": "nova", "engine": "codex", "model": "gpt-5",
         "tag": "jremote"}
 
 
 def test_an_explicit_pin_still_wins(reg):
-    managed.record_open("s1", "jarvis", tag="jremote")
-    managed.record_open("s1", "jarvis", tag="infra")
+    managed.record_open("s1", "nova", tag="jremote")
+    managed.record_open("s1", "nova", tag="infra")
     assert json.loads(reg.read_text())["s1"]["tag"] == "infra"
 
 
 def test_an_unpinned_session_records_no_tag_key(reg):
     """Existing registry entries keep their exact shape — same contract the
     engine field has, so a rollback reads the file unchanged."""
-    managed.record_open("s2", "brian")
-    assert json.loads(reg.read_text())["s2"] == {"agent": "brian"}
+    managed.record_open("s2", "orin")
+    assert json.loads(reg.read_text())["s2"] == {"agent": "orin"}
 
 
 # ── the pin as the agent actually receives it ───────────────────────────────
@@ -552,7 +552,7 @@ def test_reopen_reads_the_pin_back_from_the_registry(pane):
     """No reopen path passes a tag — they all call `open_managed(resume=True)`
     with a sid. Without the read-back the same board row would come up on its
     seat's history, silently changing what it knows."""
-    managed.record_open(SID, "jarvis", tag="jremote")
+    managed.record_open(SID, "nova", tag="jremote")
     managed.open_managed(SID, os.path.expanduser("~"), resume=True)
     assert "export JSTACK_TIMELINE_TAG=jremote;" in _line(pane)
 

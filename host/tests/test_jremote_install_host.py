@@ -71,7 +71,7 @@ def launchctl(monkeypatch):
 
 @pytest.fixture
 def standalone(tmp_path, monkeypatch):
-    """A host with its own state dir and no J&J tree assumptions."""
+    """A host with its own state dir and no embedding tree assumptions."""
     state = tmp_path / "state"
     monkeypatch.setenv("JREMOTE_HOST_PROFILE", "default")
     monkeypatch.setenv("JREMOTE_STATE_DIR", str(state))
@@ -155,14 +155,14 @@ def test_the_agent_resolves_the_way_the_installer_did(monkeypatch, tmp_path):
     different path, finds no token, and serves an instance nobody can log into.
     """
     monkeypatch.setenv("JREMOTE_TOKEN_PATH", str(tmp_path / "tok"))
-    monkeypatch.setenv("JREMOTE_HOST_NAME", "Work Mac")
+    monkeypatch.setenv("JREMOTE_HOST_NAME", "Laptop")
     monkeypatch.setenv("SOME_OTHER_THING", "not ours")
 
     env = plistlib.loads(install_host.render_plist(
         logs=tmp_path))["EnvironmentVariables"]
 
     assert env["JREMOTE_TOKEN_PATH"] == str(tmp_path / "tok")
-    assert env["JREMOTE_HOST_NAME"] == "Work Mac"
+    assert env["JREMOTE_HOST_NAME"] == "Laptop"
     assert "SOME_OTHER_THING" not in env
 
 

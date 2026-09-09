@@ -104,20 +104,20 @@ def test_repos_are_the_checkouts_beside_the_agents(root, tmp_path):
     — and a checkout is a directory holding a `.git` directory. A linked
     worktree (`.git` file) is its main checkout's history and is skipped; a
     package checkout inside a repo's build tree is not ours."""
-    for name in ("WBIS-iOS", "Other"):
+    for name in ("Widget-iOS", "Other"):
         (tmp_path / name / ".git").mkdir(parents=True)
-    (tmp_path / "WBIS-iOS" / "build" / "pkg" / ".git").mkdir(parents=True)
-    (tmp_path / "WBIS-iOS-issue-42").mkdir()
-    (tmp_path / "WBIS-iOS-issue-42" / ".git").write_text("gitdir: ../WBIS-iOS/.git/worktrees/x")
+    (tmp_path / "Widget-iOS" / "build" / "pkg" / ".git").mkdir(parents=True)
+    (tmp_path / "Widget-iOS-issue-42").mkdir()
+    (tmp_path / "Widget-iOS-issue-42" / ".git").write_text("gitdir: ../Widget-iOS/.git/worktrees/x")
     assert hostenv.profile().repo_root() == tmp_path
-    assert {p.name for p in hostenv.repos()} == {"WBIS-iOS", "Other"}
+    assert {p.name for p in hostenv.repos()} == {"Widget-iOS", "Other"}
 
 
 def test_repo_owner_comes_from_the_registry_with_spelling_folded(root, tmp_path):
-    (tmp_path / "WBIS-iOS" / ".git").mkdir(parents=True)
-    (root / "WBIS" / "chat").mkdir(parents=True)
-    _write(root, {"wbis": {"repos": ["WBIS_iOS"]}})
-    assert hostenv.repo_agent(tmp_path / "WBIS-iOS") == "wbis"
+    (tmp_path / "Widget-iOS" / ".git").mkdir(parents=True)
+    (root / "Widget" / "chat").mkdir(parents=True)
+    _write(root, {"widget": {"repos": ["Widget_iOS"]}})
+    assert hostenv.repo_agent(tmp_path / "Widget-iOS") == "widget"
     assert hostenv.repo_agent(tmp_path / "Other") == ""
 
 

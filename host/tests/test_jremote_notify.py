@@ -1,7 +1,7 @@
 """Done-processing pushes: edges, mutes, and already-looking suppression.
 
 The contract: a managed session's working dot going out — after a stretch long
-enough to mean work — pushes to the phone, unless Boss is already in that
+enough to mean work — pushes to the phone, unless the user is already in that
 thread (PTY attached / app foregrounded on it) or muted the agent. Everything
 else on the board (raw windows, headless workers, quick conversational
 replies, sessions that vanish) stays silent.
@@ -28,7 +28,7 @@ def events_file(monkeypatch, tmp_path):
 
 # ── helpers ──
 
-def _row(sid="s1", *, managed=True, live=False, agent="jarvis", name="Jarvis",
+def _row(sid="s1", *, managed=True, live=False, agent="nova", name="Nova",
          reply="all done", turn=None, last_activity="t0", path="",
          prompt="what did you ship"):
     """A board row. `turn` mirrors `live` unless set apart — the engine keys on
@@ -148,7 +148,7 @@ def test_working_to_idle_after_real_work_fires(clock, fired):
     notify_watch.observe([_row(live=False)])
     assert len(fired) == 1
     assert fired[0]["sid"] == "s1"
-    assert "Jarvis" in fired[0]["title"]
+    assert "Nova" in fired[0]["title"]
     assert fired[0]["body"] == "all done"
 
 
@@ -166,7 +166,7 @@ def test_a_stop_that_is_a_wait_says_so(clock, fired):
 
 
 def test_a_quick_reply_is_conversation_not_work(clock, fired):
-    """Under MIN_WORKING the ping would land while Boss is mid-conversation."""
+    """Under MIN_WORKING the ping would land while the user is mid-conversation."""
     notify_watch.observe([_row(live=False)])
     notify_watch.observe([_row(live=True)])
     clock(notify_watch.MIN_WORKING / 2)
@@ -240,28 +240,28 @@ def test_two_cycles_fire_twice(clock, fired):
 def test_push_reaches_every_registered_device(store):
     notify.register("tok-a")
     notify.register("tok-b")
-    assert notify.notify("s1", "jarvis", title="t", body="b") is True
+    assert notify.notify("s1", "nova", title="t", body="b") is True
     assert {s["token"] for s in store} == {"tok-a", "tok-b"}
     assert all(s["session_id"] == "s1" for s in store)
 
 
 def test_muted_agent_is_silent_across_seats(store):
-    """Muting keys on the base agent: 'jarvis-chat' from the roster mutes
-    board rows carrying 'jarvis'."""
+    """Muting keys on the base agent: 'nova-chat' from the roster mutes
+    board rows carrying 'nova'."""
     notify.register("tok")
-    notify.set_muted("jarvis-chat", True)
-    assert notify.notify("s1", "jarvis", title="t", body="b") is False
-    notify.set_muted("jarvis", False)
-    assert notify.notify("s1", "jarvis", title="t", body="b") is True
+    notify.set_muted("nova-chat", True)
+    assert notify.notify("s1", "nova", title="t", body="b") is False
+    notify.set_muted("nova", False)
+    assert notify.notify("s1", "nova", title="t", body="b") is True
 
 
 def test_pty_attached_thread_is_silent(store):
-    """Boss is literally looking at the terminal — no push."""
+    """The user is literally looking at the terminal — no push."""
     notify.register("tok")
     notify.mark_attached("s1")
-    assert notify.notify("s1", "jarvis", title="t", body="b") is False
+    assert notify.notify("s1", "nova", title="t", body="b") is False
     notify.unmark_attached("s1")
-    assert notify.notify("s1", "jarvis", title="t", body="b") is True
+    assert notify.notify("s1", "nova", title="t", body="b") is True
 
 
 def test_reconnect_overlap_keeps_the_mark(store):
@@ -271,38 +271,38 @@ def test_reconnect_overlap_keeps_the_mark(store):
     notify.mark_attached("s1")     # old connection
     notify.mark_attached("s1")     # reconnect
     notify.unmark_attached("s1")   # old teardown
-    assert notify.notify("s1", "jarvis", title="t", body="b") is False
+    assert notify.notify("s1", "nova", title="t", body="b") is False
 
 
 def test_foregrounded_thread_is_silent_until_stale(store, monkeypatch):
     notify.register("tok")
     notify.set_foreground("s1")
-    assert notify.notify("s1", "jarvis", title="t", body="b") is False
+    assert notify.notify("s1", "nova", title="t", body="b") is False
     # other threads still push
-    assert notify.notify("s2", "jarvis", title="t", body="b") is True
+    assert notify.notify("s2", "nova", title="t", body="b") is True
     # a stale heartbeat means the app backgrounded
     d = notify._load()
     d["fg_at"] = time.time() - notify._FG_TTL - 1
     notify._save(d)
-    assert notify.notify("s1", "jarvis", title="t", body="b") is True
+    assert notify.notify("s1", "nova", title="t", body="b") is True
 
 
 def test_no_devices_means_no_push(store):
-    assert notify.notify("s1", "jarvis", title="t", body="b") is False
+    assert notify.notify("s1", "nova", title="t", body="b") is False
 
 
 def test_unread_marks_finished_sessions_and_badge_is_their_count(store):
     notify.register("tok")
-    notify.notify("s1", "jarvis", title="t", body="b")
-    notify.notify("s2", "jarvis", title="t", body="b")
+    notify.notify("s1", "nova", title="t", body="b")
+    notify.notify("s2", "nova", title="t", body="b")
     assert notify.unread_sids() == {"s1", "s2"}
     assert store[-1]["badge"] == 2
 
 
 def test_opening_the_thread_clears_only_that_session(store):
     notify.register("tok")
-    notify.notify("s1", "jarvis", title="t", body="b")
-    notify.notify("s2", "jarvis", title="t", body="b")
+    notify.notify("s1", "nova", title="t", body="b")
+    notify.notify("s2", "nova", title="t", body="b")
     notify.set_foreground("s1")
     assert notify.unread_sids() == {"s2"}
     notify.set_foreground(None)          # backgrounding clears nothing
@@ -311,7 +311,7 @@ def test_opening_the_thread_clears_only_that_session(store):
 
 def test_pty_attach_is_interaction(store):
     notify.register("tok")
-    notify.notify("s1", "jarvis", title="t", body="b")
+    notify.notify("s1", "nova", title="t", body="b")
     notify.mark_attached("s1")
     assert notify.unread_sids() == set()
 
@@ -319,8 +319,8 @@ def test_pty_attach_is_interaction(store):
 def test_muted_agent_gets_the_dot_but_no_buzz(store):
     """Mute means don't buzz me — the quiet unread state still shows."""
     notify.register("tok")
-    notify.set_muted("jarvis", True)
-    assert notify.notify("s1", "jarvis", title="t", body="b") is False
+    notify.set_muted("nova", True)
+    assert notify.notify("s1", "nova", title="t", body="b") is False
     assert notify.unread_sids() == {"s1"}
     assert store == []
 
@@ -328,7 +328,7 @@ def test_muted_agent_gets_the_dot_but_no_buzz(store):
 def test_already_looking_means_never_unread(store):
     notify.register("tok")
     notify.set_foreground("s1")
-    assert notify.notify("s1", "jarvis", title="t", body="b") is False
+    assert notify.notify("s1", "nova", title="t", body="b") is False
     assert notify.unread_sids() == set()
 
 
@@ -378,15 +378,15 @@ def test_a_quick_exchange_still_clears_unread(clock, fired, cleared):
     notify_watch.observe([_row(live=False, prompt="p1")])   # fires, marks p1
     assert len(fired) == 1
     before = len(cleared)
-    notify_watch.observe([_row(live=False, prompt="p2")])   # he typed again
+    notify_watch.observe([_row(live=False, prompt="p2")])   # they typed again
     assert cleared[before:] == ["s1"]
 
 
 def test_a_transcript_write_with_no_prompt_keeps_the_mark(clock, fired, cleared):
     """The bug this engine was losing answers to: an idle session's JSONL is
     rewritten with no new content — no prompt, no turn, nothing typed — and
-    the mark used to die with the mtime, greying out a session Boss had never
-    opened. Only a prompt is evidence he looked."""
+    the mark used to die with the mtime, greying out a session the user had never
+    opened. Only a prompt is evidence they looked."""
     notify_watch.observe([_row(live=True, prompt="p1")])
     clock(30)
     notify_watch.observe([_row(live=False, prompt="p1")])   # fires, marks p1
@@ -400,7 +400,7 @@ def test_a_transcript_write_with_no_prompt_keeps_the_mark(clock, fired, cleared)
 
 def test_an_unreadable_prompt_keeps_the_mark(clock, fired, cleared):
     """A blank prompt is the board failing to read the transcript this tick,
-    not Boss typing. Clearing on it would drop the dot on a bad pass."""
+    not the user typing. Clearing on it would drop the dot on a bad pass."""
     notify_watch.observe([_row(live=True, prompt="p1")])
     clock(30)
     notify_watch.observe([_row(live=False, prompt="p1")])   # fires, marks p1
@@ -456,7 +456,7 @@ def test_a_reply_ending_in_space_is_still_the_previous_turns_reply(
     """The board hands over a reply cut at 120 characters, so roughly one in
     six ends mid-space. Comparing the relay's stripped text against an
     unstripped baseline made those replies unequal to themselves, and the
-    answer Boss had just been pushed came straight back as this turn's
+    answer the user had just been pushed came straight back as this turn's
     progress — the whole of the identical-body traffic in the events log."""
     notify_watch.observe([_row(live=False, reply="old answer ")])
     notify_watch.observe([_row(live=True, reply="old answer ")])
@@ -525,7 +525,7 @@ def test_unmanaged_rows_never_relay_progress(clock, fired, progressed):
 
 def test_progress_pushes_without_unread_or_badge(store):
     notify.register("tok")
-    assert notify.progress("s1", "jarvis", title="t", body="b") is True
+    assert notify.progress("s1", "nova", title="t", body="b") is True
     assert notify.unread_sids() == set()
     assert store[-1]["badge"] is None
     assert store[-1]["collapse_id"] == "prog-s1"
@@ -533,37 +533,37 @@ def test_progress_pushes_without_unread_or_badge(store):
 
 def test_progress_toggle_mutes_only_progress(store):
     notify.register("tok")
-    notify.set_progress_muted("jarvis-chat", True)
-    assert notify.progress("s1", "jarvis", title="t", body="b") is False
+    notify.set_progress_muted("nova-chat", True)
+    assert notify.progress("s1", "nova", title="t", body="b") is False
     assert notify.unread_sids() == set()      # no quiet dot either — an FYI
-    assert notify.notify("s1", "jarvis", title="t", body="b") is True
-    notify.set_progress_muted("jarvis", False)
-    assert notify.progress("s2", "jarvis", title="t", body="b") is True
+    assert notify.notify("s1", "nova", title="t", body="b") is True
+    notify.set_progress_muted("nova", False)
+    assert notify.progress("s2", "nova", title="t", body="b") is True
 
 
 def test_full_mute_silences_progress_too(store):
     notify.register("tok")
-    notify.set_muted("jarvis", True)
-    assert notify.progress("s1", "jarvis", title="t", body="b") is False
+    notify.set_muted("nova", True)
+    assert notify.progress("s1", "nova", title="t", body="b") is False
 
 
-def test_progress_suppressed_while_boss_is_looking(store):
+def test_progress_suppressed_while_the_user_is_looking(store):
     notify.register("tok")
     notify.mark_attached("s1")
-    assert notify.progress("s1", "jarvis", title="t", body="b") is False
+    assert notify.progress("s1", "nova", title="t", body="b") is False
     notify.unmark_attached("s1")
     notify.set_foreground("s2")
-    assert notify.progress("s2", "jarvis", title="t", body="b") is False
-    assert notify.progress("s1", "jarvis", title="t", body="b") is True
+    assert notify.progress("s2", "nova", title="t", body="b") is False
+    assert notify.progress("s1", "nova", title="t", body="b") is True
 
 
 def test_prefs_endpoint_routes_scopes(store):
     from jstack_host import router as r
-    out = r.notify_set_prefs(r.MuteBody(agent_id="jarvis", muted=True,
+    out = r.notify_set_prefs(r.MuteBody(agent_id="nova", muted=True,
                                         scope="progress"))
-    assert out == {"muted_agents": [], "progress_muted_agents": ["jarvis"]}
-    out = r.notify_set_prefs(r.MuteBody(agent_id="jarvis", muted=True))
-    assert out["muted_agents"] == ["jarvis"]
+    assert out == {"muted_agents": [], "progress_muted_agents": ["nova"]}
+    out = r.notify_set_prefs(r.MuteBody(agent_id="nova", muted=True))
+    assert out["muted_agents"] == ["nova"]
     assert r.notify_get_prefs() == out
 
 
@@ -606,7 +606,7 @@ def test_progress_relay_records_an_event(clock, fired, progressed):
 
 
 def test_suppressed_push_still_records(clock, fired, monkeypatch):
-    """The whole point of recording at the source: Boss already looking
+    """The whole point of recording at the source: The user already looking
     silences the buzz, never the timeline."""
     monkeypatch.setattr(notify_watch.notify, "notify",
                         lambda *a, **kw: False)
@@ -620,8 +620,8 @@ def test_suppressed_push_still_records(clock, fired, monkeypatch):
 
 
 def test_since_cursor_is_exclusive():
-    events.record("s1", "jarvis", "done", "t", "one", True)
-    events.record("s1", "jarvis", "progress", "t", "two", False)
+    events.record("s1", "nova", "done", "t", "one", True)
+    events.record("s1", "nova", "progress", "t", "two", False)
     log = events.since("")
     assert [e["body"] for e in log] == ["one", "two"]
     newer = events.since(log[0]["ts"])
@@ -630,21 +630,21 @@ def test_since_cursor_is_exclusive():
 
 
 def test_prune_drops_only_expired_entries(monkeypatch):
-    events.record("s1", "jarvis", "done", "t", "old", True)
-    events.record("s1", "jarvis", "done", "t", "fresh", True)
+    events.record("s1", "nova", "done", "t", "old", True)
+    events.record("s1", "nova", "done", "t", "fresh", True)
     log = events.since("")
     # Backdate the first entry past retention, straight in the file.
     old = dict(log[0], ts="2000-01-01T00:00:00.000")
     events._FILE.write_text(
         json.dumps(old) + "\n" + json.dumps(log[1]) + "\n")
     monkeypatch.setattr(events, "_pruned", False)
-    events.record("s1", "jarvis", "done", "t", "newest", True)
+    events.record("s1", "nova", "done", "t", "newest", True)
     assert [e["body"] for e in events.since("")] == ["fresh", "newest"]
 
 
 def test_events_endpoint_serves_the_cursor():
     from jstack_host import router as r
-    events.record("s1", "jarvis", "done", "t", "one", True)
+    events.record("s1", "nova", "done", "t", "one", True)
     out = r.notify_events()
     assert [e["body"] for e in out["events"]] == ["one"]
     assert r.notify_events(since=out["events"][0]["ts"]) == {"events": []}
@@ -716,7 +716,7 @@ def test_timeline_derives_turns_at_push_cadence(transcript):
 
 def test_timeline_quick_turn_is_conversation(transcript):
     t0 = 1_700_000_000
-    sid = transcript([_u(t0, "hey"), _a(t0 + 3, "hey Boss")])
+    sid = transcript([_u(t0, "hey"), _a(t0 + 3, "hey the user")])
     assert events.timeline(sid) == []
 
 
@@ -734,10 +734,10 @@ def test_timeline_open_turn_ends_in_progress_not_done(transcript):
 def test_timeline_overlay_lands_pushed_and_inserts_waiting(transcript):
     t0 = 1_700_000_000
     sid = transcript([_u(t0, "go"), _a(t0 + 60, "all done")])
-    events.record(sid, "jarvis", "done", "t", "all done", True)
-    events.record(sid, "jarvis", "waiting", "t",
+    events.record(sid, "nova", "done", "t", "all done", True)
+    events.record(sid, "nova", "waiting", "t",
                   "Waiting on your OK to continue.", True)
-    events.record(sid, "jarvis", "progress", "t", "never derived", False)
+    events.record(sid, "nova", "progress", "t", "never derived", False)
     got = events.timeline(sid)
     kinds = [(e["kind"], e["pushed"]) for e in got]
     assert ("done", True) in kinds          # pushed flag landed on the twin
@@ -846,7 +846,7 @@ def test_a_turn_reopening_with_no_prompt_names_the_done_false(
 
 def test_a_prompt_after_the_done_leaves_it_alone(
         fired, clock, monkeypatch, tmp_path, capsys):
-    """An ordinary turn boundary: Boss typed, the marker was stamped, the
+    """An ordinary turn boundary: The user typed, the marker was stamped, the
     reopening is a real new turn. The overwhelming majority of edges."""
     d = _turn_dir(monkeypatch, tmp_path)
 
@@ -910,7 +910,7 @@ def _compacting(tmp_path):
 
 def test_a_local_command_reopening_is_not_a_false_done(
         fired, clock, monkeypatch, tmp_path, capsys):
-    """The first hit this audit ever logged, and it was wrong: Boss answered a
+    """The first hit this audit ever logged, and it was wrong: The user answered a
     real done with `/compact`, which reopens the turn without submitting a
     prompt — the same unmarked reopening a resumed turn leaves. An unmarked
     reopening is only evidence when a prompt was what could have marked it."""

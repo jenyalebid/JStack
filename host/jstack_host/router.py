@@ -136,7 +136,7 @@ def get_host():
     running on it; and two different Macs are each `127.0.0.1` to their own
     app. The grid needs to hold one row per *machine* across all of that, and
     local-first routing needs to know that the host answering on loopback is
-    the host it was asked for — otherwise an app configured for the work Mac
+    the host it was asked for — otherwise an app configured for another host
     and running on this one quietly draws the wrong board, every session real
     and none of them the ones asked for.
 
@@ -479,7 +479,7 @@ def app_mac_latest():
 
     `available` is whether there is a build to take. `publishes` is whether
     this machine is a place builds come from at all, and the two are not the
-    same answer: most hosts are somebody's laptop or work Mac running the
+    same answer: most hosts are somebody's laptop or desktop running the
     standalone host, and they have never built anything. Both used to say
     `{"available": false}`, which the app read as "up to date" — so a Mac that
     was itself a host asked the one machine that could not know, was told it

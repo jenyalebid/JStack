@@ -51,7 +51,7 @@ def test_inner_command_wraps_prelude_and_extra():
 
 
 def test_agent_base_resolution():
-    assert spawn.agent_base_for("/Users/jarvis/Agents/Jarvis/chat") == "jarvis"
+    assert spawn.agent_base_for("/Users/x/Agents/Nova/chat") == "nova"
     assert spawn.agent_base_for("/tmp/nowhere") == ""
 
 
@@ -64,11 +64,11 @@ def reg(tmp_path, monkeypatch):
 
 
 def test_record_open_stores_name(reg):
-    managed.record_open("s1", "jarvis", name="Handoff · X")
-    managed.record_open("s2", "brian")
+    managed.record_open("s1", "nova", name="Handoff · X")
+    managed.record_open("s2", "orin")
     d = json.loads(reg.read_text())
-    assert d["s1"] == {"agent": "jarvis", "name": "Handoff · X"}
-    assert d["s2"] == {"agent": "brian"}
+    assert d["s1"] == {"agent": "nova", "name": "Handoff · X"}
+    assert d["s2"] == {"agent": "orin"}
     managed.record_close("s1")
     assert "s1" not in json.loads(reg.read_text())
 

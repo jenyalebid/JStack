@@ -30,7 +30,7 @@ from jstack_host import managed, messages, router
 # ── history: GET /sessions/{sid} ──
 
 def test_booting_session_is_pending_not_an_error(monkeypatch):
-    """The one that put red text under Boss's working terminal."""
+    """The one that put red text under the user's working terminal."""
     monkeypatch.setattr(messages, "_find_session_file", lambda sid: None)
     monkeypatch.setattr(managed, "is_open", lambda sid: True)
 

@@ -173,7 +173,7 @@ def test_poke_from_another_thread_beats_the_tick(fast, monkeypatch):
 # turn ended, and marks the session unread as it does. Handing the phones that
 # frame BEFORE it ran shipped "the reply landed" — new card text, and a push
 # on its way — with `unread` still false, so the dot could not go orange until
-# the next tick. Boss saw the update and the notification arrive ahead of the
+# the next tick. The user saw the update and the notification arrive ahead of the
 # status circle that explains them. A consumer's verdict belongs in the frame
 # that carries its own cause.
 

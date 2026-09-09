@@ -71,7 +71,7 @@ def test_attach_to_a_session_with_no_transcript_is_ended_not_unknown(monkeypatch
     """An attach never answers "unknown sid" for a session that left no file.
 
     The two are indistinguishable on disk: a session closed before Claude Code
-    wrote its JSONL — every share-sheet spawn, until Boss types — looks exactly
+    wrote its JSONL — every share-sheet spawn, until the user types — looks exactly
     like a sid that never existed. Answering ValueError there sent the app 4404
     where 4411 was the truth, and 4404 leaves the window parked on a Reconnect
     banner instead of dismissing it: the window outlives the session it was

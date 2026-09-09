@@ -1,7 +1,7 @@
 """showdoc.py — a markdown file onto the screen the session is driven from.
 
-`/pict` renders a document on the Mac and Boss may be holding an iPad. These
-pin the three seams that decide whether he ever sees it: the link's shape, the
+`/pict` renders a document on the Mac and the user may be holding an iPad. These
+pin the three seams that decide whether they ever see it: the link's shape, the
 fence asked *before* a window opens (a doc outside it would open a window onto
 an error), and the routing — device driver gets the frame, everything else
 gets the desk, including every failure.
@@ -17,7 +17,7 @@ from jstack_host import showdoc
 # ── the link ──
 
 def test_doc_url_carries_the_path_not_the_text():
-    url = showdoc.doc_url("/Users/jarvis/Agents/A/s/pad/x.md", "x · pict")
+    url = showdoc.doc_url("/Users/x/Agents/A/s/pad/x.md", "x · pict")
     assert url.startswith("jremote://doc?")
     assert "path=%2FUsers%2Fjarvis%2FAgents%2FA%2Fs%2Fpad%2Fx.md" in url
     assert "title=x%20%C2%B7%20pict" in url
@@ -27,7 +27,7 @@ def test_doc_url_never_encodes_a_space_as_plus():
     """The app parses a plain URI query, where `+` is a literal plus — not
     the form-encoded space `urlencode` defaults to. A title arrived reading
     `chat+·+pict`, and a path with a space would have resolved to nothing."""
-    url = showdoc.doc_url("/Users/jarvis/Agents/A/my seat/pad/x.md", "a b")
+    url = showdoc.doc_url("/Users/x/Agents/A/my seat/pad/x.md", "a b")
     assert "+" not in url
     assert "my%20seat" in url and "title=a%20b" in url
 

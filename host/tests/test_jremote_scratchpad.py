@@ -11,7 +11,7 @@ descends, so a checkout in the pad costs one row and not its contents; one rel
 shape (a path relative to the pad, empty meaning the pad) names a file to fetch
 or delete and a folder to open, and can't escape; every session of a seat sees
 the same folder; Clear takes the folder it was pressed on and all of it;
-uploads land where the pane is pointed and come back marked as Boss's; every
+uploads land where the pane is pointed and come back marked as the user's; every
 route sits behind the bearer token.
 
 Ownership and the sweep are pinned in `test_seat_pads.py`, where the hook that
@@ -225,11 +225,11 @@ def test_clear_takes_the_folder_it_was_pressed_on_and_stops(pad):
 
 
 def test_clearing_the_pad_takes_the_whole_folder(pad):
-    """The pad's own Clear is Boss emptying his own folder — including what he
+    """The pad's own Clear is the user emptying their own folder — including what they
     put there, which is the one place the ownership asymmetry does not apply."""
     _plant(pad, "mine.log")
-    his = _plant(pad, "his.png")
-    scratchpad._mark_boss(his)
+    theirs = _plant(pad, "theirs.png")
+    scratchpad._mark_boss(theirs)
     _plant(pad, "repo/deep/x")
     assert scratchpad.clear_dir(pad) == 3
     assert list(pad.iterdir()) == []
@@ -278,8 +278,8 @@ def test_a_save_back_lands_on_the_original(pad):
     assert [f["name"] for f in scratchpad.list_dir(pad, "repo")["files"]] == ["shot.png"]
 
 
-def test_a_save_back_makes_it_his(pad):
-    """He edited it, so a sweep leaves it — whoever wrote the original."""
+def test_a_save_back_makes_it_theirs(pad):
+    """They edited it, so a sweep leaves it — whoever wrote the original."""
     p = _plant(pad, "shot.png", b"agent output")
     assert not scratchpad.is_boss(p)
     scratchpad.write_back(pad, "shot.png", b"marked up")
@@ -461,7 +461,7 @@ def test_agent_file_delete_and_clear(client, pad):
 
 
 def test_agent_files_clear_reaches_the_pad_itself(client, pad):
-    """The pad is a screen Boss stands on, so its Clear works like any
+    """The pad is a screen the user stands on, so its Clear works like any
     folder's — there is no level above it to protect."""
     _plant(pad, "a.txt")
     r = client.post(f"/api/jremote/v1/agents/{AGENT}/files/clear",

@@ -200,7 +200,7 @@ PEER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 def peer_name(name: str) -> str:
     """A device name → a name `wg_peer.py` will accept, or "".
 
-    Device names are what the user typed ("My Work Mac"); peer names are a
+    Device names are what the user typed ("My Laptop"); peer names are a
     filename and a config stanza key. Deriving one from the other keeps the
     enrolment to a single typed code — the alternative is asking whoever mints
     the code for a second, syntactically-constrained name they would have to

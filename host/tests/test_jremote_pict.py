@@ -125,7 +125,7 @@ def test_a_failed_render_leaves_nothing_behind_and_says_why(client, seat,
                'echo "half a document"\necho "no walk-up here" >&2\nexit 1\n')
     r = client.post(f"/api/jremote/v1/sessions/{SID}/pict")
     assert r.status_code == 500
-    # The renderer's own complaint, not a bare code — it is what tells Boss
+    # The renderer's own complaint, not a bare code — it is what tells the user
     # whether to retry or to go look at something.
     assert r.json()["detail"] == "no walk-up here"
     # A half-written render must never be readable as the answer.

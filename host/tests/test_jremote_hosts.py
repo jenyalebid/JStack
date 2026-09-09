@@ -75,7 +75,7 @@ def _mint(name="work-mac", kind=enrolment.KIND_HOST, created_by="", ttl=600):
 def test_a_host_row_carries_no_column_a_credential_could_sit_in(store):
     """The enforcement is the schema, not a convention. If a token column ever
     appears here, a stolen mirror stops being a map and becomes a key."""
-    store.upsert_host("host-key-aaaa", "Work Mac", "10.66.0.7", 9090)
+    store.upsert_host("host-key-aaaa", "Laptop", "10.66.0.7", 9090)
     columns = set(store.list_hosts()[0])
     assert columns == {"key", "name", "address", "port", "enrolled_at",
                        "deleted", "updated_at", "seq"}
@@ -87,7 +87,7 @@ def test_every_write_stamps_a_seq_or_no_device_ever_pulls_it(store):
     """A row changed without a seq bump sits behind every device's cursor
     forever — the change happened and nothing mirrors it."""
     before = store.current_seq()
-    store.upsert_host("host-key-aaaa", "Work Mac", "10.66.0.7")
+    store.upsert_host("host-key-aaaa", "Laptop", "10.66.0.7")
     after_insert = store.current_seq()
     assert after_insert > before
 
@@ -165,13 +165,13 @@ def test_a_host_code_registers_the_machine_at_the_address_it_was_issued(
         store, paired):
     """The row has to carry a dialable address, and the only thing that knows
     it is the config the tunnel just wrote."""
-    code, _ = _mint(name="Work Mac")
+    code, _ = _mint(name="Laptop")
     out = enrolment.redeem(code, "198.51.100.4", host_key="host-key-aaaa")
 
     assert out["kind"] == "host"
     assert out["host"]["key"] == "host-key-aaaa"
     assert out["host"]["address"] == "10.66.0.7"
-    assert out["host"]["name"] == "Work Mac"
+    assert out["host"]["name"] == "Laptop"
     assert store.list_hosts()[0]["key"] == "host-key-aaaa"
 
 
@@ -283,7 +283,7 @@ def client(store):
 
 def test_the_whole_trip_over_http(client, store, paired):
     minted = client.post("/api/jremote/v1/enrolment/codes",
-                         json={"name": "Work Mac", "kind": "host"})
+                         json={"name": "Laptop", "kind": "host"})
     assert minted.status_code == 200 and minted.json()["kind"] == "host"
 
     anon = TestClient(app)

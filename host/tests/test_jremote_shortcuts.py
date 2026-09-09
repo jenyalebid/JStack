@@ -1,6 +1,6 @@
 """Shortcuts, seats, and the palette that has to answer for the seat.
 
-Three contracts, one screen behind them — the app's Agents tab, where Boss
+Three contracts, one screen behind them — the app's Agents tab, where the user
 picks a directory and keeps it as a card:
 
 * **`shortcuts` is a synced user-meta table like `marks`.** Newest-`updated_at`
@@ -42,20 +42,20 @@ def _sc(sid, seat, label="", ts=100.0, deleted=False, tag=""):
 def tree(tmp_path, monkeypatch):
     """A two-agent host under the portable profile — the real seam, not a stub.
 
-    Lynda:  root seat, chat, code (seat) → code/go (seat), a non-seat `notes`
+    Iris:  root seat, chat, code (seat) → code/go (seat), a non-seat `notes`
             dir with a seat under it, plus `pad/` and `git/` holding CLAUDE.md
             files that must NOT read as seats.
-    Mario:  root seat only.
+    Atlas:  root seat only.
     """
     from jstack_host import hostenv
     root = tmp_path / "Agents"
-    for rel in ("Lynda", "Lynda/chat", "Lynda/code", "Lynda/code/go",
-                "Lynda/notes/deep", "Lynda/pad/issue-6", "Lynda/git/assets",
-                "Mario"):
+    for rel in ("Iris", "Iris/chat", "Iris/code", "Iris/code/go",
+                "Iris/notes/deep", "Iris/pad/issue-6", "Iris/git/assets",
+                "Atlas"):
         d = root / rel
         d.mkdir(parents=True)
         (d / "CLAUDE.md").write_text(f"# {rel}\n")
-    (root / "Lynda" / "notes").mkdir(exist_ok=True)      # non-seat, has a seat under it
+    (root / "Iris" / "notes").mkdir(exist_ok=True)      # non-seat, has a seat under it
     monkeypatch.setenv("JREMOTE_HOST_PROFILE", "default")
     monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(root))
     hostenv.reset_profile()
@@ -77,8 +77,8 @@ def test_a_uuid_is_one_card_however_it_is_spelled(store):
     two live cards on one seat — which the twin merge resolved by tombstoning
     one. The app parses both spellings back to the same `UUID`, so it landed
     that tombstone on the card it was showing and the card disappeared."""
-    store.apply_push({"shortcuts": [_sc(_LOW, "lynda-code-go", "Wordy", ts=100)]})
-    store.apply_push({"shortcuts": [_sc(_UP, "lynda-code-go", "Wordy", ts=200)]})
+    store.apply_push({"shortcuts": [_sc(_LOW, "iris-code-go", "Wordy", ts=100)]})
+    store.apply_push({"shortcuts": [_sc(_UP, "iris-code-go", "Wordy", ts=200)]})
 
     assert [(r["id"], r["label"]) for r in store.shortcuts()] \
         == [(_LOW, "Wordy")], "one live card, at the canonical id"
@@ -87,7 +87,7 @@ def test_a_uuid_is_one_card_however_it_is_spelled(store):
 def test_a_non_uuid_id_is_left_exactly_as_it_came(store):
     """The column is TEXT and nothing here decides what a non-UUID may mean —
     the host's own probe rows use `probe-1`."""
-    store.apply_push({"shortcuts": [_sc("Probe-1", "lynda-chat", "P", ts=100)]})
+    store.apply_push({"shortcuts": [_sc("Probe-1", "iris-chat", "P", ts=100)]})
     assert store.shortcuts()[0]["id"] == "Probe-1"
 
 
@@ -100,7 +100,7 @@ def test_a_pre_canonical_row_folds_in_on_open(tmp_path):
     with db._conn() as raw:                     # write past the normalising push
         for sid, ts in ((_UP, 200.0), (_LOW, 100.0)):
             raw.execute("INSERT INTO shortcuts (id, seat_id, label, updated_at) "
-                        "VALUES (?,?,?,?)", (sid, "lynda-code-go", sid[:2], ts))
+                        "VALUES (?,?,?,?)", (sid, "iris-code-go", sid[:2], ts))
 
     reopened = SessionStore(db_path=path)
     rows = reopened.shortcuts()
@@ -108,35 +108,35 @@ def test_a_pre_canonical_row_folds_in_on_open(tmp_path):
 
 
 def test_shortcuts_round_trip_and_newest_wins(store):
-    store.apply_push({"shortcuts": [_sc("a", "lynda-code-go", "Go", ts=100)]})
+    store.apply_push({"shortcuts": [_sc("a", "iris-code-go", "Go", ts=100)]})
     got = store.changes_since(0)["shortcuts"]
     assert [(r["id"], r["seat_id"], r["label"]) for r in got] \
-        == [("a", "lynda-code-go", "Go")]
+        == [("a", "iris-code-go", "Go")]
 
-    store.apply_push({"shortcuts": [_sc("a", "lynda-code-go", "STALE", ts=50)]})
+    store.apply_push({"shortcuts": [_sc("a", "iris-code-go", "STALE", ts=50)]})
     assert store.shortcuts()[0]["label"] == "Go"
 
-    store.apply_push({"shortcuts": [_sc("a", "lynda-code-go", "Golang", ts=200)]})
+    store.apply_push({"shortcuts": [_sc("a", "iris-code-go", "Golang", ts=200)]})
     assert store.shortcuts()[0]["label"] == "Golang"
 
 
 def test_delete_is_a_tombstone_that_still_ships(store, tree):
     """Un-pinning takes the card and leaves the directory — the case the table
     exists for. The row stays so every other device hears about it."""
-    store.apply_push({"shortcuts": [_sc("a", "lynda-code-go", ts=100)]})
+    store.apply_push({"shortcuts": [_sc("a", "iris-code-go", ts=100)]})
     cursor = store.current_seq()
-    store.apply_push({"shortcuts": [_sc("a", "lynda-code-go", ts=300, deleted=True)]})
+    store.apply_push({"shortcuts": [_sc("a", "iris-code-go", ts=300, deleted=True)]})
 
     assert store.shortcuts() == []                       # gone from the board
     shipped = store.changes_since(cursor)["shortcuts"]   # but not from the wire
     assert [(r["id"], r["deleted"]) for r in shipped] == [("a", 1)]
-    assert (tree / "Lynda" / "code" / "go" / "CLAUDE.md").is_file()
+    assert (tree / "Iris" / "code" / "go" / "CLAUDE.md").is_file()
 
 
 def test_changes_since_returns_only_rows_past_the_cursor(store):
-    store.apply_push({"shortcuts": [_sc("a", "lynda-chat", ts=100)]})
+    store.apply_push({"shortcuts": [_sc("a", "iris-chat", ts=100)]})
     cursor = store.current_seq()
-    store.apply_push({"shortcuts": [_sc("b", "lynda-pm", ts=200)]})
+    store.apply_push({"shortcuts": [_sc("b", "iris-pm", ts=200)]})
     assert [r["id"] for r in store.changes_since(cursor)["shortcuts"]] == ["b"]
 
 
@@ -153,11 +153,11 @@ def test_two_shortcuts_onto_one_seat_both_stand(store):
 
     This replaces a twin merge that tombstoned the second row on a (seat, tag)
     pair. It was right while a shortcut said only *this way in*; it would now
-    silently delete "Lynda on Codex" minutes after Boss made it, on every
-    device he owns."""
+    silently delete "Iris on Codex" minutes after the user made it, on every
+    device they own."""
     store.apply_push({"shortcuts": [
-        _sc("aaa", "lynda-code-go", "Go", ts=100),
-        _sc("bbb", "lynda-code-go", "Go · Codex", ts=100),
+        _sc("aaa", "iris-code-go", "Go", ts=100),
+        _sc("bbb", "iris-code-go", "Go · Codex", ts=100),
     ]})
     assert sorted(r["id"] for r in store.shortcuts()) == ["aaa", "bbb"]
     assert all(r["deleted"] == 0 for r in store.changes_since(0)["shortcuts"])
@@ -165,8 +165,8 @@ def test_two_shortcuts_onto_one_seat_both_stand(store):
 
 def test_different_seats_both_stand_too(store):
     store.apply_push({"shortcuts": [
-        _sc("aaa", "lynda-code-go", ts=100),
-        _sc("bbb", "lynda-code-web", ts=100),
+        _sc("aaa", "iris-code-go", ts=100),
+        _sc("bbb", "iris-code-web", ts=100),
     ]})
     assert len(store.shortcuts()) == 2
 
@@ -175,18 +175,18 @@ def test_different_seats_both_stand_too(store):
 
 def test_a_subject_rides_the_shortcut_table(store):
     """A subject shortcut is a seat plus what it is about. It travels for the
-    same reason a card does — the vocabulary is the Mac's and Boss's filing
-    means the same thing on every device he owns."""
-    store.apply_push({"shortcuts": [_sc("aaa", "lynda-code-wordy", tag="md")]})
+    same reason a card does — the vocabulary is the Mac's and the user's filing
+    means the same thing on every device they own."""
+    store.apply_push({"shortcuts": [_sc("aaa", "iris-code-wordy", tag="md")]})
     assert [(r["seat_id"], r["tag"]) for r in store.shortcuts()] \
-        == [("lynda-code-wordy", "md")]
+        == [("iris-code-wordy", "md")]
     assert store.changes_since(0)["shortcuts"][0]["tag"] == "md"
 
 
 def test_a_row_that_names_no_subject_is_a_plain_card(store):
     """A host row written before subjects existed, and a device that never
     sends the field, both mean the same thing: a seat card."""
-    store.apply_push({"shortcuts": [{"id": "aaa", "seat_id": "lynda-code-go",
+    store.apply_push({"shortcuts": [{"id": "aaa", "seat_id": "iris-code-go",
                                      "updated_at": 100.0}]})
     assert store.shortcuts()[0]["tag"] == ""
 
@@ -194,11 +194,11 @@ def test_a_row_that_names_no_subject_is_a_plain_card(store):
 def test_a_subject_is_not_a_twin_of_its_own_seats_card(store):
     """The merge keys on the pair. A seat card and a subject on that seat are
     two ways in, not one card added twice — folding them together would delete
-    something Boss made."""
+    something the user made."""
     store.apply_push({"shortcuts": [
-        _sc("aaa", "lynda-code-wordy", "Wordy", ts=100),
-        _sc("bbb", "lynda-code-wordy", ts=100, tag="md"),
-        _sc("ccc", "lynda-code-wordy", ts=100, tag="jremote"),
+        _sc("aaa", "iris-code-wordy", "Wordy", ts=100),
+        _sc("bbb", "iris-code-wordy", ts=100, tag="md"),
+        _sc("ccc", "iris-code-wordy", ts=100, tag="jremote"),
     ]})
     assert sorted(r["id"] for r in store.shortcuts()) == ["aaa", "bbb", "ccc"]
 
@@ -208,8 +208,8 @@ def test_the_same_subject_twice_on_one_seat_is_two_launchers(store):
     subject on the same seat, one opening Claude and one opening Codex, is two
     deliberate cards."""
     store.apply_push({"shortcuts": [
-        _sc("aaa", "lynda-code-wordy", ts=100, tag="md"),
-        _sc("bbb", "lynda-code-wordy", ts=100, tag="md"),
+        _sc("aaa", "iris-code-wordy", ts=100, tag="md"),
+        _sc("bbb", "iris-code-wordy", ts=100, tag="md"),
     ]})
     assert sorted(r["id"] for r in store.shortcuts()) == ["aaa", "bbb"]
 
@@ -221,7 +221,7 @@ def test_config_round_trips_untouched(store):
     them — whatever went in comes back byte for byte."""
     blob = '{"engine":"codex","model":"gpt-5.6-sol","tags":["md","jremote"]}'
     store.apply_push({"shortcuts": [
-        dict(_sc("aaa", "lynda-code-go", ts=100), config=blob)]})
+        dict(_sc("aaa", "iris-code-go", ts=100), config=blob)]})
     assert store.shortcuts()[0]["config"] == blob
     assert store.changes_since(0)["shortcuts"][0]["config"] == blob
 
@@ -229,12 +229,12 @@ def test_config_round_trips_untouched(store):
 def test_a_push_that_omits_config_keeps_the_stored_one(store):
     """Every device pushes its whole shortcut table every sync. A build that
     predates the column — or predates one key in it — sends rows without it,
-    and taking that as "clear it" would wipe Boss's engine choice off every
+    and taking that as "clear it" would wipe the user's engine choice off every
     card the moment an old phone synced."""
     blob = '{"engine":"codex"}'
     store.apply_push({"shortcuts": [
-        dict(_sc("aaa", "lynda-code-go", "Go", ts=100), config=blob)]})
-    store.apply_push({"shortcuts": [_sc("aaa", "lynda-code-go", "Golang", ts=200)]})
+        dict(_sc("aaa", "iris-code-go", "Go", ts=100), config=blob)]})
+    store.apply_push({"shortcuts": [_sc("aaa", "iris-code-go", "Golang", ts=200)]})
     row = store.shortcuts()[0]
     assert row["label"] == "Golang"          # the edit landed
     assert row["config"] == blob             # the config it could not see did not
@@ -244,9 +244,9 @@ def test_an_explicit_empty_config_does_clear(store):
     """Present-and-empty is a real value: it is what a card with no settings
     at all looks like, and clearing has to be reachable."""
     store.apply_push({"shortcuts": [
-        dict(_sc("aaa", "lynda-code-go", ts=100), config='{"engine":"codex"}')]})
+        dict(_sc("aaa", "iris-code-go", ts=100), config='{"engine":"codex"}')]})
     store.apply_push({"shortcuts": [
-        dict(_sc("aaa", "lynda-code-go", ts=200), config="")]})
+        dict(_sc("aaa", "iris-code-go", ts=200), config="")]})
     assert store.shortcuts()[0]["config"] == ""
 
 
@@ -284,7 +284,7 @@ def test_shortcuts_do_not_disturb_the_other_meta_tables(store):
     repoint or renumber any of them."""
     store.apply_push({"marks": [{"id": "m1", "name": "Ship", "color_hex": "#f00",
                                  "updated_at": 100.0}]})
-    store.apply_push({"shortcuts": [_sc("a", "lynda-chat", ts=200)]})
+    store.apply_push({"shortcuts": [_sc("a", "iris-chat", ts=200)]})
     delta = store.changes_since(0)
     assert [m["id"] for m in delta["marks"]] == ["m1"]
     assert delta["marks"][0]["updated_at"] == 100.0
@@ -294,65 +294,65 @@ def test_shortcuts_do_not_disturb_the_other_meta_tables(store):
 # ── the seat rule ──
 
 def test_walk_finds_nested_seats_and_the_root(tree):
-    assert seats.walk("lynda") == ["", "chat", "code", "code/go", "notes/deep"]
-    assert seats.walk("mario") == [""]
+    assert seats.walk("iris") == ["", "chat", "code", "code/go", "notes/deep"]
+    assert seats.walk("atlas") == [""]
 
 
 def test_pad_and_git_are_never_seats(tree):
     """Both hold a CLAUDE.md here. The Law reserves them: `git/` is what the
     seat saves and `pad/` is the shared shelf, and work under a pad carries its
-    own instructions — which is exactly why `Jarvis/chat/pad/issue-6` on the
+    own instructions — which is exactly why `Nova/chat/pad/issue-6` on the
     real machine has one."""
-    found = seats.walk("lynda")
+    found = seats.walk("iris")
     assert not [s for s in found if s.startswith(("pad", "git"))]
-    assert seats.is_seat(tree / "Lynda" / "pad" / "issue-6")   # the file IS there
+    assert seats.is_seat(tree / "Iris" / "pad" / "issue-6")   # the file IS there
 
 
 def test_a_non_seat_directory_can_still_hold_one(tree):
     """`missions/` is the real case: not a seat, two seats under it. The old
     name blocklist pruned the subtree and lost both."""
-    assert "notes/deep" in seats.walk("lynda")
-    assert not seats.is_seat(tree / "Lynda" / "notes")
+    assert "notes/deep" in seats.walk("iris")
+    assert not seats.is_seat(tree / "Iris" / "notes")
 
 
 def test_walk_is_cached_until_invalidated(tree):
-    assert "later" not in seats.walk("lynda")
-    new = tree / "Lynda" / "later"
+    assert "later" not in seats.walk("iris")
+    new = tree / "Iris" / "later"
     new.mkdir()
     (new / "CLAUDE.md").write_text("# later\n")
-    assert "later" not in seats.walk("lynda")     # TTL still holding
-    seats.invalidate("lynda")
-    assert "later" in seats.walk("lynda")
+    assert "later" not in seats.walk("iris")     # TTL still holding
+    seats.invalidate("iris")
+    assert "later" in seats.walk("iris")
 
 
 def test_seat_id_round_trips_through_the_spawn_resolver(tree):
     """The id a card stores is the id `/sessions/open-new` already takes."""
     from jstack_host.hostenv import workspace
-    assert seats.seat_id("lynda", "code/go") == "lynda-code-go"
-    assert workspace("lynda-code-go") == tree / "Lynda" / "code" / "go"
+    assert seats.seat_id("iris", "code/go") == "iris-code-go"
+    assert workspace("iris-code-go") == tree / "Iris" / "code" / "go"
 
 
 def test_the_slug_is_the_readable_spelling_of_the_same_pair(tree):
     """What a card says about itself where no agent header sits above it. The
-    root seat is the bare agent name — `lynda/` would name a directory nobody
+    root seat is the bare agent name — `iris/` would name a directory nobody
     stands in."""
-    assert seats.slug("lynda", "code/go") == "lynda/code/go"
-    assert seats.slug("lynda", "") == "lynda"
+    assert seats.slug("iris", "code/go") == "iris/code/go"
+    assert seats.slug("iris", "") == "iris"
 
 
 def test_project_dir_name_flattens_both_separators():
     """Why nothing decodes: `/` and `.` land on the same character, so
-    `social/threads-lynda.words` and `social/threads/lynda/words` come back
+    `social/threads-iris.words` and `social/threads/iris/words` come back
     indistinguishable. Encoding a known seat is exact; reading one out is not."""
     assert seats.project_dir_name("/a/b.c") == "-a-b-c"
-    assert (seats.project_dir_name("/x/social/threads-lynda.words")
-            == seats.project_dir_name("/x/social/threads-lynda/words"))
+    assert (seats.project_dir_name("/x/social/threads-iris.words")
+            == seats.project_dir_name("/x/social/threads-iris/words"))
 
 
 # ── what the poll is allowed to carry ──
 #
 # The first cut put every seat on the host into `/agents` — 51 rows on a
-# fifteen-second poll, describing a tree that changes when Boss makes a
+# fifteen-second poll, describing a tree that changes when the user makes a
 # directory. The cache on the walk hid none of it: the walk was never the
 # expensive part. These pin the payload to the changing part only.
 
@@ -361,23 +361,23 @@ def test_resolve_walks_only_the_agents_that_have_a_card(tree, monkeypatch):
     walked = []
     real = seats.walk
     monkeypatch.setattr(seats, "walk", lambda b: (walked.append(b), real(b))[1])
-    found = seats.resolve(["lynda-code-go"], ["lynda", "mario"])
-    assert walked == ["lynda"]                    # mario never touched
-    assert found == {"lynda-code-go": ("lynda", "code/go")}
+    found = seats.resolve(["iris-code-go"], ["iris", "atlas"])
+    assert walked == ["iris"]                    # atlas never touched
+    assert found == {"iris-code-go": ("iris", "code/go")}
 
 
 def test_resolve_answers_by_encoding_not_by_decoding(tree):
     """Every seat id in the tree maps back to its real path — including the
     root, whose `rel` is empty. `split_id()` guesses this; the walk knows."""
-    ids = [seats.seat_id("lynda", r) for r in seats.walk("lynda")]
-    found = seats.resolve(ids, ["lynda", "mario"])
-    assert found["lynda"] == ("lynda", "")
-    assert found["lynda-notes-deep"] == ("lynda", "notes/deep")
+    ids = [seats.seat_id("iris", r) for r in seats.walk("iris")]
+    found = seats.resolve(ids, ["iris", "atlas"])
+    assert found["iris"] == ("iris", "")
+    assert found["iris-notes-deep"] == ("iris", "notes/deep")
     assert len(found) == len(ids)
 
 
 def test_resolve_omits_a_card_whose_directory_is_gone(tree):
-    assert seats.resolve(["lynda-code-gone"], ["lynda"]) == {}
+    assert seats.resolve(["iris-code-gone"], ["iris"]) == {}
 
 
 def test_the_poll_carries_carded_seats_only(tree, monkeypatch, tmp_path):
@@ -386,16 +386,16 @@ def test_the_poll_carries_carded_seats_only(tree, monkeypatch, tmp_path):
     from jstack_host.store import SessionStore
 
     db = SessionStore(db_path=tmp_path / "poll.sqlite")
-    db.apply_push({"shortcuts": [_sc("a", "lynda-code-go", "Go")]})
+    db.apply_push({"shortcuts": [_sc("a", "iris-code-go", "Go")]})
     monkeypatch.setattr(board, "_seat_stats", lambda: (None, {}))
     monkeypatch.setattr("jstack_host.store.get_store", lambda: db)
 
     rows = board.carded_seats()
-    assert [r["seat_id"] for r in rows] == ["lynda-code-go"]
+    assert [r["seat_id"] for r in rows] == ["iris-code-go"]
     assert rows[0]["path"] == "code/go" and not rows[0]["missing"]
-    assert rows[0]["slug"] == "lynda/code/go"
+    assert rows[0]["slug"] == "iris/code/go"
     # The other seven seats in this tree are real and none of them ship.
-    assert len(seats.walk("lynda")) > 1
+    assert len(seats.walk("iris")) > 1
 
 
 def test_a_seat_two_shortcuts_name_is_polled_once(tree, monkeypatch, tmp_path):
@@ -406,14 +406,14 @@ def test_a_seat_two_shortcuts_name_is_polled_once(tree, monkeypatch, tmp_path):
     from jstack_host.store import SessionStore
 
     db = SessionStore(db_path=tmp_path / "subject.sqlite")
-    db.apply_push({"shortcuts": [_sc("a", "lynda-code-go", "Go"),
-                                 _sc("b", "lynda-code-go", tag="md")]})
+    db.apply_push({"shortcuts": [_sc("a", "iris-code-go", "Go"),
+                                 _sc("b", "iris-code-go", tag="md")]})
     monkeypatch.setattr(board, "_seat_stats", lambda: (None, {}))
     monkeypatch.setattr("jstack_host.store.get_store", lambda: db)
 
     rows = board.carded_seats()
-    assert [r["seat_id"] for r in rows] == ["lynda-code-go"]
-    assert rows[0]["slug"] == "lynda/code/go"
+    assert [r["seat_id"] for r in rows] == ["iris-code-go"]
+    assert rows[0]["slug"] == "iris/code/go"
 
 
 def test_no_cards_means_no_seat_payload_at_all(tree, monkeypatch, tmp_path):
@@ -432,7 +432,7 @@ def test_a_card_outliving_its_directory_renders_as_missing(tree, monkeypatch, tm
     from jstack_host.store import SessionStore
 
     db = SessionStore(db_path=tmp_path / "gone.sqlite")
-    db.apply_push({"shortcuts": [_sc("a", "lynda-deleted-thing", "Gone")]})
+    db.apply_push({"shortcuts": [_sc("a", "iris-deleted-thing", "Gone")]})
     monkeypatch.setattr(board, "_seat_stats", lambda: (None, {}))
     monkeypatch.setattr("jstack_host.store.get_store", lambda: db)
 
@@ -443,29 +443,29 @@ def test_a_card_outliving_its_directory_renders_as_missing(tree, monkeypatch, tm
 
 
 def test_the_roster_carries_each_agents_own_seat_as_a_slug(tree):
-    """Lynda has a `chat/` and is scoped into it; Mario has none and stands at
-    his root. The slug says which, without anyone parsing an id."""
+    """Iris has a `chat/` and is scoped into it; Atlas has none and stands at
+    their root. The slug says which, without anyone parsing an id."""
     from jstack_host import board
 
     rows = {r["base"]: r for r in board.list_agents((board._SeatStats(), {}))}
-    assert rows["lynda"]["agent_id"] == "lynda-chat"
-    assert rows["lynda"]["slug"] == "lynda/chat"
-    assert rows["mario"]["agent_id"] == "mario"
-    assert rows["mario"]["slug"] == "mario"
+    assert rows["iris"]["agent_id"] == "iris-chat"
+    assert rows["iris"]["slug"] == "iris/chat"
+    assert rows["atlas"]["agent_id"] == "atlas"
+    assert rows["atlas"]["slug"] == "atlas"
 
 
 # ── the picker ──
 
 def test_browse_starts_at_the_agent_root_whatever_seat_is_addressed(tree):
-    for agent_id in ("lynda", "lynda-chat", "lynda-code-go"):
+    for agent_id in ("iris", "iris-chat", "iris-code-go"):
         page = seats.browse(agent_id)
-        assert page["root"] == str(tree / "Lynda")
+        assert page["root"] == str(tree / "Iris")
         assert page["path"] == ""
         assert page["parent"] is None
 
 
 def test_browse_marks_what_can_be_picked_and_what_can_be_entered(tree):
-    rows = {r["name"]: r for r in seats.browse("lynda")["entries"]}
+    rows = {r["name"]: r for r in seats.browse("iris")["entries"]}
     assert set(rows) == {"chat", "code", "notes"}        # pad/git pruned
     assert rows["code"]["is_seat"] and rows["code"]["has_children"]
     assert not rows["notes"]["is_seat"] and rows["notes"]["has_children"]
@@ -473,17 +473,17 @@ def test_browse_marks_what_can_be_picked_and_what_can_be_entered(tree):
 
 
 def test_browse_descends_and_reports_the_way_back(tree):
-    page = seats.browse("lynda", "code")
-    assert page["is_seat"] and page["seat_id"] == "lynda-code"
+    page = seats.browse("iris", "code")
+    assert page["is_seat"] and page["seat_id"] == "iris-code"
     assert page["parent"] == ""
-    assert [r["seat_id"] for r in page["entries"]] == ["lynda-code-go"]
-    assert seats.browse("lynda", "code/go")["parent"] == "code"
+    assert [r["seat_id"] for r in page["entries"]] == ["iris-code-go"]
+    assert seats.browse("iris", "code/go")["parent"] == "code"
 
 
 @pytest.mark.parametrize("bad", ["..", "../..", "code/../..", "/etc"])
 def test_browse_cannot_escape_the_agent_root(tree, bad):
     with pytest.raises((ValueError, KeyError)):
-        seats.browse("lynda", bad)
+        seats.browse("iris", bad)
 
 
 def test_browse_of_an_unknown_agent_raises(tree):
@@ -513,12 +513,12 @@ def palette(tree, tmp_path, monkeypatch):
     _skill(user, "xcode-build-fixer")
     monkeypatch.setattr(commands, "_USER", user / ".claude")
     monkeypatch.setattr(commands, "_plugin_commands", lambda: [])
-    _cmd(tree / "Lynda", "create-agent")
-    _cmd(tree / "Lynda", "shared")
-    _cmd(tree / "Lynda" / "code", "build")
-    _cmd(tree / "Lynda" / "code" / "go", "testflight")
-    _cmd(tree / "Lynda" / "code" / "go", "shared")
-    _skill(tree / "Lynda" / "code" / "go", "swiftui-expert")
+    _cmd(tree / "Iris", "create-agent")
+    _cmd(tree / "Iris", "shared")
+    _cmd(tree / "Iris" / "code", "build")
+    _cmd(tree / "Iris" / "code" / "go", "testflight")
+    _cmd(tree / "Iris" / "code" / "go", "shared")
+    _skill(tree / "Iris" / "code" / "go", "swiftui-expert")
     return tree
 
 
@@ -534,54 +534,54 @@ def _desc(agent_id, name):
 def test_palette_carries_the_seats_own_commands(palette):
     """The bug, in one line: this listed the agent root's commands and none of
     `code/go`'s."""
-    assert "/testflight" in _names("lynda-code-go")
+    assert "/testflight" in _names("iris-code-go")
 
 
 def test_palette_inherits_down_the_chain(palette):
-    got = _names("lynda-code-go")
+    got = _names("iris-code-go")
     assert "/push" in got            # global
     assert "/create-agent" in got    # agent root
     assert "/build" in got           # an intervening directory
 
 
 def test_a_sibling_seat_does_not_leak_in(palette):
-    assert "/testflight" not in _names("lynda-chat")
-    assert "/build" not in _names("lynda-chat")
-    assert "/create-agent" in _names("lynda-chat")
+    assert "/testflight" not in _names("iris-chat")
+    assert "/build" not in _names("iris-chat")
+    assert "/create-agent" in _names("iris-chat")
 
 
 def test_nearest_wins(palette):
     """The harness resolves a command by walking up from the session's own
     directory, so the palette has to break ties the same way or it describes a
     command the session will not run."""
-    assert _desc("lynda-code-go", "/shared") == "from go"
-    assert _desc("lynda-chat", "/shared") == "from Lynda"
-    assert _desc("mario", "/shared") == "from global"
+    assert _desc("iris-code-go", "/shared") == "from go"
+    assert _desc("iris-chat", "/shared") == "from Iris"
+    assert _desc("atlas", "/shared") == "from global"
 
 
 def test_skills_are_listed_as_commands(palette):
     """A seat skill is invoked as `/{name}` exactly like a command. Leaving
-    them out hid all three of `jarvis/chat`'s."""
-    assert "/swiftui-expert" in _names("lynda-code-go")
-    assert "/swiftui-expert" not in _names("lynda-chat")
+    them out hid all three of `nova/chat`'s."""
+    assert "/swiftui-expert" in _names("iris-code-go")
+    assert "/swiftui-expert" not in _names("iris-chat")
 
 
 def test_a_user_level_skill_reaches_every_seat(palette):
     """`~/.claude/skills/` is available to every session on the machine, so it
-    belongs in every palette. It was in none: the user level read its commands
+    belongs in every palette. It was in none: The user level read its commands
     and not its skills, hiding the ten Apple SDK skills from root seats and
     subs alike."""
-    for agent_id in ("lynda-chat", "lynda-code", "lynda-code-go"):
+    for agent_id in ("iris-chat", "iris-code", "iris-code-go"):
         assert "/xcode-build-fixer" in _names(agent_id), agent_id
 
 
 def test_a_seat_may_override_a_user_level_skill(palette):
     """Same nearest-wins tie-break as commands — a seat's own `swiftui-expert`
     is the one that would run, so it is the one described."""
-    assert _desc("lynda-code", "/xcode-build-fixer") == "skill from user"
-    _skill(palette / "Lynda" / "code", "xcode-build-fixer")
-    assert _desc("lynda-code", "/xcode-build-fixer") == "skill from code"
-    assert _desc("lynda-chat", "/xcode-build-fixer") == "skill from user"
+    assert _desc("iris-code", "/xcode-build-fixer") == "skill from user"
+    _skill(palette / "Iris" / "code", "xcode-build-fixer")
+    assert _desc("iris-code", "/xcode-build-fixer") == "skill from code"
+    assert _desc("iris-chat", "/xcode-build-fixer") == "skill from user"
 
 
 def test_plugin_commands_never_override_a_local_file(tree, tmp_path, monkeypatch):
@@ -589,8 +589,8 @@ def test_plugin_commands_never_override_a_local_file(tree, tmp_path, monkeypatch
     monkeypatch.setattr(commands, "_plugin_commands",
                         lambda: [{"name": "/build", "description": "from plugin"},
                                  {"name": "/jstack:push", "description": "ns"}])
-    _cmd(tree / "Lynda" / "code", "build")
-    got = {c["name"]: c["description"] for c in commands.list_commands("lynda-code")}
+    _cmd(tree / "Iris" / "code", "build")
+    got = {c["name"]: c["description"] for c in commands.list_commands("iris-code")}
     assert got["/build"] == "from code"
     assert got["/jstack:push"] == "ns"
 
@@ -668,7 +668,7 @@ def test_a_directory_marketplace_is_read_where_it_lives(tree, plugins):
     next session can invoke, with no reinstall. Reading the frozen
     `plugins/cache/` copy instead left the palette hours behind the machine —
     `/jstack:pict` had shipped and the phone had never heard of it."""
-    got = {c["name"]: c["description"] for c in commands.list_commands("mario")}
+    got = {c["name"]: c["description"] for c in commands.list_commands("atlas")}
     assert "/jstack:pict" in got
     assert "/jstack:stale" not in got
 
@@ -676,14 +676,14 @@ def test_a_directory_marketplace_is_read_where_it_lives(tree, plugins):
 def test_the_live_copy_answers_for_descriptions_too(tree, plugins):
     """Not just which skills exist — what each one says. The trim landed in the
     repo and the palette went on quoting the old pitch."""
-    got = {c["name"]: c["description"] for c in commands.list_commands("mario")}
+    got = {c["name"]: c["description"] for c in commands.list_commands("atlas")}
     assert got["/jstack:pict"] == "live wording"
 
 
 def test_a_github_marketplace_still_reads_its_installed_version(tree, plugins):
     """Version-pinned, so the snapshot is the truth — only directory sources
     are redirected."""
-    got = {c["name"]: c["description"] for c in commands.list_commands("mario")}
+    got = {c["name"]: c["description"] for c in commands.list_commands("atlas")}
     assert got["/other:thing"] == "from cache"
 
 
@@ -695,7 +695,7 @@ def test_an_unresolvable_live_root_falls_back_to_the_snapshot(tree, plugins,
     (plugins / "JStack" / ".claude-plugin" / "marketplace.json").write_text(
         json.dumps({"name": "JStack",
                     "plugins": [{"name": "jstack", "source": "./gone"}]}))
-    got = {c["name"]: c["description"] for c in commands.list_commands("mario")}
+    got = {c["name"]: c["description"] for c in commands.list_commands("atlas")}
     assert got["/jstack:stale"] == "stale wording"
 
 
@@ -705,5 +705,5 @@ def test_a_description_survives_to_the_length_jstack_enforces(tree, plugins):
     long = "Use when " + "x" * 125          # 134 chars
     sk = plugins / "JStack" / "plugins" / "jstack" / "skills" / "pict"
     (sk / "SKILL.md").write_text(f"---\ndescription: {long}\n---\n")
-    got = {c["name"]: c["description"] for c in commands.list_commands("mario")}
+    got = {c["name"]: c["description"] for c in commands.list_commands("atlas")}
     assert got["/jstack:pict"] == long

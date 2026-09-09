@@ -485,7 +485,7 @@ def test_importing_the_dashboard_closes_nothing():
 @pytest.fixture
 def reg(monkeypatch, tmp_path):
     """The open registry is real state on this Mac — never let a test write
-    Boss's copy."""
+    the user's copy."""
     monkeypatch.setattr(managed, "_REG", tmp_path / "jremote_open.json")
 
 
@@ -495,8 +495,8 @@ def test_reconcile_prunes_dead_registry_rows(sock, reg, monkeypatch):
     name = managed._name(SID)
     _new(name)
     _patch_claude_ttys(monkeypatch, list(managed.pane_ttys()))
-    managed.record_open(SID, "jarvis")
-    managed.record_open("eeeeeeee-0000-0000-0000-000000000000", "jarvis")
+    managed.record_open(SID, "nova")
+    managed.record_open("eeeeeeee-0000-0000-0000-000000000000", "nova")
 
     managed.reconcile(grace=0.0)
 
@@ -526,7 +526,7 @@ def test_reconcile_keeps_the_registry_when_tmux_goes_dark(sock, reg, monkeypatch
     """`open_names()` returns an empty set for "no sessions" AND for a socket
     that failed to answer. Reading the second as the first would erase the
     registry for every live session on the machine."""
-    managed.record_open(SID, "jarvis")
+    managed.record_open(SID, "nova")
     monkeypatch.setattr(managed, "open_names", lambda: set())
     _patch_claude_ttys(monkeypatch, [])
 

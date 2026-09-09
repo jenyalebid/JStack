@@ -12,7 +12,7 @@ SID = "01a04181-fe7a-7773-b651-f6a22d87ba9a"
 def _rollout(path: Path) -> Path:
     rows = [
         {"timestamp": "2026-08-26T21:00:00Z", "type": "session_meta",
-         "payload": {"session_id": SID, "cwd": "/Users/jarvis/Agents/Jarvis/chat",
+         "payload": {"session_id": SID, "cwd": "/Users/x/Agents/Nova/chat",
                      "source": "cli"}},
         {"timestamp": "2026-08-26T21:00:01Z", "type": "response_item",
          "payload": {"type": "message", "role": "user",
@@ -97,7 +97,7 @@ def test_managed_codex_id_resolves_after_the_session_closed(tmp_path, monkeypatc
 
 
 def test_prompt_opening_with_an_attachment_survives(tmp_path):
-    """Codex inlines an attachment as markup in the prompt text. Boss's words
+    """Codex inlines an attachment as markup in the prompt text. The user's words
     are what the card is titled with and what the thread opens on — the
     leading '<' must not read as machine injection and take them with it."""
     typed = "I thought you fixed this shit yesterday"
@@ -105,7 +105,7 @@ def test_prompt_opening_with_an_attachment_survives(tmp_path):
     # carrying no text at all and the prose arriving last.
     blocks = [
         {"type": "input_text",
-         "text": '<image name=[Image #1] path="/Users/jarvis/pad/shot.png">'},
+         "text": '<image name=[Image #1] path="/Users/x/pad/shot.png">'},
         {"type": "input_image", "image_url": "data:image/png;base64,AA"},
         {"type": "input_text", "text": "</image>"},
         {"type": "input_text", "text": typed},
@@ -141,4 +141,4 @@ def test_rollout_binding_uses_launch_time_and_cwd(tmp_path, monkeypatch):
 
     launched = datetime.fromisoformat("2026-08-26T21:00:09+00:00").timestamp()
     assert codex_transcript.rollout_started_after(
-        launched, "/Users/jarvis/Agents/Jarvis/chat") == current
+        launched, "/Users/x/Agents/Nova/chat") == current

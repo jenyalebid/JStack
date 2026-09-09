@@ -4,7 +4,7 @@ A cron wake / review spawn injects its task as the first user message, wrapped
 in a routing marker (`[cron:<id> <label>] …`, `[POST-SESSION-REVIEW] …`). The
 old filters treated the whole message as noise, so the board card fell back to
 "New session" and the thread showed only the agent's output — a headless
-session Boss could not attribute. Law: the marker is noise, the body is the
+session the user could not attribute. Law: the marker is noise, the body is the
 session's identity — strip the marker, surface the task, everywhere the
 session presents itself. Genuinely machine-shaped noise (`<`-wrapped
 reminders, hook output) stays dropped.
@@ -17,7 +17,7 @@ import pytest
 import jstack_host.board as board
 import jstack_host.messages as messages
 
-CRON = ("[cron:75be326e-517d-4f1c-9e53-e9c2100fd73c Jarvis-chat wake "
+CRON = ("[cron:75be326e-517d-4f1c-9e53-e9c2100fd73c Nova-chat wake "
         "2026-08-16 08:00 PT] Verify the board.py seam on its first batch.\n\n"
         "Measure, don't assume: re-run the breakdown.")
 REVIEW = "[POST-SESSION-REVIEW] Review session abc123 for dropped threads."
@@ -78,7 +78,7 @@ def test_convo_lines_still_drop_angle_noise():
 
 def test_history_row_serves_the_injected_task():
     import jstack_host.store as store
-    row = {"session_id": "x", "agent_id": "jarvis", "sub_mode": "chat",
+    row = {"session_id": "x", "agent_id": "nova", "sub_mode": "chat",
            "first_real_user_msg": CRON, "first_msg": CRON, "last_prompt": CRON,
            "last_msg": "verdict logged"}
     served = store._serve_session(row)

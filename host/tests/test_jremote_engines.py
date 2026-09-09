@@ -5,7 +5,7 @@ The thing worth guarding here is not that a picker stores a string. It is that
 app's new-chat tap, its long-press menu, the share sheet, a desk-side spawn)
 and only `engines.resolve` is allowed to turn "unspecified" into a concrete
 engine and model. A second fallback anywhere else means two answers to the
-same question, and the one that loses is the one Boss actually set.
+same question, and the one that loses is the one the user actually set.
 
 The other half is that a NAMED-but-unknown value refuses. Falling back there
 would spawn a session on a different model than the caller asked for, and
@@ -69,7 +69,7 @@ def test_roster_carries_the_fleet_default_for_a_cold_device():
 # ── Defaults, stored and unstored ────────────────────────────────────────────
 
 def test_unset_agent_resolves_to_the_fleet_default():
-    d = engines.defaults("maggie")
+    d = engines.defaults("wren")
     assert d["engine"] == "claude"
     assert d["models"] == {"claude": "claude-opus-5", "codex": "gpt-5.6-sol"}
 
@@ -77,9 +77,9 @@ def test_unset_agent_resolves_to_the_fleet_default():
 def test_defaults_answer_for_every_engine_not_just_the_chosen_one():
     """The long-press menu can launch either engine, so an agent defaulting to
     Claude still needs a Codex model waiting."""
-    engines.set_defaults("mario", engine="claude",
+    engines.set_defaults("atlas", engine="claude",
                          models={"codex": "gpt-5.6-luna"})
-    d = engines.defaults("mario")
+    d = engines.defaults("atlas")
     assert d["engine"] == "claude"
     assert d["models"]["claude"] == "claude-opus-5"   # untouched, still default
     assert d["models"]["codex"] == "gpt-5.6-luna"     # ready if picked
@@ -89,42 +89,42 @@ def test_preferences_key_on_the_agent_not_the_seat():
     """Same rule the notification mutes use — every seat of an agent shares
     the choice, so setting it from one seat's page is not a surprise on
     another."""
-    engines.set_defaults("jarvis-chat", engine="codex")
-    assert engines.defaults("jarvis")["engine"] == "codex"
-    assert engines.defaults("jarvis-service-call")["engine"] == "codex"
+    engines.set_defaults("nova-chat", engine="codex")
+    assert engines.defaults("nova")["engine"] == "codex"
+    assert engines.defaults("nova-service-call")["engine"] == "codex"
 
 
 def test_partial_write_leaves_the_other_half_alone():
-    engines.set_defaults("ted", engine="codex",
+    engines.set_defaults("bryn", engine="codex",
                          models={"claude": "claude-sonnet-5"})
-    engines.set_defaults("ted", models={"codex": "gpt-5.6-terra"})
-    d = engines.defaults("ted")
+    engines.set_defaults("bryn", models={"codex": "gpt-5.6-terra"})
+    d = engines.defaults("bryn")
     assert d["engine"] == "codex"
     assert d["models"]["claude"] == "claude-sonnet-5"
     assert d["models"]["codex"] == "gpt-5.6-terra"
 
 
 def test_a_choice_equal_to_the_default_is_still_written():
-    """Otherwise a later edit to ENGINES silently re-decides something Boss
+    """Otherwise a later edit to ENGINES silently re-decides something the user
     decided by hand."""
-    engines.set_defaults("lynda", engine="claude",
+    engines.set_defaults("iris", engine="claude",
                          models={"claude": "claude-opus-5"})
     raw = json.loads(engines._STATE.read_text())
-    assert raw["agents"]["lynda"]["engine"] == "claude"
-    assert raw["agents"]["lynda"]["models"]["claude"] == "claude-opus-5"
+    assert raw["agents"]["iris"]["engine"] == "claude"
+    assert raw["agents"]["iris"]["models"]["claude"] == "claude-opus-5"
 
 
 def test_a_model_dropped_from_the_roster_falls_back_rather_than_spawning():
     """A stored id that no longer exists must not reach a command line. The
     agent reverts to that engine's default and comes up."""
-    engines._save({"agents": {"brian": {"engine": "claude",
+    engines._save({"agents": {"orin": {"engine": "claude",
                                         "models": {"claude": "claude-opus-4"}}}})
-    assert engines.defaults("brian")["models"]["claude"] == "claude-opus-5"
+    assert engines.defaults("orin")["models"]["claude"] == "claude-opus-5"
 
 
 def test_a_stored_engine_that_no_longer_exists_falls_back():
-    engines._save({"agents": {"brian": {"engine": "gemini"}}})
-    assert engines.defaults("brian")["engine"] == "claude"
+    engines._save({"agents": {"orin": {"engine": "gemini"}}})
+    assert engines.defaults("orin")["engine"] == "claude"
 
 
 # ── Refusals ─────────────────────────────────────────────────────────────────
@@ -138,15 +138,15 @@ def test_a_stored_engine_that_no_longer_exists_falls_back():
 ])
 def test_set_defaults_refuses_anything_unspawnable(kwargs):
     with pytest.raises(ValueError):
-        engines.set_defaults("maggie", **kwargs)
+        engines.set_defaults("wren", **kwargs)
 
 
 def test_a_refused_write_stores_nothing():
     with pytest.raises(ValueError):
-        engines.set_defaults("maggie", engine="claude",
+        engines.set_defaults("wren", engine="claude",
                              models={"claude": "nope"})
     assert not engines._STATE.exists() or \
-        "maggie" not in json.loads(engines._STATE.read_text())["agents"]
+        "wren" not in json.loads(engines._STATE.read_text())["agents"]
 
 
 @pytest.mark.parametrize("engine,model", [
@@ -156,36 +156,36 @@ def test_a_refused_write_stores_nothing():
 ])
 def test_resolve_refuses_a_named_unknown_rather_than_falling_back(engine, model):
     with pytest.raises(ValueError):
-        engines.resolve("maggie", engine, model)
+        engines.resolve("wren", engine, model)
 
 
 # ── Resolution: the one fallback point ───────────────────────────────────────
 
 def test_resolve_with_nothing_named_is_the_agents_default():
-    engines.set_defaults("tim", engine="codex",
+    engines.set_defaults("finch", engine="codex",
                          models={"codex": "gpt-5.6-terra"})
-    assert engines.resolve("tim") == ("codex", "gpt-5.6-terra")
+    assert engines.resolve("finch") == ("codex", "gpt-5.6-terra")
 
 
 def test_resolve_with_an_engine_named_uses_that_engines_model():
-    """The long-press case. Boss picks Codex on a Claude-default agent; the
+    """The long-press case. The user picks Codex on a Claude-default agent; the
     model must be the one chosen FOR Codex, never the Claude one and never the
     CLI's own."""
-    engines.set_defaults("tim", engine="claude",
+    engines.set_defaults("finch", engine="claude",
                          models={"claude": "claude-fable-5",
                                  "codex": "gpt-5.6-luna"})
-    assert engines.resolve("tim", "codex") == ("codex", "gpt-5.6-luna")
-    assert engines.resolve("tim") == ("claude", "claude-fable-5")
+    assert engines.resolve("finch", "codex") == ("codex", "gpt-5.6-luna")
+    assert engines.resolve("finch") == ("claude", "claude-fable-5")
 
 
 def test_resolve_honours_an_explicit_model_over_the_stored_one():
-    engines.set_defaults("tim", models={"claude": "claude-sonnet-5"})
-    assert engines.resolve("tim", "claude", "claude-opus-5") \
+    engines.set_defaults("finch", models={"claude": "claude-sonnet-5"})
+    assert engines.resolve("finch", "claude", "claude-opus-5") \
         == ("claude", "claude-opus-5")
 
 
 def test_resolve_is_case_and_space_tolerant_on_the_wire():
-    assert engines.resolve("tim", "  CODEX ") == ("codex", "gpt-5.6-sol")
+    assert engines.resolve("finch", "  CODEX ") == ("codex", "gpt-5.6-sol")
 
 
 # ── The command line it produces ─────────────────────────────────────────────

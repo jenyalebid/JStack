@@ -15,7 +15,7 @@ import pytest
 
 from jstack_host.store import SessionStore
 
-KEY = "-Users-jarvis-Agents-Jarvis-chat"
+KEY = "-Users-nova-Agents-Nova-chat"
 SID = "11111111-2222-3333-4444-555555550000"
 
 
@@ -83,7 +83,7 @@ def test_backfill_extracts_summary(home, store):
     )
     assert store.refresh() == 1
     row = _row(store)
-    assert row["agent_id"] == "jarvis"
+    assert row["agent_id"] == "nova"
     assert row["sub_mode"] == "chat"
     assert row["ai_title"] == "menu work"
     assert row["first_real_user_msg"] == "fix the menu"
@@ -173,7 +173,7 @@ def _prompt(text, sid=SID):
 def test_compact_never_becomes_the_last_prompt(home, store):
     """`compact_on_delivery` types `/compact` at the end of a heavy turn, so
     the newest `last-prompt` on the busiest sessions is the machine's. The
-    card's exchange line must stay on what Boss actually said."""
+    card's exchange line must stay on what the user actually said."""
     f = _transcript(home)
     _write(f, _prompt("ship the pict tool"), _prompt("/compact"))
     store.refresh()
@@ -187,8 +187,8 @@ def test_compact_never_becomes_the_last_prompt(home, store):
     assert _row(store)["last_prompt"] == "ship the pict tool"
 
 
-def test_a_slash_command_boss_typed_is_still_his_prompt(home, store):
-    """The skip list is closed at `/compact` — `/push` is Boss talking."""
+def test_a_slash_command_the_user_typed_is_still_their_prompt(home, store):
+    """The skip list is closed at `/compact` — `/push` is the user talking."""
     _write(_transcript(home), _prompt("ship the pict tool"), _prompt("/push"))
     store.refresh()
     assert _row(store)["last_prompt"] == "/push"
@@ -324,18 +324,18 @@ def test_existing_store_gains_new_columns(tmp_path):
 # ── on-demand queries ──
 
 def test_query_filters_and_pages(home, store):
-    other = home / ".claude" / "projects" / "-Users-jarvis-Agents-Tim-chat"
+    other = home / ".claude" / "projects" / "-Users-nova-Agents-Finch-chat"
     other.mkdir(parents=True)
-    _write(_transcript(home), _user("jarvis session about menus"))
+    _write(_transcript(home), _user("nova session about menus"))
     _write(other / "99999999-8888-7777-6666-555555550000.jsonl",
-           _user("tim session about widgets"))
+           _user("finch session about widgets"))
     store.refresh()
 
     assert len(store.query_sessions()) == 2
-    mine = store.query_sessions(agent="jarvis-chat")
+    mine = store.query_sessions(agent="nova-chat")
     assert [s["session_id"] for s in mine] == [SID]
-    assert mine[0]["preview"] == "jarvis session about menus"
-    assert store.query_sessions(q="widgets")[0]["agent_id"] == "tim"
+    assert mine[0]["preview"] == "nova session about menus"
+    assert store.query_sessions(q="widgets")[0]["agent_id"] == "finch"
     assert store.query_sessions(q="nothing-matches") == []
 
     newest = store.query_sessions(limit=1)
@@ -502,7 +502,7 @@ def test_history_endpoint_queries_store(client, store, home):
     _write(_transcript(home), _user("searchable menu work"))
     store.refresh()
     rows = client.get("/api/jremote/v1/sessions/history",
-                      params={"agent": "jarvis-chat", "q": "menu"}).json()["sessions"]
+                      params={"agent": "nova-chat", "q": "menu"}).json()["sessions"]
     assert [s["session_id"] for s in rows] == [SID]
     assert rows[0]["preview"] == "searchable menu work"
     none = client.get("/api/jremote/v1/sessions/history",

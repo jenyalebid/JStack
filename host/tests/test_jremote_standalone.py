@@ -1,11 +1,11 @@
-"""The host API imports on a machine that has never had the J&J tree.
+"""The host API imports on a machine that has never had the embedding tree.
 
 This is the whole point of the seam. The package is meant to be lifted into the
 jRemote repo and run beside the app on any Mac — but nothing about that failure
 is visible from here, because on this machine every import it must not need
 happens to succeed. So the check has to *remove* them and try.
 
-What "standalone" means, exactly: `lib` (J&J's own libraries) and every
+What "standalone" means, exactly: `lib` (the embedding tree's own libraries) and every
 dashboard package except `jremote` itself are unimportable. A module that still
 comes up under those conditions carries no hidden dependency on this Mac.
 
@@ -54,7 +54,7 @@ def _modules():
 
 
 def _import_standalone(mod: str):
-    """Import one module in a fresh interpreter with the J&J tree removed."""
+    """Import one module in a fresh interpreter with the embedding tree removed."""
     return subprocess.run(
         [sys.executable, "-c", _PROBE.format(blocked=BLOCKED, mod=mod)],
         cwd=INFRA, capture_output=True, text=True)
@@ -136,7 +136,7 @@ def test_a_standalone_host_can_actually_scan_its_processes():
     """The process scan is the one moved module that reads a host fact mid-call.
 
     Importing `procscan` with `lib` gone proves nothing about the scan itself:
-    the labels come through `hostenv` at call time, and the J&J path behind that
+    the labels come through `hostenv` at call time, and the embedding path behind that
     seam reaches for `dashboard.shared.helpers` — a module a standalone host
     does not have. So the scan is *run*, not just imported, and its rows are
     required to come out shaped the way the board reads them.
@@ -161,10 +161,10 @@ print("OK")
 
 # ── The availability contract ──
 
-#: The screens drawn from J&J's own machinery, and the key each one carries its
+#: The screens drawn from the embedding tree's own machinery, and the key each one carries its
 #: rows in. A host without the tree must answer all of them — shape intact, body
 #: empty, `available: false` — rather than 500.
-# The screens a host without the J&J tree genuinely cannot have. The feed,
+# The screens a host without the embedding tree genuinely cannot have. The feed,
 # spend and allowance used to sit here too; they are served by the package's
 # own readers now (`feed`, `spend`, `allowance`), off what any JStack machine
 # records — see `test_the_portable_screens_answer_on_a_tree_less_host`.
@@ -174,7 +174,7 @@ OPTIONAL_SCREENS = [
 
 
 def _serve_standalone(body: str, extra_env: str = ""):
-    """Run `body` against a real TestClient of the host, J&J tree removed."""
+    """Run `body` against a real TestClient of the host, embedding tree removed."""
     probe = f'''
 import importlib, sys
 
@@ -198,7 +198,7 @@ root = state / "Agents"
 os.environ["JREMOTE_INSTANCE_ROOT"] = str(root)
 os.environ["JREMOTE_STATE_DIR"] = str(state)
 # A tmux socket nothing else is on. Nothing here spawns or closes a session,
-# but the modules reach for tmux, and they will not reach for Boss's.
+# but the modules reach for tmux, and they will not reach for the user's.
 os.environ["JREMOTE_TMUX_SOCK"] = "jr-pytest-standalone"
 {extra_env}
 
@@ -338,7 +338,7 @@ def test_this_mac_keeps_every_state_file_exactly_where_it_was():
 
     Routing nine hand-built paths through one seam is worth nothing if the seam
     answers differently than the expressions it replaced — that would silently
-    move Boss's live board, device registrations and session index to a fresh
+    move the user's live board, device registrations and session index to a fresh
     empty directory, and the symptom would be a working dashboard with no
     history rather than an error.
     """
@@ -531,7 +531,7 @@ assert (Path(os.environ["JREMOTE_STATE_DIR"]) / "host-id").read_text().strip() =
 
 
 def test_a_leaf_says_it_cannot_pair_instead_of_erroring_on_a_missing_file():
-    """The work Mac, 2026-09-03: Settings → Remote Access showed a red
+    """A leaf, 2026-09-03: Settings → Remote Access showed a red
 
         cannot read the pairing script at
         ~/.local/share/jremote/app/scripts/wireguard/wg_peer.py
@@ -564,7 +564,7 @@ assert "does not run the tunnel" in detail, detail
 def test_the_hub_still_offers_pairing():
     """The mirror of the leaf test — the capability is not off for everyone.
 
-    A flag that reads false everywhere would 'fix' the work Mac by removing
+    A flag that reads false everywhere would 'fix' that leaf by removing
     off-LAN pairing from the one machine that has it.
     """
     from jstack_host import router, tunnel
@@ -607,8 +607,8 @@ os.environ["JREMOTE_HOST_ID"] = "carried-over"
 assert hostenv.host_id() == "carried-over", hostenv.host_id()
 del os.environ["JREMOTE_HOST_ID"]
 
-os.environ["JREMOTE_HOST_NAME"] = "  Work Mac  "
-assert hostenv.host_name() == "Work Mac", repr(hostenv.host_name())
+os.environ["JREMOTE_HOST_NAME"] = "  Laptop  "
+assert hostenv.host_name() == "Laptop", repr(hostenv.host_name())
 print("OK")
 '''
     r = subprocess.run([sys.executable, "-c", probe], cwd=INFRA,

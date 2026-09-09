@@ -25,7 +25,7 @@ def projects(monkeypatch, tmp_path):
 
 
 def _write(projects, lines):
-    pd = projects / "-Users-jarvis-Agents-Jarvis-chat"
+    pd = projects / "-Users-nova-Agents-Nova-chat"
     pd.mkdir(parents=True, exist_ok=True)
     (pd / f"{SID}.jsonl").write_text(
         "\n".join(json.dumps(ln) for ln in lines) + "\n")
@@ -63,7 +63,7 @@ def test_an_assistant_line_is_not_pristine(projects):
 
 def test_unparseable_means_kept(projects):
     """Unprovable reads as not pristine — the only destructive direction here
-    is killing something Boss said something into."""
+    is killing something the user said something into."""
     pd = projects / "x"
     pd.mkdir()
     (pd / f"{SID}.jsonl").write_text("not json\n")
@@ -85,7 +85,7 @@ def test_pristine_close_kills_an_empty_managed_session(projects, monkeypatch):
 
 
 def test_pristine_close_keeps_a_session_with_content(projects, monkeypatch):
-    """Boss typed into the session's Mac window after the phone last looked —
+    """The user typed into the session's Mac window after the phone last looked —
     the stale "nothing was typed" judgment must not cost the work."""
     _write(projects, [{"type": "user", "message": {"content": "hold on"}}])
 
@@ -112,7 +112,7 @@ def test_a_pid_row_is_always_kept(monkeypatch):
 
 # ── The close history ───────────────────────────────────────────────────────
 #
-# Boss, after two live sessions died inside two minutes: "who the fuck just
+# The user, after two live sessions died inside two minutes: "who the fuck just
 # closed your session". Answering it took the review log, process forensics
 # and another agent's transcript, because nothing recorded a close at all —
 # and Kill is this same endpoint with review=false, so the endpoint that ends
@@ -141,7 +141,7 @@ def closestore(monkeypatch, tmp_path):
 
 def test_a_close_records_who_asked(projects, closestore, monkeypatch):
     """The row has to name the client — a UI build verifying session controls
-    drives the same endpoint Boss's phone does, and the User-Agent is the only
+    drives the same endpoint the user's phone does, and the User-Agent is the only
     thing that tells them apart."""
     _write(projects, [{"type": "user", "message": {"role": "user",
                                                    "content": "real work"}}])
@@ -164,12 +164,12 @@ def test_the_seat_is_read_off_the_session_not_copied(closestore):
     for it — a second copy on the close row is a second thing to keep true."""
     with closestore._conn() as db:
         db.execute("INSERT INTO sessions (session_id, agent_id, sub_mode) "
-                   "VALUES (?,?,?)", (SID, "lynda", "social"))
+                   "VALUES (?,?,?)", (SID, "iris", "social"))
     closestore.record_close(SID, mode="managed", closed=True, review=True,
                             pristine=False)
 
     row, = closestore.recent_closes()
-    assert (row["agent_id"], row["sub_mode"]) == ("lynda", "social")
+    assert (row["agent_id"], row["sub_mode"]) == ("iris", "social")
 
 
 def test_killing_a_bare_pid_is_history_though_it_names_no_seat(closestore):
@@ -235,7 +235,7 @@ def test_a_close_that_raises_still_leaves_a_row(projects, closestore,
 
 
 def test_closes_can_be_read_back_for_one_session(closestore):
-    """Newest first, and filterable to the session Boss is asking about."""
+    """Newest first, and filterable to the session the user is asking about."""
     for mode in ("kept", "managed"):
         closestore.record_close(SID, mode=mode, closed=mode == "managed",
                                 review=True, pristine=False)

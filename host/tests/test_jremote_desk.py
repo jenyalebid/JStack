@@ -20,12 +20,12 @@ from jstack_host import desk
 def test_thread_url_carries_agent_identity(monkeypatch):
     import lib.agents as agents
     monkeypatch.setattr(agents, "project_dir_to_agent",
-                        lambda name: ("jarvis", "chat"))
+                        lambda name: ("nova", "chat"))
     monkeypatch.setattr(agents, "active_agents",
-                        lambda: {"jarvis": {"name": "Jarvis", "emoji": "⚡"}})
-    url = desk.thread_url("sid-1", "/Users/jarvis/Agents/Jarvis/chat")
+                        lambda: {"nova": {"name": "Nova", "emoji": "⚡"}})
+    url = desk.thread_url("sid-1", "/Users/x/Agents/Nova/chat")
     assert url.startswith("jremote://session/sid-1?")
-    assert "agent=jarvis" in url and "name=Jarvis" in url
+    assert "agent=nova" in url and "name=Nova" in url
     assert "emoji=%E2%9A%A1" in url
 
 

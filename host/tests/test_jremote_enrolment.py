@@ -91,10 +91,10 @@ def test_ttl_is_clamped_to_the_declared_window(store):
 # ── redemption ───────────────────────────────────────────────────────────────
 
 def test_redeeming_yields_a_working_token_named_by_the_code(store):
-    code, _ = _mint(store, name="Boss Work Mac")
+    code, _ = _mint(store, name="My Laptop")
     out = enrolment.redeem(code, "198.51.100.4")
     assert devices.authenticate(out["token"]) == out["device"]["id"]
-    assert out["device"]["name"] == "Boss Work Mac"
+    assert out["device"]["name"] == "My Laptop"
     assert out["token"] not in str(store.list_devices())
 
 
@@ -162,7 +162,7 @@ def test_a_code_minted_by_a_revoked_device_is_dead(store):
     """Revoking a lost phone must also kill what it left outstanding —
     otherwise a stolen token buys enrolments for the whole TTL after the user
     has already done the one thing they were told would stop it."""
-    row, _ = devices.mint("boss-iphone")
+    row, _ = devices.mint("my-iphone")
     code, _ = _mint(store, created_by=row["id"])
     devices.revoke(row["id"])
     with pytest.raises(enrolment.EnrolmentError):
@@ -172,7 +172,7 @@ def test_a_code_minted_by_a_revoked_device_is_dead(store):
 def test_refusing_a_revoked_minters_code_does_not_burn_it(store):
     """The check runs before the consume. A refused code that came back marked
     used could never be honoured again even if the revoke were undone."""
-    row, _ = devices.mint("boss-iphone")
+    row, _ = devices.mint("my-iphone")
     code, _ = _mint(store, created_by=row["id"])
     devices.revoke(row["id"])
     with pytest.raises(enrolment.EnrolmentError):
@@ -301,14 +301,14 @@ def test_redemption_pairs_with_the_slug_of_the_device_name(store, monkeypatch):
     monkeypatch.setattr(tunnel, "issue",
                         lambda d, leaf=False: seen.setdefault("peer", d) and
                         {"device": d, "config": "[Interface]", "created": True})
-    code, _ = _mint(store, name="Boss Work Mac")
+    code, _ = _mint(store, name="My Laptop")
     out = enrolment.redeem(code, "198.51.100.4")
-    assert seen["peer"] == "boss-work-mac"
+    assert seen["peer"] == "my-laptop"
     assert out["tunnel"]["config"] == "[Interface]"
 
 
 def test_peer_name_only_yields_names_wg_peer_will_take():
-    assert enrolment.peer_name("Boss Work Mac") == "boss-work-mac"
+    assert enrolment.peer_name("My Laptop") == "my-laptop"
     assert enrolment.peer_name("  --Work_Mac!!  ") == "work-mac"
     assert enrolment.peer_name("!!!") == ""
     assert enrolment.peer_name("") == ""

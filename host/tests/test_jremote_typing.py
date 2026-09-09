@@ -1,6 +1,6 @@
 """What jRemote types into a managed session's input box.
 
-Everything Boss sends from the phone that isn't a live keystroke goes through
+Everything the user sends from the phone that isn't a live keystroke goes through
 `_type_argv` — the share sheet's first message, the takeover's continue nudge,
 `POST /sessions/{sid}/input`. A single `send-keys -l "$text"` loses two things
 silently, and both were live: a newline is read as nothing (a share-sheet
@@ -39,7 +39,7 @@ def test_newline_becomes_the_insert_newline_key():
 
 
 def test_blank_line_survives_as_its_own_newline():
-    # The share sheet's shape: Boss's comment, a blank line, the file path.
+    # The share sheet's shape: The user's comment, a blank line, the file path.
     assert keys("look at this\n\n/tmp/a.png") == [
         ["send-keys", "-t", "s", "-l", "--", "look at this"],
         ["send-keys", "-t", "s", "M-Enter"],
@@ -144,7 +144,7 @@ def test_a_new_boundary_releases_the_message(tmp_path, watcher):
 
 
 def test_the_message_arrives_even_if_the_compaction_never_does(tmp_path, watcher):
-    """Bounded on purpose. A comment from Boss that never arrives is a worse
+    """Bounded on purpose. A comment from the user that never arrives is a worse
     failure than one that arrives in a heavy window — on timeout it types, and
     that is exactly the behaviour this path had before compaction was in it."""
     t = tmp_path / "s.jsonl"

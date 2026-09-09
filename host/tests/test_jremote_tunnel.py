@@ -124,7 +124,7 @@ def test_the_subnet_is_read_from_the_pairing_script_not_restated(wg, tmp_path):
 
 # --- names ------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["", "Work Mac", "../etc/passwd", "UPPER",
+@pytest.mark.parametrize("name", ["", "Two Words", "../etc/passwd", "UPPER",
                                   "x" * 40, "-leading"])
 def test_bad_device_names_are_refused(wg, name):
     with pytest.raises(tunnel.PairingRefused):
@@ -196,7 +196,7 @@ def test_carrying_the_pairing_tool_does_not_make_a_host_a_hub(wg):
 
 
 def test_a_leaf_calls_pairing_unsupported_not_broken(wg):
-    """The work Mac's screen, written as a test.
+    """A leaf's screen, written as a test.
 
     A leaf has no mesh of its own, and before this the button answered
     `cannot read the pairing script at …/wg_peer.py` — a missing-file error

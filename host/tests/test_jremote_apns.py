@@ -39,7 +39,7 @@ class _Client:
 @pytest.fixture
 def wire(monkeypatch):
     monkeypatch.setattr(apns, "_config", lambda: {
-        "team_id": "T", "key_id": "K", "bundle_id": "dev.jenya.jRemote",
+        "team_id": "T", "key_id": "K", "bundle_id": "dev.example.jRemote",
         "sandbox": True,
     })
     monkeypatch.setattr(apns, "is_configured", lambda: True)

@@ -27,11 +27,11 @@ def _clean_profile():
 def instance(tmp_path, monkeypatch):
     """A standalone instance root — agents are directories, nothing else."""
     root = tmp_path / "Agents"
-    (root / "Lynda" / "chat" / "reminder").mkdir(parents=True)
-    (root / "Lynda" / "pm").mkdir()
-    (root / "Lynda" / "pad").mkdir()          # reserved — never a sub-mode
-    (root / "Lynda" / ".claude").mkdir()      # hidden — never a sub-mode
-    (root / "Jarvis" / "chat").mkdir(parents=True)
+    (root / "Iris" / "chat" / "reminder").mkdir(parents=True)
+    (root / "Iris" / "pm").mkdir()
+    (root / "Iris" / "pad").mkdir()          # reserved — never a sub-mode
+    (root / "Iris" / ".claude").mkdir()      # hidden — never a sub-mode
+    (root / "Nova" / "chat").mkdir(parents=True)
     (root / "web" / "chat").mkdir(parents=True)
     (root / "web-2" / "chat").mkdir(parents=True)   # hyphen + digit, and a prefix
                                                     # of it is itself an agent
@@ -63,7 +63,7 @@ def test_external_profile_delegates_verbatim(monkeypatch):
 
 
 def _block_lib(monkeypatch):
-    """Make this look like a machine that has never had the J&J tree."""
+    """Make this look like a machine that has never had the embedding tree."""
     real_import = __import__
 
     def no_lib(name, *args, **kwargs):
@@ -88,7 +88,7 @@ def test_explicit_external_raises_when_the_module_cannot_load(monkeypatch):
 
 
 def test_auto_falls_back_to_default_without_lib(monkeypatch, tmp_path):
-    """A machine with no J&J tree gets a working roster, not an exception."""
+    """A machine with no embedding tree gets a working roster, not an exception."""
     monkeypatch.delenv("JREMOTE_HOST_PROFILE", raising=False)
     monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(tmp_path))
     _block_lib(monkeypatch)
@@ -99,9 +99,9 @@ def test_auto_falls_back_to_default_without_lib(monkeypatch, tmp_path):
 
 def test_roster_is_the_directories(instance):
     roster = hostenv.active_agents()
-    assert set(roster) == {"lynda", "jarvis", "web", "web-2"}
-    assert roster["lynda"]["name"] == "Lynda"
-    assert roster["lynda"]["workspace"] == str(instance / "Lynda")
+    assert set(roster) == {"iris", "nova", "web", "web-2"}
+    assert roster["iris"]["name"] == "Iris"
+    assert roster["iris"]["workspace"] == str(instance / "Iris")
 
 
 def test_reserved_and_hidden_dirs_are_not_agents(instance):
@@ -111,15 +111,15 @@ def test_reserved_and_hidden_dirs_are_not_agents(instance):
 
 
 def test_workspace_resolves_base_and_submode(instance):
-    assert hostenv.workspace("lynda") == instance / "Lynda"
-    assert hostenv.workspace("lynda-pm") == instance / "Lynda" / "pm"
+    assert hostenv.workspace("iris") == instance / "Iris"
+    assert hostenv.workspace("iris-pm") == instance / "Iris" / "pm"
 
 
 def test_nested_submode_walks_hyphens_into_dirs(instance):
     """`chat-reminder` is one id and two directories."""
-    assert hostenv.split_id("lynda-chat-reminder") == ("lynda", "chat/reminder")
-    assert hostenv.workspace("lynda-chat-reminder") == (
-        instance / "Lynda" / "chat" / "reminder")
+    assert hostenv.split_id("iris-chat-reminder") == ("iris", "chat/reminder")
+    assert hostenv.workspace("iris-chat-reminder") == (
+        instance / "Iris" / "chat" / "reminder")
 
 
 def test_unknown_base_raises(instance):
@@ -128,32 +128,32 @@ def test_unknown_base_raises(instance):
 
 
 def test_submode_dirs_excludes_reserved(instance):
-    assert hostenv.submode_dirs("lynda") == ["chat", "pm"]
+    assert hostenv.submode_dirs("iris") == ["chat", "pm"]
 
 
 def test_umbrella_dir_name_is_the_real_case(instance):
     """The id is lowercased; the directory is not."""
-    assert hostenv.umbrella_dir_name("lynda") == "Lynda"
+    assert hostenv.umbrella_dir_name("iris") == "Iris"
     assert hostenv.umbrella_dir_name("nobody") is None
 
 
 # ── project dirs: reverse Claude's own encoding, not a hardcoded path ──
 
 def test_project_dir_decodes_against_the_instance_root(instance):
-    encoded = str(instance).replace("/", "-") + "-Lynda-chat"
-    assert hostenv.project_dir_to_agent(encoded) == ("lynda", "chat")
+    encoded = str(instance).replace("/", "-") + "-Iris-chat"
+    assert hostenv.project_dir_to_agent(encoded) == ("iris", "chat")
 
 
 def test_project_dir_base_only_reads_as_default_mode(instance):
-    encoded = str(instance).replace("/", "-") + "-Jarvis"
-    assert hostenv.project_dir_to_agent(encoded) == ("jarvis", "default")
+    encoded = str(instance).replace("/", "-") + "-Nova"
+    assert hostenv.project_dir_to_agent(encoded) == ("nova", "default")
 
 
-def test_project_dir_handles_a_name_the_jj_regex_cannot(instance):
+def test_project_dir_handles_a_name_the_legacy_regex_cannot(instance):
     """`web-2` has a hyphen and a digit.
 
-    The J&J decoder matches `[A-Z][a-z]+` after a hardcoded
-    `-Users-jarvis-Agents-` prefix, so it cannot express this name or any
+    The legacy decoder matches `[A-Z][a-z]+` after a hardcoded
+    `-Users-nova-Agents-` prefix, so it cannot express this name or any
     root but this Mac's. Resolving the base against directories that exist
     can.
     """
@@ -169,18 +169,18 @@ def test_project_dir_outside_the_root_is_not_ours(instance):
     actually descends from this instance root resolves.
     """
     assert hostenv.project_dir_to_agent("-Users-someone-else-Projects-App") is None
-    assert hostenv.project_dir_to_agent("-Users-someone-Agents-Lynda-chat") is None
+    assert hostenv.project_dir_to_agent("-Users-someone-Agents-Iris-chat") is None
     assert hostenv.project_dir_to_agent(str(instance).replace("/", "-")) is None
     # An absolute path whose first component happens to be an agent name.
-    assert hostenv.project_dir_to_agent("-Lynda-chat") is None
+    assert hostenv.project_dir_to_agent("-Iris-chat") is None
 
 
 def test_a_sibling_root_cannot_claim_our_agents(instance):
     """`~/Agents` must not swallow `~/AgentsLynda`.
 
     The encoded root has to match at a path boundary. Without that, the
-    sibling's dir strips to `Lynda-chat` and files a foreign machine's session
-    under our Lynda.
+    sibling's dir strips to `Iris-chat` and files a foreign machine's session
+    under our Iris.
     """
     sibling = str(instance.parent / "AgentsLynda").replace("/", "-")
     assert hostenv.project_dir_to_agent(sibling + "-chat") is None
@@ -201,7 +201,7 @@ def _lib_agents():
         return None
 
 
-@pytest.mark.skipif(_lib_agents() is None, reason="no J&J tree on this machine")
+@pytest.mark.skipif(_lib_agents() is None, reason="no embedding tree on this machine")
 def test_both_profiles_read_this_tree_the_same_way(monkeypatch):
     """The fallback is not a different semantics — it is the same one, derived.
 
@@ -241,7 +241,7 @@ def test_no_module_in_the_package_imports_lib_agents_directly():
     """The guard that keeps the host portable.
 
     One `from lib.agents import …` slipped back into any module here and the
-    package is silently J&J-only again — every endpoint still answers on this
+    package is silently embedding-tree-only again — every endpoint still answers on this
     Mac, so nothing fails until a second instance exists. Docstrings may name
     it; code may not.
     """

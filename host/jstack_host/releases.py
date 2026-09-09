@@ -18,7 +18,7 @@ and retry forever with nothing on the Mac saying why. A missing manifest is
 the one honest empty: nothing has been published yet.
 
 **And "nothing published" is not the same as "nothing is published here."**
-Most hosts are not publishers — a standalone host on a laptop or a work Mac
+Most hosts are not publishers — a standalone host on a laptop or a desktop
 serves the same API and has never built anything. Both used to answer the
 identical empty, and the app read the empty as "you are up to date", which is
 a lie on every Mac that is itself a host: it would sit on an old build

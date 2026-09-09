@@ -2,7 +2,7 @@
 
 Pins the contract the app leans on: a session-less drop (the share sheet)
 lands in the seat's pad — the one shared folder the Files pane shows, marked
-as Boss's so an agent's cleanup leaves it — the returned path is real,
+as the user's so an agent's cleanup leaves it — the returned path is real,
 hostile filenames can't escape, and `open-new` forwards its optional first message
 as the prompt-gated nudge (the share-sheet spawn). Filesystem is a tmp
 dir; tmux is never touched.
@@ -46,7 +46,7 @@ def test_save_drop_lands_in_the_seats_one_pad(drop_pad):
     assert p.read_bytes() == b"bytes!"
     assert p.parent == drop_pad
     assert p.name.endswith("-photo.png")
-    # His, so a routine agent cleanup steps over it.
+    # Theirs, so a routine agent cleanup steps over it.
     assert scratchpad.is_boss(p)
 
 

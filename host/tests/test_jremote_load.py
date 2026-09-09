@@ -3,8 +3,8 @@
 The reading behind the app's load meter: `context` (input size of the newest
 API call, which is what every further turn re-reads) and `turns`. What these
 tests actually pin is the failure shape. A meter that answers "0 context, 0
-turns" when it could not read the transcript tells Boss the heaviest session
-on the Mac is fresh and he should keep going — the exact call the meter
+turns" when it could not read the transcript tells the user the heaviest session
+on the Mac is fresh and they should keep going — the exact call the meter
 exists to prevent — so an unreadable session must return None, and only a
 genuinely absent transcript may read as zero.
 """

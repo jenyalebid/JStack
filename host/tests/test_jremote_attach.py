@@ -98,9 +98,9 @@ def test_recent_driver_expires_with_the_window():
 def test_send_open_reaches_the_attachment():
     a = _att()
     attach.register(a)
-    attach.send_open(a, "jremote://session/new-sid?agent=jarvis")
+    attach.send_open(a, "jremote://session/new-sid?agent=nova")
     assert a.test_sent == [
-        {"type": "open", "url": "jremote://session/new-sid?agent=jarvis"}]
+        {"type": "open", "url": "jremote://session/new-sid?agent=nova"}]
 
 
 # ── close on other instances ───────────────────────────────────────────────

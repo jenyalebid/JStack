@@ -45,7 +45,7 @@ def sock(monkeypatch):
 
 @pytest.fixture
 def closed(monkeypatch):
-    """Record what would have been closed, instead of closing Boss's windows."""
+    """Record what would have been closed, instead of closing the user's windows."""
     seen = []
     monkeypatch.setattr(managed, "close_windows", lambda ttys: seen.append(list(ttys or [])))
     return seen
@@ -141,7 +141,7 @@ def test_close_managed_reads_the_ttys_before_the_teardown(sock, clients, closed)
     assert closed and closed[0], "no window was identified to close"
 
 
-# ── raw Mac windows (a claude Boss started himself) ─────────────────────────
+# ── raw Mac windows (a claude the user started themselves) ─────────────────────────
 
 def test_window_ttys_reads_a_live_process(sock):
     pid, master = _pty.fork()
@@ -164,7 +164,7 @@ def test_window_ttys_ignores_the_dead_and_the_headless():
 
 
 def test_raw_close_takes_the_window_with_it(monkeypatch, closed):
-    """A raw window is where most of Boss's sessions live: SIGTERM ends the
+    """A raw window is where most of the user's sessions live: SIGTERM ends the
     claude but the shell — and the window — would sit there without this."""
     monkeypatch.setattr(managed, "is_open", lambda sid: False)
     monkeypatch.setattr(board, "pids_holding", lambda sid: [4242])

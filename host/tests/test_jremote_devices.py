@@ -40,14 +40,14 @@ def legacy_file(tmp_path, monkeypatch):
 # ── minting and the token shape ──────────────────────────────────────────────
 
 def test_a_minted_token_authenticates_as_its_device(store):
-    row, token = devices.mint("boss-iphone")
+    row, token = devices.mint("my-iphone")
     assert token.startswith("jr1.")
     assert devices.authenticate(token) == row["id"]
-    assert store.device(row["id"])["name"] == "boss-iphone"
+    assert store.device(row["id"])["name"] == "my-iphone"
 
 
 def test_the_table_stores_a_hash_never_the_token(store):
-    _, token = devices.mint("boss-iphone")
+    _, token = devices.mint("my-iphone")
     secret = token.split(".", 2)[2]
     for row in store.list_devices():
         assert token not in str(row.values())
@@ -56,7 +56,7 @@ def test_the_table_stores_a_hash_never_the_token(store):
 
 
 def test_a_right_id_with_a_wrong_secret_is_refused(store):
-    row, _ = devices.mint("boss-iphone")
+    row, _ = devices.mint("my-iphone")
     assert devices.authenticate(f"jr1.{row['id']}.wrong-secret") is None
 
 
@@ -78,7 +78,7 @@ def test_empty_and_absent_tokens_fail_closed(store):
 # ── the legacy grandfather ───────────────────────────────────────────────────
 
 def test_the_file_token_becomes_row_legacy_on_first_use(store, legacy_file):
-    """Boss's phone, iPad and laptop all carry the file token today — the
+    """The user's phone, iPad and laptop all carry the file token today — the
     upgrade must not lock out a single one of them."""
     assert devices.authenticate("the-shared-token") == "legacy"
     row = store.device("legacy")
@@ -98,7 +98,7 @@ def test_rotating_the_file_after_migration_does_nothing(store, legacy_file):
 
 def test_host_internal_minting_first_does_not_block_the_grandfather(
         store, legacy_file, tmp_path, monkeypatch):
-    """On a restarted host the spawn-routing call races Boss's phone for the
+    """On a restarted host the spawn-routing call races the user's phone for the
     first request. If the host's self-minted row counted as "the table has
     decided", whichever boot had a machine call land first would lock every
     installed device out for good."""
@@ -116,7 +116,7 @@ def test_host_internal_minting_first_does_not_block_the_grandfather(
 def test_a_minted_device_blocks_the_grandfather(store, legacy_file):
     """A REAL device row is a decision: once one exists, the file is history
     and writing one mints nothing."""
-    devices.mint("boss-iphone")
+    devices.mint("my-iphone")
     assert devices.authenticate("the-shared-token") is None
 
 
@@ -129,7 +129,7 @@ def test_a_revoked_legacy_is_not_regrandfathered(store, legacy_file):
 # ── revocation ───────────────────────────────────────────────────────────────
 
 def test_revoke_is_immediate_and_idempotent(store):
-    row, token = devices.mint("boss-iphone")
+    row, token = devices.mint("my-iphone")
     assert devices.authenticate(token) == row["id"]
     assert devices.revoke(row["id"]) is True
     assert devices.authenticate(token) is None
@@ -139,8 +139,8 @@ def test_revoke_is_immediate_and_idempotent(store):
 
 def test_revoking_one_device_leaves_the_others_alone(store):
     """The whole point of P2 — one lost phone is one dead token."""
-    phone, phone_tok = devices.mint("boss-iphone")
-    ipad, ipad_tok = devices.mint("boss-ipad")
+    phone, phone_tok = devices.mint("my-iphone")
+    ipad, ipad_tok = devices.mint("my-ipad")
     devices.revoke(phone["id"])
     assert devices.authenticate(phone_tok) is None
     assert devices.authenticate(ipad_tok) == ipad["id"]
@@ -153,7 +153,7 @@ def test_an_unknown_device_reads_as_revoked(store):
 def test_wait_revoked_resolves_on_revoke(store):
     """The PTY holds this watcher — if it never resolved, a revoked phone's
     terminal would keep typing until it next reconnected."""
-    row, _ = devices.mint("boss-iphone")
+    row, _ = devices.mint("my-iphone")
 
     async def scenario():
         waiter = asyncio.create_task(devices.wait_revoked(row["id"]))
@@ -166,7 +166,7 @@ def test_wait_revoked_resolves_on_revoke(store):
 
 
 def test_wait_revoked_on_an_already_revoked_device_returns_at_once(store):
-    row, _ = devices.mint("boss-iphone")
+    row, _ = devices.mint("my-iphone")
     devices.revoke(row["id"])
 
     async def scenario():
@@ -179,8 +179,8 @@ def test_wait_revoked_on_an_already_revoked_device_returns_at_once(store):
 
 def test_rename_and_last_seen(store):
     row, token = devices.mint("phone")
-    assert devices.rename(row["id"], "boss-iphone")
-    assert store.device(row["id"])["name"] == "boss-iphone"
+    assert devices.rename(row["id"], "my-iphone")
+    assert store.device(row["id"])["name"] == "my-iphone"
     assert store.device(row["id"])["last_seen_at"] is None
     devices.authenticate(token)
     assert store.device(row["id"])["last_seen_at"] is not None
@@ -190,7 +190,7 @@ def test_the_devices_table_never_rides_sync(store):
     """If tokens travelled with MetaSync, revoking one device would revoke all
     and every host's credentials would pool in one store. The sync payload
     must not know the table exists."""
-    devices.mint("boss-iphone")
+    devices.mint("my-iphone")
     payload = store.changes_since(0)
     assert "devices" not in payload
     assert "token_hash" not in str(payload)
@@ -212,7 +212,7 @@ def test_internal_token_mints_once_and_is_stable(store, tmp_path, monkeypatch):
 
 
 def test_a_revoked_internal_row_stays_revoked(store, tmp_path, monkeypatch):
-    """The host may re-key itself, never resurrect itself — a revoke Boss
+    """The host may re-key itself, never resurrect itself — a revoke the user
     made must not be quietly undone by the next spawn routing call."""
     monkeypatch.setenv("JREMOTE_STATE_DIR", str(tmp_path / "state"))
     from jstack_host import hostenv
@@ -235,7 +235,7 @@ def test_five_guesses_at_one_credential_lock_that_credential_and_alert(
     alerts = []
     monkeypatch.setattr("jstack_host.hostenv.security_alert", alerts.append)
     ip = "192.168.1.66"
-    row, token = devices.mint("boss-iphone")
+    row, token = devices.mint("my-iphone")
     device_id = row["id"]
     for _ in range(5):
         with pytest.raises(Exception) as e:
@@ -263,7 +263,7 @@ def test_a_wrong_row_does_not_lock_out_the_device_s_working_row(store):
     credential actually being refused may be locked.
     """
     ip = "10.66.0.2"
-    _, good = devices.mint("boss-iphone")
+    _, good = devices.mint("my-iphone")
     foreign = "jr1.670f3e8827e3." + "x" * 40      # another host's device id
     for _ in range(6):
         with pytest.raises(Exception):
@@ -288,7 +288,7 @@ def test_spraying_many_device_ids_still_locks_the_address(store, monkeypatch):
         with pytest.raises(Exception) as e:
             auth._gate(ip, f"Bearer jr1.{i:012x}.guess")
         assert e.value.status_code == 401, f"locked too early at attempt {i}"
-    _, good = devices.mint("boss-iphone")
+    _, good = devices.mint("my-iphone")
     with pytest.raises(Exception) as e:           # address is out, all rows
         auth._gate(ip, f"Bearer {good}")
     assert e.value.status_code == 429
@@ -369,7 +369,7 @@ def test_minting_is_refused_off_the_lan(client, monkeypatch):
 
 def test_minting_on_the_lan_hands_the_token_out_exactly_once(client, store, monkeypatch):
     monkeypatch.setattr(devices, "mint_allowed_from", lambda ip: True)
-    r = client.post("/api/jremote/v1/devices", json={"name": "boss-ipad"})
+    r = client.post("/api/jremote/v1/devices", json={"name": "my-ipad"})
     assert r.status_code == 200
     token = r.json()["token"]
     assert devices.authenticate(token) == r.json()["device"]["id"]
@@ -402,7 +402,7 @@ def test_mint_gate_fallback_still_refuses_the_mesh(monkeypatch):
 
 
 def test_revoking_over_the_api_kills_the_token(client, store):
-    row, token = devices.mint("boss-old-phone")
+    row, token = devices.mint("my-old-phone")
     r = client.post(f"/api/jremote/v1/devices/{row['id']}/revoke")
     assert r.status_code == 200 and r.json()["self"] is False
     assert devices.authenticate(token) is None
@@ -411,7 +411,7 @@ def test_revoking_over_the_api_kills_the_token(client, store):
 
 def test_a_revoked_device_cannot_use_the_registry(client, store):
     """Its own row included — revocation ends the credential everywhere."""
-    row, token = devices.mint("boss-old-phone")
+    row, token = devices.mint("my-old-phone")
     devices.revoke(row["id"])
     c = TestClient(app)
     c.headers.update({"Authorization": f"Bearer {token}"})
@@ -421,9 +421,9 @@ def test_a_revoked_device_cannot_use_the_registry(client, store):
 def test_rename_endpoint(client, store):
     row, _ = devices.mint("phone")
     r = client.post(f"/api/jremote/v1/devices/{row['id']}/rename",
-                    json={"name": "Boss iPhone 17"})
+                    json={"name": "My iPhone 17"})
     assert r.status_code == 200
-    assert store.device(row["id"])["name"] == "Boss iPhone 17"
+    assert store.device(row["id"])["name"] == "My iPhone 17"
     assert client.post("/api/jremote/v1/devices/nope/rename",
                        json={"name": "x"}).status_code == 404
 
@@ -436,7 +436,7 @@ def test_rename_endpoint(client, store):
 # and a device that will not connect is diagnosed from there or by guessing.
 
 def test_deny_reason_separates_the_four_ways_a_token_fails(store):
-    row, token = devices.mint("boss-ipad")
+    row, token = devices.mint("my-ipad")
     device_id = row["id"]
 
     assert "no bearer token" in devices.deny_reason("")
@@ -454,7 +454,7 @@ def test_deny_reason_names_the_trailing_newline_a_paste_carries(store):
     """The failure this exists for: a token copied out of a fenced code block
     is character-for-character right and still 401s. Without the shape note the
     log reads 'wrong secret' and sends the reader to re-mint a good token."""
-    _row, token = devices.mint("boss-ipad")
+    _row, token = devices.mint("my-ipad")
     assert devices.authenticate(token + "\n") is None
     assert "UNTRIMMED" in devices.deny_reason(token + "\n")
     assert "UNTRIMMED" not in devices.deny_reason(token[:-1])
@@ -463,7 +463,7 @@ def test_deny_reason_names_the_trailing_newline_a_paste_carries(store):
 def test_deny_reason_never_echoes_the_secret(store):
     """It goes to a log file. A reason that quoted what was presented would
     write every valid token of every device that ever mistyped a host URL."""
-    _row, token = devices.mint("boss-ipad")
+    _row, token = devices.mint("my-ipad")
     secret = token.split(".", 2)[2]
     for presented in (token + "\n", f"jr1.{_row['id']}.{secret}x", secret, "jr1.x.y"):
         assert secret not in devices.deny_reason(presented)

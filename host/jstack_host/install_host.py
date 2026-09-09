@@ -416,8 +416,15 @@ def install(*, port: int = DEFAULT_PORT, bind: str = DEFAULT_BIND,
     print(f"  agent     {path}", file=out)
     print(f"  token     {token}"
           + ("" if minted else "   (already provisioned — unchanged)"), file=out)
-    print("\nAdd this machine in the app: Instances › Add a Mac, "
-          f"address http://<this machine>:{port}, and the token above.", file=out)
+    # Not "type the token into the app". Adding a machine is something the hub
+    # does: it mints a one-time code and hands it to the app over the app's own
+    # URL scheme (`cli.pair_link`), which is also the only path that works
+    # before this machine has a name anything else can resolve. The token above
+    # is this host's own credential, printed for the cases that genuinely need
+    # it — no app should ever be asked to carry it, and this line used to ask.
+    print("\nThe app pairs itself: `jstack-host pair --open` on this Mac, or "
+          "`jstack-host pair \"<device name>\"` for a code to type into "
+          "another one.", file=out)
     # The setup check, last: what the app will find when it connects, graded,
     # with the fix beside each thing that is not there yet. Never the exit
     # status — the host is up, and a warning is a screen waiting on a store.

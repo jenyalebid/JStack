@@ -31,10 +31,13 @@ from pathlib import Path
 
 from . import hostenv
 
-#: The mesh tools ship beside the package, not inside it — they are scripts a
+#: The mesh tools live outside the package, not inside it — they are scripts a
 #: person runs with `sudo`, and burying them in an importable package makes
-#: them unfindable for the one job they have.
-PEER_SCRIPT = hostenv.package_root() / "scripts" / "wireguard" / "wg_peer.py"
+#: them unfindable for the one job they have. *Which* copy is a profile answer
+#: (`hostenv.peer_script`): a host that installed the tooling with the package
+#: gets the one beside it, and a machine whose tunnel predates the package
+#: keeps the copy its own daemons already drive.
+PEER_SCRIPT = hostenv.peer_script()
 #: The hub's tunnel state, resolved the same way `wg_peer.py` resolves it —
 #: including `WG_PEER_DIR`, so a host that relocates it does not end up with
 #: the tool writing one directory and this module reading another.

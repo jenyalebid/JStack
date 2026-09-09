@@ -358,6 +358,10 @@ class DefaultProfile:
         """
         return HOME / ".local" / "share" / "jremote" / "credentials"
 
+    def peer_script(self) -> Path:
+        """The mesh tool, beside the package that installed it with it."""
+        return package_root() / "scripts" / "wireguard" / "wg_peer.py"
+
     def security_alert(self, body: str) -> None:
         """The server log — a standalone host has no messaging channel of its
         own, and a loud line where its logs are read is the honest maximum."""
@@ -647,6 +651,23 @@ def credentials_dir() -> Path:
     if env:
         return Path(env).expanduser()
     return profile().credentials_dir()
+
+
+def peer_script() -> Path:
+    """`wg_peer.py` — the tool that edits this host's wireguard peer table.
+
+    A profile answer and not a path derived from the source, because the mesh
+    tooling and the package do not have to have arrived together. A host that
+    installed both gets the copy beside the package; a machine whose tunnel
+    predates the package keeps the copy its own daemons already drive, and the
+    two never end up writing and reading different peer tables.
+
+    `JREMOTE_PEER_SCRIPT` overrides.
+    """
+    env = os.environ.get("JREMOTE_PEER_SCRIPT")
+    if env:
+        return Path(env).expanduser()
+    return profile().peer_script()
 
 
 def state_dir() -> Path:

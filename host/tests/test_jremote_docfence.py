@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jstack_host import docfence
+from jstack_host import docfence, plugin_paths
 
 
 @pytest.fixture
@@ -100,3 +100,36 @@ def test_the_default_roots_are_never_empty():
     is what a `read_roots()` that swallowed its own failure would produce."""
     roots = docfence.read_roots()
     assert roots and all(isinstance(r, Path) for r in roots)
+
+
+def test_the_roots_admit_every_live_marketplace(monkeypatch, tmp_path):
+    """A plugin installed from a *directory* marketplace publishes its rows at
+    the checkout's real path, not under the plugin cache. The fence has to
+    admit exactly the set resolution can produce, or the client is handed a row
+    and then refused the file behind it.
+    """
+    live = tmp_path / "somewhere" / "Checkout"
+    live.mkdir(parents=True)
+    monkeypatch.setattr(plugin_paths, "live_marketplace_roots",
+                        lambda: {"Checkout": live})
+    assert live in docfence.read_roots()
+
+    doc = live / "note.md"
+    doc.write_text("# published from the live checkout\n")
+    assert docfence.fenced_path(str(doc)) == doc.resolve()
+
+
+def test_a_broken_marketplace_file_narrows_the_fence_rather_than_breaking_it():
+    """`read_roots()` swallows a marketplace read failure on purpose: the
+    fixed roots still answer, so a corrupt file costs a client the plugin rows
+    it could read — not every document on the machine."""
+    def boom():
+        raise ValueError("unreadable marketplace file")
+
+    original = plugin_paths.live_marketplace_roots
+    plugin_paths.live_marketplace_roots = boom
+    try:
+        roots = docfence.read_roots()
+    finally:
+        plugin_paths.live_marketplace_roots = original
+    assert roots, "a broken marketplace file emptied the fence"

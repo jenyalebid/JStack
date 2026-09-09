@@ -279,9 +279,11 @@ class DefaultProfile:
         Found, not declared: the registry's `repos` lists are names, and a
         checkout the registry never mentions still shipped commits today.
         Build trees are pruned — a package checkout under SourcePackages/
-        is SwiftPM's, not ours.
+        is SwiftPM's, not ours — and so is JStack's own clone, which is the
+        tool rather than the work. See `_own_checkout`.
         """
-        return _git_checkouts(self.repo_root())
+        return [r for r in _git_checkouts(self.repo_root())
+                if not _own_checkout(r)]
 
     def repo_agent(self, repo: Path) -> str:
         """The agent the registry says owns this checkout, or ''. Names are
@@ -459,6 +461,54 @@ def _git_checkouts(root: Path, depth: int = 3) -> list[Path]:
         dirnames[:] = sorted(d for d in dirnames
                              if not d.startswith(".") and d not in _PRUNED_TREES)
     return out
+
+
+def _jstack_checkout() -> Path | None:
+    """The clone JStack itself lives in, or None where it has no clone.
+
+    The nearest `.git` ancestor of the installed plugin — NOT any checkout
+    that happens to contain it. A home directory that is itself a repo
+    contains the JStack clone too, and matching on containment alone prunes
+    the user's entire tree to remove one directory inside it.
+
+    None is the right answer twice over: on a machine with no JStack, and on
+    one running the plugin from `plugins/cache/` where there is no clone to
+    confuse with anybody's work.
+    """
+    try:
+        from . import plugin_paths
+        here = plugin_paths.jstack_root().resolve()
+    except (OSError, RuntimeError):
+        return None
+    for candidate in [here, *here.parents]:
+        try:
+            if (candidate / ".git").is_dir():
+                return candidate
+        except OSError:
+            return None
+    return None
+
+
+def _own_checkout(repo: Path) -> bool:
+    """Is this checkout JStack's own clone rather than the user's work?
+
+    The feed's git producer answers "what shipped here today". JStack's
+    development history is the tool's, not the machine's — and on a Mac that
+    has just run the installer it is the ONLY checkout under the root, so the
+    Timeline tab opens on a day made entirely of commits the user never wrote
+    and cannot place. Same principle as `_PRUNED_TREES` dropping
+    SourcePackages: someone else's history, sitting inside our tree.
+
+    Matched by path, so a clone under a different directory name is still
+    recognised, and a repo that merely contains the clone is not.
+    """
+    own = _jstack_checkout()
+    if own is None:
+        return False
+    try:
+        return repo.resolve() == own
+    except OSError:
+        return False
 
 
 def _fold(name: str) -> str:

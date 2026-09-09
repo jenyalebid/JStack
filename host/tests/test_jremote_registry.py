@@ -113,6 +113,42 @@ def test_repos_are_the_checkouts_beside_the_agents(root, tmp_path):
     assert {p.name for p in hostenv.repos()} == {"Widget-iOS", "Other"}
 
 
+def test_jstacks_own_clone_is_not_the_users_work(root, tmp_path, monkeypatch):
+    """A Mac that has just run the installer holds exactly one checkout —
+    JStack's. Unpruned, the Timeline tab opens on a day made entirely of
+    commits the user never wrote, which is what a fresh install showed."""
+    for name in ("Widget-iOS", "JStack"):
+        (tmp_path / name / ".git").mkdir(parents=True)
+    plugin = tmp_path / "JStack" / "plugins" / "jstack"
+    plugin.mkdir(parents=True)
+    monkeypatch.setattr("jstack_host.plugin_paths.jstack_root", lambda: plugin)
+    assert {p.name for p in hostenv.repos()} == {"Widget-iOS"}
+
+
+def test_a_repo_that_merely_contains_jstack_is_still_the_users_work(
+        root, tmp_path, monkeypatch):
+    """Pruning by containment would take the whole tree with it: a home
+    directory that is itself a repo contains the clone, and its history is
+    the user's."""
+    (tmp_path / ".git").mkdir(parents=True)
+    plugin = tmp_path / "JStack" / "plugins" / "jstack"
+    plugin.mkdir(parents=True)
+    (tmp_path / "JStack" / ".git").mkdir()
+    monkeypatch.setattr("jstack_host.plugin_paths.jstack_root", lambda: plugin)
+    # The walk stops at the outer checkout, and the outer checkout survives.
+    assert [p for p in hostenv.repos()] == [tmp_path]
+
+
+def test_a_plugin_with_no_clone_prunes_nothing(root, tmp_path, monkeypatch):
+    """Installed from the github marketplace there is no `~/JStack` at all —
+    the working copy sits under `plugins/cache/` with no `.git` above it."""
+    (tmp_path / "Widget-iOS" / ".git").mkdir(parents=True)
+    cache = tmp_path / "cache" / "jstack"
+    cache.mkdir(parents=True)
+    monkeypatch.setattr("jstack_host.plugin_paths.jstack_root", lambda: cache)
+    assert {p.name for p in hostenv.repos()} == {"Widget-iOS"}
+
+
 def test_repo_owner_comes_from_the_registry_with_spelling_folded(root, tmp_path):
     (tmp_path / "Widget-iOS" / ".git").mkdir(parents=True)
     (root / "Widget" / "chat").mkdir(parents=True)

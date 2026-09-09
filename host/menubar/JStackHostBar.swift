@@ -27,6 +27,7 @@
 
 import AppKit
 import Foundation
+import Network
 
 // MARK: - Where the host is
 
@@ -533,6 +534,55 @@ enum RemoteApp {
             if fm.fileExists(atPath: candidate.path) { return candidate }
         }
         return nil
+    }
+}
+
+/// Tells a running client to bring its board forward rather than whatever
+/// window happens to be frontmost.
+///
+/// `NSWorkspace.openApplication` activates and reuses the running instance,
+/// but activation only raises whatever is already frontmost — a thread
+/// window left on top stays on top. Which window is "the board" is knowable
+/// only inside that process, so the client listens on this loopback port for
+/// one line and does the choosing itself; see that file's own BoardControl
+/// for the far end. Fixed on both ends, not negotiated: a runtime port needs
+/// a second channel to publish it on, which is the exact problem this exists
+/// to avoid, and one Mac runs one client.
+///
+/// Best-effort. No client, an older build with no listener, a cold launch
+/// still short of `listen()` — every one of those is answered by the
+/// activation call already made, so a failure here is silent.
+enum BoardRaise {
+    private static let port = NWEndpoint.Port(rawValue: 52845)!
+
+    /// Retries through a cold launch: `openApplication` returns once the
+    /// process exists, not once its listener is up, and the gap between the
+    /// two is exactly the window this walks.
+    static func send(deadline: TimeInterval = 5) {
+        let start = Date()
+        var done = false
+
+        func attempt() {
+            let connection = NWConnection(host: "127.0.0.1", port: port, using: .tcp)
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    connection.send(content: Data("RAISE-BOARD\n".utf8),
+                                    completion: .contentProcessed { _ in
+                        done = true
+                        connection.cancel()
+                    })
+                case .failed, .waiting:
+                    connection.cancel()
+                    guard !done, Date().timeIntervalSince(start) < deadline else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: attempt)
+                default:
+                    break
+                }
+            }
+            connection.start(queue: .main)
+        }
+        attempt()
     }
 }
 
@@ -1231,11 +1281,14 @@ final class StatusController: NSObject {
     ///
     /// Activation rather than a second copy: two instances of a client that
     /// each hold their own connection to a hub is a way to be told two
-    /// different things about one machine.
+    /// different things about one machine. Activation alone only raises
+    /// whatever window was already frontmost, though — `BoardRaise` is what
+    /// gets the board itself in front of a thread window left on top.
     @objc private func doOpenApp() {
         guard let url = RemoteApp.url else { return }
         NSWorkspace.shared.openApplication(at: url,
                                            configuration: NSWorkspace.OpenConfiguration())
+        BoardRaise.send()
     }
 
     @objc private func doLogs() {

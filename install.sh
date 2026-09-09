@@ -41,7 +41,7 @@ usage: install.sh [options]
   --yes, -y           don't ask; accept every default
   --dry-run           print what would happen and change nothing
   --root DIR          root for Agents, Logs, Config, State, Credentials
-  --agent NAME        create this agent workspace (default: ask, or "Main" with --yes)
+  --agent NAME        create this agent workspace (default: ask, or "Jarvis" with --yes)
   --agent-root DIR    where agent workspaces live (default: <root>/Agents)
   --checkout DIR      where to clone JStack (default: ~/JStack)
   --no-scheduler      don't install the scheduler daemon (no recurring wakes)
@@ -296,14 +296,14 @@ else
     # and the seat every later session opens into, and none of that is easy to
     # rename afterwards.
     while [ -z "$AGENT_NAME" ]; do
-        AGENT_NAME="$(ask_value "Name for your first agent workspace" "Main")"
+        AGENT_NAME="$(ask_value "Name for your first agent workspace" "Jarvis")"
         interactive || break
         case "$(ask_value "Create $AGENT_ROOT/$AGENT_NAME? (y/n)" "y")" in
             [Yy]*) ;;
             *) AGENT_NAME=""; note "let's try again" ;;
         esac
     done
-    AGENT_NAME="${AGENT_NAME:-Main}"
+    AGENT_NAME="${AGENT_NAME:-Jarvis}"
     ok "first agent — $AGENT_ROOT/$AGENT_NAME"
 fi
 
@@ -410,7 +410,7 @@ else
     # root.py is the authority here and it found nothing, so the question above
     # was skipped by a probe that disagreed with it. Never build a path out of
     # an empty name: "$AGENT_ROOT/" would take mkdir and the heredoc with it.
-    AGENT_NAME="${AGENT_NAME:-Main}"
+    AGENT_NAME="${AGENT_NAME:-Jarvis}"
     seat="$AGENT_ROOT/$AGENT_NAME"
     if [ -f "$seat/CLAUDE.md" ]; then
         ok "$seat/CLAUDE.md already exists"

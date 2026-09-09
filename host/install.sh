@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # jRemote host installer — a Mac you can reach from your phone, in one command.
 #
-#   curl -fsSL https://raw.githubusercontent.com/jenyalebid/JStack/main/host/install.sh | bash
 #   ./install.sh --port 9090 --yes         # from a checkout, unattended
 #   ./install.sh --dry-run                 # print the plan, touch nothing
 #   ./install.sh --update                  # pull, reinstall, restart
@@ -23,7 +22,10 @@
 
 set -uo pipefail
 
-REPO_URL="${JSTACK_REPO_URL:-https://github.com/jenyalebid/JStack.git}"
+# The repo to clone when this is run outside a checkout. Not spelled here:
+# the script normally runs *from* the checkout, and a hardcoded account name
+# in a public installer is a name that outlives whoever owns the repo.
+REPO_URL="${JSTACK_REPO_URL:-}"
 CHECKOUT="${JSTACK_CHECKOUT:-$HOME/JStack}"
 BIN_DIR="${JSTACK_BIN_DIR:-$HOME/.local/bin}"
 MIN_PY_MAJOR=3
@@ -152,8 +154,9 @@ elif [ -d "$CHECKOUT/.git" ]; then
     ok "checkout already at $CHECKOUT"
     run git -C "$CHECKOUT" pull --ff-only || warn "git pull did not fast-forward; installing what is here"
 else
-    HOST_DIR="$CHECKOUT/host"
+    [ -n "$REPO_URL" ] || die "no checkout at $CHECKOUT — clone the repo and run host/install.sh from it, or set JSTACK_REPO_URL"
     note "cloning $REPO_URL"
+    HOST_DIR="$CHECKOUT/host"
     run git clone --depth 1 "$REPO_URL" "$CHECKOUT" || die "clone failed"
     did "cloned to $CHECKOUT"
 fi

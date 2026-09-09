@@ -92,13 +92,50 @@ def pair_link(code: str, port: int, name: str = "") -> str:
     return "jremote://pair?" + urlencode(query)
 
 
-def _hand_to_app(row: dict) -> int:
-    """Fire the pair link at the local app, or say what to do instead.
+# How long to wait for the app to actually spend the code, and how often to
+# look. Seconds, not milliseconds: the app this fires at has, by definition,
+# never been opened on this Mac — it has to clear Gatekeeper on a bundle
+# downloaded minutes ago, launch, restore its scenes, stand up the board, and
+# run one round trip against loopback. Bounded, because the honest answer when
+# it does not land is the code itself, and eight characters typed by hand beats
+# an installer that sits there.
+PAIR_WAIT = 30.0
+PAIR_POLL = 0.5
 
-    Never fatal, and never silent about which of the two happened: a machine
-    with no app installed is a normal outcome of `--open` (the app step is
-    declinable), and the code is already minted and still good — so the
-    fallback is to print it exactly as the plain form would.
+
+def _pairing_landed(code: str) -> bool:
+    """Did an app actually redeem `code`? Blocks up to `PAIR_WAIT`.
+
+    `desk.open_url` returning True means Launch Services accepted a URL. It
+    does not mean an app received it, and it certainly does not mean an app
+    spent it — this exact gap shipped a pairing step that printed success on
+    every fresh Mac while enrolling nothing, because the app dropped the link
+    at cold launch (no board window yet, and the pairing sheet lives on the
+    board). The store's used bit is the only place the truth is written down,
+    so that is what this reads.
+    """
+    import time
+    from . import enrolment
+
+    deadline = time.monotonic() + PAIR_WAIT
+    while True:
+        if enrolment.state(code) == "used":
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(PAIR_POLL)
+
+
+def _hand_to_app(row: dict) -> int:
+    """Fire the pair link at the local app, and wait to see it spent.
+
+    Exit 0 means this Mac is in the app's grid — nothing else. A machine with
+    no app, an app that ignores the link, an app that never comes up: all of
+    them are a normal outcome of `--open` (the app step is declinable), the
+    code is already minted and still good, so the fallback is to print it
+    exactly as the plain form would and exit non-zero. The caller in
+    `install.sh` branches on that status to decide whether to claim the two
+    halves have met.
 
     `desk.open_url` rather than a bare `open`, because it pins the link to
     the copy in /Applications. On a machine that has ever built the app, a
@@ -110,16 +147,16 @@ def _hand_to_app(row: dict) -> int:
 
     port = install_host.installed_port() or install_host.DEFAULT_PORT
     link = pair_link(row["code"], port, hostenv.host_name())
-    if desk.open_url(link):
-        print(f"paired the app on this Mac as {row['name']} — it should be "
-              "opening now")
+    if desk.open_url(link) and _pairing_landed(row["code"]):
+        print(f"paired the app on this Mac as {row['name']} — this machine is "
+              "in its grid now")
         return 0
     mins = row["expires_in"] // 60
-    print("no app on this Mac answered that link — install it, then type this "
-          "code into it:")
+    print("the app on this Mac did not take that link — open it, then type "
+          "this code into it:")
     print(f"\n    {row['code']}\n")
     print(f"good for {mins} minute{'' if mins == 1 else 's'}.")
-    return 0
+    return 1
 
 
 # The first thing anyone sees after an install finishes. Addressed to the

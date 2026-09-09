@@ -386,3 +386,80 @@ def test_revoking_over_the_api(client, store):
     assert r.status_code == 200
     assert client.post("/api/jremote/v1/enrolment/codes/revoke",
                        json={"code": code}).status_code == 404
+
+
+# ── what `pair --open` is allowed to claim ───────────────────────────────────
+#
+# The gap these close shipped once, and a VM install caught it: the installer's
+# pairing step printed "the app is open and connected to this Mac" on every
+# fresh install while enrolling nothing, because `open` accepting a URL was
+# being read as an app spending a code. A check that reports state it cannot
+# observe is worse than no check.
+
+def test_state_reads_a_code_by_the_code_itself(store):
+    code, out = _mint(store)
+    assert enrolment.state(out["code"]) == "live"
+    assert enrolment.state(code.lower()) == "live", "case and grouping are display"
+    assert enrolment.state("22222222") == "unknown"
+    assert enrolment.state("nonsense") == "unknown"
+
+
+def test_state_says_used_only_after_a_real_redemption(store):
+    code, out = _mint(store)
+    assert enrolment.state(out["code"]) == "live"
+    enrolment.redeem(code, "198.51.100.4")
+    assert enrolment.state(out["code"]) == "used"
+
+
+def test_state_says_expired_and_never_consumes(store):
+    store.add_enrolment_code(enrolment._hash("22222222"), "old",
+                             int(time.time()) - 5, "", "device")
+    assert enrolment.state("22222222") == "expired"
+    assert enrolment.state("22222222") == "expired", "reading is not spending"
+    assert store.enrolment_code(enrolment._hash("22222222"))["used_at"] is None
+
+
+@pytest.fixture
+def open_pair(store, monkeypatch):
+    """`cli._hand_to_app` with its seams stubbed: what `open` did, and how long
+    we are willing to wait for an answer. Returns a function that installs the
+    `open_url` behaviour a given test wants."""
+    from jstack_host import cli, desk, install_host
+    monkeypatch.setattr(cli, "PAIR_WAIT", 0.3)
+    monkeypatch.setattr(cli, "PAIR_POLL", 0.05)
+    monkeypatch.setattr(install_host, "installed_port", lambda: 9090)
+    monkeypatch.setattr("jstack_host.hostenv.host_name", lambda: "work-mac")
+
+    def opens(behaviour):
+        monkeypatch.setattr(desk, "open_url", behaviour)
+        return cli
+    return opens
+
+
+def test_pair_open_refuses_to_call_a_fired_link_a_pairing(open_pair, store, capsys):
+    """The exact shipped bug: Launch Services took the URL and no app spent the
+    code. Non-zero, and the code printed — that is the recovery."""
+    fired = []
+    cli = open_pair(lambda url: bool(fired.append(url)) or True)
+    _, out = _mint(store)
+    assert cli._hand_to_app(out) == 1
+    assert out["code"] in capsys.readouterr().out
+    assert fired and fired[0].startswith("jremote://pair?")
+
+
+def test_pair_open_reports_success_once_an_app_actually_redeems(open_pair, store):
+    _, out = _mint(store)
+    code = enrolment.normalize(out["code"])
+    cli = open_pair(lambda url: bool(enrolment.redeem(code, "127.0.0.1")))
+    assert cli._hand_to_app(out) == 0
+    assert enrolment.state(out["code"]) == "used"
+
+
+def test_pair_open_does_not_wait_on_a_link_nothing_took(open_pair, store):
+    """No app at all: `open` failed, so there is nothing to wait for and the
+    30-second budget must not be spent proving it."""
+    cli = open_pair(lambda url: False)
+    _, out = _mint(store)
+    started = time.monotonic()
+    assert cli._hand_to_app(out) == 1
+    assert time.monotonic() - started < 0.3

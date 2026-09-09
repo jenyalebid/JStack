@@ -670,9 +670,14 @@ if [ "$HOST_INSTALLED" = "1" ] && [ "$APP_INSTALLED" = "1" ] && [ "$DRY_RUN" = "
     step "Pairing the app to this Mac"
     HOSTBIN="$HOME/.local/bin/jstack-host"
     device_name="$(scutil --get ComputerName 2>/dev/null || hostname -s)"
+    # The output is kept, not discarded: `pair --open` exits non-zero when the
+    # app did not spend the code, and what it prints in that case IS the
+    # recovery — the code itself, still good. Swallowing it left a warn telling
+    # someone to re-run a command whose whole output we had just thrown away.
+    pair_log="$(mktemp -t jstack-pair)"
     if [ ! -x "$HOSTBIN" ]; then
         warn "jstack-host is not on this Mac — pair by hand with \`jstack-host pair\`"
-    elif "$HOSTBIN" pair "$device_name" --open >/dev/null 2>&1; then
+    elif "$HOSTBIN" pair "$device_name" --open >"$pair_log" 2>&1; then
         ok "the app is open and connected to this Mac — nothing to type"
         # And the app opens on something rather than on nothing. The session
         # comes up already checking the machine it was just installed on, so
@@ -685,8 +690,10 @@ if [ "$HOST_INSTALLED" = "1" ] && [ "$APP_INSTALLED" = "1" ] && [ "$DRY_RUN" = "
             ok "$AGENT_NAME is in the app going over the install with you"
         fi
     else
-        warn "could not pair the app — run \`jstack-host pair --open\` to retry"
+        warn "the app did not pair itself — the code below still works, or run \`jstack-host pair --open\` again"
+        sed 's/^/  /' "$pair_log"
     fi
+    rm -f "$pair_log"
 fi
 
 # ── 11. the verdict ─────────────────────────────────────────────────────────

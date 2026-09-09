@@ -392,6 +392,31 @@ def list_codes() -> list[dict]:
     return out
 
 
+def state(raw_code: str) -> str:
+    """Where one code stands — "live", "used", "expired", or "unknown".
+
+    By the code itself, because that is the only handle there is: `list_codes`
+    deliberately never returns a hash, so a row cannot be picked out of that
+    list by anything but its name, and two machines pairing under the same name
+    are two rows. Holding the code is also what authorizes spending it, so this
+    tells a caller nothing it could not already have found out by redeeming.
+
+    Read-only and off the redemption path. `jstack-host pair --open` is the
+    caller: firing a `jremote://pair` link proves only that Launch Services
+    accepted a URL, and the used bit here is the one place the truth of whether
+    an app actually took it is written down.
+    """
+    code = normalize(raw_code)
+    if not code:
+        return "unknown"
+    row = _store().enrolment_code(_hash(code))
+    if row is None:
+        return "unknown"
+    if row["used_at"]:
+        return "used"
+    return "expired" if row["expires_at"] <= int(time.time()) else "live"
+
+
 def revoke(raw_code: str) -> bool:
     """Withdraw an unused code, by the code itself.
 

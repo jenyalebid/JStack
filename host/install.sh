@@ -321,13 +321,15 @@ fi
 # `--open` because on THIS machine there is nobody to read a code to. The app
 # is right here; the code goes to it over `jremote://pair` and it enrols
 # itself. A Mac with no app installed falls back to printing the code, which
-# is what this step always did.
+# is what this step always did — and so does a Mac whose app took the link and
+# then did nothing with it, because `--open` now waits to watch the code be
+# spent rather than trusting that `open` returning 0 meant anything.
 
 if [ "$WANT_PAIR" = "1" ]; then
     step "Pairing"
     DEVICE_NAME="${JSTACK_DEVICE_NAME:-$(scutil --get ComputerName 2>/dev/null || hostname -s)}"
     if ! "$HOSTBIN" pair "$DEVICE_NAME" --open; then
-        warn "could not mint a pairing code — run \`jstack-host pair\` yourself"
+        warn "the app did not pair itself — the code above still works"
     fi
 fi
 

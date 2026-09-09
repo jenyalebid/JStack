@@ -140,11 +140,28 @@ ok "git $(git --version | awk '{print $3}')"
 # above are fixed". macOS does not ship it. The installer knew the dependency,
 # knew the fix, ran neither, and ended a clean install on a red line telling
 # the reader to type the one command it could have typed itself.
+#
+# brew is looked for at its two install prefixes, not just on PATH. This
+# script is chained from the top-level installer under `curl | bash`, whose
+# PATH does not carry /opt/homebrew/bin — so `command -v brew` said no on a
+# machine that had Homebrew, python and everything else, and the run ended on
+# "there is no Homebrew to install it with" beside a python found at
+# /opt/homebrew/bin/python3 three lines above.
+BREW=""
+for cand in /opt/homebrew/bin/brew /usr/local/bin/brew "$(command -v brew 2>/dev/null)"; do
+    [ -n "$cand" ] && [ -x "$cand" ] && { BREW="$cand"; break; }
+done
+
 if command -v tmux >/dev/null 2>&1; then
     ok "tmux $(tmux -V | awk '{print $2}')"
-elif command -v brew >/dev/null 2>&1; then
+elif [ -n "$BREW" ]; then
     printf "  installing tmux…\n"
-    if brew install tmux >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
+    if "$BREW" install tmux >/dev/null 2>&1; then
+        # brew's bin dir is not necessarily on this shell's PATH either, so the
+        # confirmation asks brew where it put it rather than asking PATH.
+        eval "$("$BREW" shellenv 2>/dev/null)" || true
+    fi
+    if command -v tmux >/dev/null 2>&1; then
         ok "tmux $(tmux -V | awk '{print $2}') installed"
     else
         warn "could not install tmux — run \`brew install tmux\`; chats cannot start without it"

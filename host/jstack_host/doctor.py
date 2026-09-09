@@ -129,15 +129,28 @@ def check_agents() -> dict:
     return _check("agents", OK, f"{len(agents)} ({names}); {drawn} with an emoji")
 
 
+# A warning is a thing to go and do. None of the five checks below used to be.
+#
+# A fresh install ended on five yellow lines whose own hints said they were
+# normal — "the first session that logs an entry creates it", "the board fills
+# in as Claude Code sessions run", "optional", "open any interactive claude
+# session once". Nothing to fix, nothing broken, and the reader learns in the
+# first minute that yellow means nothing here. The next warning that does mean
+# something gets skimmed past with the rest.
+#
+# So: state that arrives by itself with normal use grades OK and still says
+# what is absent. WARN is kept for the cases that genuinely stay broken —
+# log_event not installed at all, a registry file present but empty.
+
+
 def check_registry() -> dict:
     p = hostenv.profile()
     if p.name != "default":
         return _check("registry", OK, f"the {p.name} profile's own")
     path = p.registry_path()
     if not path.exists():
-        return _check("registry", WARN, f"no agents.json at {path}",
-                      "JStack's agent registry names, emojis and seats the "
-                      "cards; without it agents are bare directories")
+        return _check("registry", OK, f"no agents.json at {path} yet — "
+                      "agents show as bare directories until one exists")
     reg = p._registry()
     if not reg:
         return _check("registry", WARN, f"{path} holds no agent entries",
@@ -154,26 +167,25 @@ def check_timeline() -> dict:
                       "install the JStack plugin — the Timeline tab and tags "
                       "read its store")
     if not db.exists():
-        return _check("timeline", WARN, f"log_event at {binary}, no store yet at {db}",
-                      "the first session that logs an entry creates it")
+        return _check("timeline", OK, f"log_event at {binary}, no store yet at "
+                      f"{db} — the first session that logs an entry creates it")
     return _check("timeline", OK, f"{db}")
 
 
 def check_transcripts() -> dict:
     root = Path.home() / ".claude" / "projects"
     if not root.is_dir():
-        return _check("transcripts", WARN, f"{root} does not exist",
-                      "the board fills in as Claude Code sessions run")
+        return _check("transcripts", OK, f"none yet at {root} — the board "
+                      "fills in as Claude Code sessions run")
     n = sum(1 for _ in root.glob("*/*.jsonl"))
-    return _check("transcripts", OK if n else WARN, f"{n} under {root}")
+    return _check("transcripts", OK, f"{n} under {root}")
 
 
 def check_scheduler() -> dict:
     d = hostenv.scheduler_dir()
     if not (d / "config" / "schedule.json").exists():
-        return _check("scheduler", WARN, f"no schedule at {d}",
-                      "optional — JStack's scheduler journal feeds the Runs "
-                      "source of the Timeline")
+        return _check("scheduler", OK, f"no schedule at {d} yet — optional; "
+                      "its journal feeds the Runs source of the Timeline")
     return _check("scheduler", OK, f"{d}")
 
 
@@ -181,9 +193,8 @@ def check_allowance() -> dict:
     from . import allowance
     sample = allowance.cli_cache_sample()
     if sample is None:
-        return _check("allowance", WARN, "Claude Code has not cached a usage reading",
-                      "open any interactive claude session once; the Usage "
-                      "bars read the CLI's own cache")
+        return _check("allowance", OK, "no usage reading cached yet — the "
+                      "Usage bars fill in after one interactive claude session")
     import time
     age = int(time.time() - float(sample.get("sampled_at") or 0))
     pcts = ", ".join(f"{w['label']} {w['pct']:.0f}%" for w in sample["windows"])

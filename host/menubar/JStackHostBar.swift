@@ -226,6 +226,20 @@ struct HostState {
     var isProvisioned: Bool { health?.provisioned == true }
     var liveCount: Int { sessions.filter { $0.live == true }.count }
 
+    /// The machine row's second line. Shorter than `summary` on purpose: it
+    /// sits under the machine's name, where the question is "is it up and how
+    /// busy", not "how was it configured" — that stays in the tooltip.
+    var headline: String {
+        guard isUp else {
+            return installed ? "Hub is not answering" : "No hub on this Mac"
+        }
+        guard isProvisioned else { return "Hub running · no token" }
+        let live = liveCount
+        if live > 0 { return "Hub running · \(live) working" }
+        return sessions.isEmpty ? "Hub running · idle"
+                                : "Hub running · \(sessions.count) open"
+    }
+
     var summary: String {
         guard isUp else {
             return installed ? "Host is not answering" : "No host on this Mac"
@@ -320,6 +334,33 @@ final class HostProbe {
         return d
     }
 
+    /// End a session through the host's own close route — the same one the app
+    /// and the board use, so a kill from here goes through the identical
+    /// teardown (window closed, end-of-session hook run) instead of a second
+    /// implementation that gets one of those wrong.
+    func close(sid: String, token: String,
+               _ done: @escaping (Bool, String) -> Void) {
+        let port = HostAgent.port()
+        guard let url = URL(string:
+            "http://127.0.0.1:\(port)\(Self.apiPrefix)/sessions/\(sid)/close?review=true")
+        else { return done(false, "could not build the request") }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // The teardown waits on `claude` to exit, up to ten seconds — well past
+        // the three the polls are configured for.
+        req.timeoutInterval = 20
+        session.dataTask(with: req) { data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let detail: String
+            if let error { detail = error.localizedDescription }
+            else if let data, let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                detail = text
+            } else { detail = "the hub answered \(status)" }
+            DispatchQueue.main.async { done(status == 200, detail) }
+        }.resume()
+    }
+
     private func get(_ url: String, token: String?,
                      _ done: @escaping (Data?, Int) -> Void) {
         guard let url = URL(string: url) else { return done(nil, 0) }
@@ -391,14 +432,30 @@ enum Machine {
 /// installed it put it, and `/Applications` is a guess. `JREMOTE_APP_BUNDLE_ID`
 /// names a different build — a debug one, say — without a rebuild of this.
 enum RemoteApp {
-    static let bundleID = ProcessInfo.processInfo
-        .environment["JREMOTE_APP_BUNDLE_ID"] ?? "dev.jenya.jRemote"
+    /// The bundle name, which is the product's name and nothing else.
+    ///
+    /// Not a bundle identifier: an identifier carries whoever signed the
+    /// build — a person's or a company's name — and this file ships in a
+    /// public repository, so hardcoding one would publish that. Set
+    /// `JREMOTE_APP_BUNDLE_ID` to name your own build's identifier instead;
+    /// it wins where it is set, and nothing is written down here.
+    static let bundleName = "jRemote"
 
     /// Resolved on every read, not cached: the app can be installed while this
     /// menu bar item is running, and an item that stays missing until the next
     /// login is one that looks broken.
     static var url: URL? {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        if let id = ProcessInfo.processInfo.environment["JREMOTE_APP_BUNDLE_ID"],
+           !id.isEmpty {
+            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+        }
+        let fm = FileManager.default
+        for dir in [URL(fileURLWithPath: "/Applications"),
+                    fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")] {
+            let candidate = dir.appendingPathComponent("\(bundleName).app")
+            if fm.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
     }
 }
 
@@ -521,38 +578,24 @@ final class StatusController: NSObject {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        // ── This Mac ────────────────────────────────────────────────────────
-        menu.addItem(Self.section("This Mac"))
+        // ── The machine, and what it is running ─────────────────────────────
+        //
+        // Two rows that open, rather than two lists spilled onto one surface.
+        // The top level is then short enough to read at a glance — which is
+        // what a menu bar is for — and each row's contents are one hover away
+        // instead of scrolled past on the way to the next thing.
+        //
+        // No "This Mac" heading above them: the machine's own name is the row,
+        // and a heading that says less than the line under it is furniture.
 
-        // The machine, named and drawn. Its subtitle carries what the old
-        // top line said — profile and port — because that is reference
-        // material you go looking for, not the headline of the menu.
-        let machine = Self.caption(Machine.name, dim: false)
-        machine.image = Self.glyph(Machine.symbol, size: 16)
+        let machine = NSMenuItem(title: Machine.name, action: nil, keyEquivalent: "")
+        machine.image = Self.glyph(Machine.symbol, size: 26)
+        machine.attributedTitle = Self.twoLine(Machine.name, state.headline)
         machine.toolTip = state.summary
+        machine.submenu = controlsMenu()
         menu.addItem(machine)
 
-        // Only when there is an agent to operate. A hub running in a terminal
-        // is stopped by the terminal it is running in, and a Stop button that
-        // boots out a job that does not exist is a button that lies.
-        if state.installed {
-            if state.isUp {
-                menu.addItem(Self.action("Restart Hub", #selector(doRestart), self,
-                                         symbol: "arrow.clockwise", indent: 1))
-                menu.addItem(Self.action("Shut Down Hub", #selector(doStop), self,
-                                         symbol: "power", indent: 1))
-            } else {
-                menu.addItem(Self.action("Start Hub", #selector(doStart), self,
-                                         symbol: "power", indent: 1))
-            }
-        }
-        if state.isUp, HostControl.hostBinary != nil {
-            menu.addItem(Self.action("Pair a Device…", #selector(doPair), self,
-                                     symbol: "plus.circle", indent: 1))
-        }
-
-        // ── What is running ─────────────────────────────────────────────────
-        for row in activeRows() { menu.addItem(row) }
+        menu.addItem(processesItem())
 
         // ── The app ─────────────────────────────────────────────────────────
         menu.addItem(.separator())
@@ -587,39 +630,124 @@ final class StatusController: NSObject {
     /// The Active section. Rows are informational — a menu bar is where you
     /// look to find out, and the thing you would do about it is a terminal
     /// command or the app, neither of which belongs behind a status item.
-    private func activeRows() -> [NSMenuItem] {
-        guard state.isUp else { return [] }
+    /// What opens off the machine's row: the things you can do to the hub.
+    ///
+    /// Start / Stop only when there is an agent to operate. A hub running in a
+    /// terminal is stopped by the terminal it is running in, and a Shut Down
+    /// that boots out a job which does not exist is a button that lies.
+    private func controlsMenu() -> NSMenu {
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        if state.installed {
+            if state.isUp {
+                sub.addItem(Self.action("Restart Hub", #selector(doRestart), self,
+                                        symbol: "arrow.clockwise"))
+                sub.addItem(Self.action("Shut Down Hub", #selector(doStop), self,
+                                        symbol: "power"))
+            } else {
+                sub.addItem(Self.action("Start Hub", #selector(doStart), self,
+                                        symbol: "power"))
+            }
+        }
+        if state.isUp, HostControl.hostBinary != nil {
+            sub.addItem(Self.action("Pair a Device…", #selector(doPair), self,
+                                    symbol: "plus.circle"))
+        }
+        if sub.items.isEmpty {
+            sub.addItem(Self.caption("No agent to operate this hub."))
+        }
+        return sub
+    }
+
+    /// The processes row: a count you read at the top level, a list you open.
+    private func processesItem() -> NSMenuItem {
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        guard state.isUp else {
+            let item = NSMenuItem(title: "Hub is not running", action: nil, keyEquivalent: "")
+            item.image = Self.glyph("bolt.horizontal.circle", size: 14)
+            item.isEnabled = false
+            return item
+        }
         if !state.isProvisioned {
-            return [Self.section("Not Provisioned"),
-                    Self.caption("No token, so every request is refused."),
-                    Self.caption("Run: jstack-host status")]
+            sub.addItem(Self.caption("No token, so every request is refused."))
+            sub.addItem(Self.caption("Run: jstack-host status"))
+            return Self.opener("No Access", symbol: "lock", submenu: sub)
         }
         if state.unauthorized {
-            return [Self.section("Refused"),
-                    Self.caption("The token on disk was refused by the hub.")]
+            sub.addItem(Self.caption("The token on disk was refused by the hub."))
+            return Self.opener("No Access", symbol: "lock", submenu: sub)
         }
-        if state.sessions.isEmpty {
-            return [Self.section("Nothing Running")]
-        }
+
         let sorted = state.sessions.sorted {
             ($0.live == true ? 0 : 1, $0.title) < ($1.live == true ? 0 : 1, $1.title)
         }
-        // "23 active processes" — the count belongs in the heading, where it
-        // is read once, rather than tacked onto a row you have to find.
-        let header = Self.section("\(sorted.count) Active "
-                                  + (sorted.count == 1 ? "Process" : "Processes"))
-        return [header] + sorted.map { session in
+        guard !sorted.isEmpty else {
+            let item = NSMenuItem(title: "Nothing running", action: nil, keyEquivalent: "")
+            item.image = Self.glyph("moon.zzz", size: 14)
+            item.isEnabled = false
+            return item
+        }
+        for session in sorted {
             let emoji = (session.emoji ?? "").isEmpty ? "" : "\(session.emoji!) "
-            let row = Self.caption("\(emoji)\(session.title)",
-                                   dim: session.live != true)
+            let row = NSMenuItem(title: "\(emoji)\(session.title)",
+                                 action: nil, keyEquivalent: "")
             // The dot is the state, and it is an icon rather than a character
             // in the title so every row's text starts at the same x — a list
             // whose left edge moves with the status is one you cannot scan.
             row.image = Self.dot(live: session.live == true,
                                  idle: session.onMac == true || session.managed == true)
-            row.indentationLevel = 1
-            return row
+
+            // Kill hangs off the process rather than sitting beside its name:
+            // a one-click kill in a list you are scrolling is a session ended
+            // by the mouse passing over it.
+            let actions = NSMenu()
+            actions.autoenablesItems = false
+            let kill = Self.action("Kill", #selector(doKill), self, symbol: "xmark.circle")
+            kill.representedObject = session
+            actions.addItem(kill)
+            row.submenu = actions
+            sub.addItem(row)
         }
+        // "23 active processes" — the count is the whole point of the row, so
+        // it is the row, and the names are what opens off it.
+        let title = "\(sorted.count) Active "
+            + (sorted.count == 1 ? "Process" : "Processes")
+        return Self.opener(title, symbol: "list.bullet.rectangle", submenu: sub)
+    }
+
+    /// The header row's two lines: what the machine is, and what it is doing.
+    ///
+    /// An attributed title rather than a custom view. A menu item with a view
+    /// stops being a menu item — it loses the system's highlight, its
+    /// keyboard handling and its submenu triangle, all of which would then
+    /// have to be redrawn by hand and would still be slightly wrong. Two
+    /// paragraphs and a taller image get the same result and stay native.
+    private static func twoLine(_ title: String, _ subtitle: String) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 1
+        let out = NSMutableAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
+        ])
+        guard !subtitle.isEmpty else { return out }
+        out.append(NSAttributedString(string: "\n" + subtitle, attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: paragraph,
+        ]))
+        return out
+    }
+
+    /// A row whose job is to open something.
+    private static func opener(_ title: String, symbol: String,
+                               submenu: NSMenu) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.image = glyph(symbol, size: 14)
+        item.submenu = submenu
+        return item
     }
 
     /// A filled dot for a session that is producing, a hollow one for a session
@@ -650,20 +778,6 @@ final class StatusController: NSObject {
         let out = image?.withSymbolConfiguration(config)
         out?.isTemplate = true
         return out
-    }
-
-    /// A heading. macOS 14 draws these small, uppercase and unclickable, which
-    /// is exactly the treatment these want; before that they are a dim caption.
-    private static func section(_ title: String) -> NSMenuItem {
-        if #available(macOS 14.0, *) {
-            return NSMenuItem.sectionHeader(title: title)
-        }
-        let item = caption(title.uppercased())
-        item.attributedTitle = NSAttributedString(string: title.uppercased(), attributes: [
-            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ])
-        return item
     }
 
     // MARK: Items
@@ -713,6 +827,40 @@ final class StatusController: NSObject {
     }
 
     @objc private func doRefresh() { refresh() }
+
+    /// End a session, after asking.
+    ///
+    /// A confirmation because this is not undoable and the menu is a place the
+    /// pointer passes through: the transcript survives, but the turn in flight
+    /// does not, and "which one was highlighted" is not a question to answer
+    /// after the fact. `review=true` — the session's own end-of-session hook
+    /// runs, the same as closing its window by hand.
+    @objc private func doKill(_ sender: NSMenuItem) {
+        guard let session = sender.representedObject as? Session,
+              let sid = session.sessionId, !sid.isEmpty,
+              let token = HostAgent.token() else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Kill \(session.title)?"
+        alert.informativeText = "The session ends now. Its transcript is kept, "
+            + "so it can be resumed later."
+        alert.addButton(withTitle: "Kill")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        probe.close(sid: sid, token: token) { [weak self] ok, detail in
+            if !ok {
+                let failed = NSAlert()
+                failed.alertStyle = .warning
+                failed.messageText = "Could not kill \(session.title)"
+                failed.informativeText = detail
+                failed.runModal()
+            }
+            self?.refresh()
+        }
+    }
 
     /// Opens the client app, or brings it forward if it is already running.
     ///

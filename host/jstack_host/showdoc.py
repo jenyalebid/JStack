@@ -6,7 +6,7 @@ exist, as a full-screen cover where they don't — using the same routing rule
 `spawn.py` uses for a spawn's window, because it is the same question: the
 document belongs on the screen of whoever asked for it.
 
-    ~/Operations/Infrastructure/bin/show-doc PATH [--title TITLE]
+    python3 -m jstack_host.showdoc PATH [--title TITLE]
 
 Where it lands:
 

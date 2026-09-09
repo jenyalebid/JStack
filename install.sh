@@ -2,7 +2,7 @@
 # JStack installer — a bare machine to a working stack, in one command.
 #
 #   curl -fsSL https://raw.githubusercontent.com/jenyalebid/JStack/main/install.sh | bash
-#   ./install.sh --yes --agent Ada --scheduler       # unattended, everything
+#   ./install.sh --yes --agent Ada                   # unattended, everything
 #   ./install.sh --dry-run                           # print the plan, touch nothing
 #
 # Setup used to be seven steps across two surfaces, each documented, each
@@ -25,7 +25,7 @@ MIN_PY_MINOR=9
 ASSUME_YES=0
 DRY_RUN=0
 AGENT_NAME=""
-WANT_SCHEDULER=0
+WANT_SCHEDULER=1
 WANT_CLAUDE=1
 WANT_HOST=1
 WANT_MENUBAR=1
@@ -40,15 +40,21 @@ usage: install.sh [options]
 
   --yes, -y           don't ask; accept every default
   --dry-run           print what would happen and change nothing
+  --root DIR          root for Agents, Logs, Config, State, Credentials
   --agent NAME        create this agent workspace (default: ask, or "Main" with --yes)
-  --agent-root DIR    where agent workspaces live (default: ~/Agents)
+  --agent-root DIR    where agent workspaces live (default: <root>/Agents)
   --checkout DIR      where to clone JStack (default: ~/JStack)
-  --scheduler         also install the scheduler daemon as a user service
+  --no-scheduler      don't install the scheduler daemon (no recurring wakes)
   --no-claude         don't install Claude Code even if it is missing
   --no-host           don't install the host (no remote access, no icon)
   --no-menubar        install the host but not its menu bar icon
-  --no-app            don't offer the Mac app
+  --no-app            don't install the Mac app
   --help, -h          this
+
+The install asks two things — where the root goes and what to call the first
+agent workspace — and then runs to the end. Every other part of the stack has
+one sensible answer, so it is installed, and the way to decline it is a flag
+above rather than a prompt.
 
 Environment: JSTACK_REPO_URL, JSTACK_CHECKOUT, JSTACK_AGENT_ROOT override the
 defaults above. JSTACK_ROOT, if you export it, is honoured by everything the
@@ -63,7 +69,9 @@ while [ $# -gt 0 ]; do
         --agent)       AGENT_NAME="${2:-}"; shift ;;
         --agent-root)  AGENT_ROOT="${2:-}"; shift ;;
         --checkout)    CHECKOUT="${2:-}"; shift ;;
-        --scheduler)   WANT_SCHEDULER=1 ;;
+        --root)        JSTACK_ROOT="${2:-}"; shift ;;
+        --scheduler)   WANT_SCHEDULER=1 ;;   # back-compat: it is the default now
+        --no-scheduler) WANT_SCHEDULER=0 ;;
         --no-claude)   WANT_CLAUDE=0 ;;
         --no-host)     WANT_HOST=0 ;;
         --no-menubar)  WANT_MENUBAR=0 ;;
@@ -115,19 +123,12 @@ interactive() {
     return 0
 }
 
-ask() {
-    # $1 prompt, $2 default (y/n). --yes and no terminal both take the default.
-    local reply
-    if ! interactive; then
-        [ "$2" = "y" ]; return
-    fi
-    printf '  %s [%s] ' "$1" "$([ "$2" = y ] && echo Y/n || echo y/N)" >/dev/tty
-    read -r reply </dev/tty || reply=""
-    reply="${reply:-$2}"
-    case "$reply" in [Yy]*) return 0 ;; *) return 1 ;; esac
-}
-
 # Free-text answer with a default. $1 prompt, $2 default.
+#
+# The only kind of question this installer asks. There is deliberately no
+# yes/no helper: a y/n prompt is an offer, and every offer this script used to
+# make had one answer that worked and one that produced a green install missing
+# a part. Those are flags now.
 ask_value() {
     local reply
     if ! interactive; then printf '%s' "$2"; return; fi
@@ -224,7 +225,14 @@ export JSTACK_ROOT
 case "$AGENT_ROOT" in
     "$HOME/Agents") AGENT_ROOT="$JSTACK_ROOT/Agents" ;;
 esac
-note "agents will live in $AGENT_ROOT"
+
+# The second and last question. Asked here rather than at step 4 so both
+# answers are given before anything is installed — an install that stops to ask
+# something ten minutes in cannot be walked away from.
+if [ -z "$AGENT_NAME" ]; then
+    AGENT_NAME="$(ask_value "Name for your first agent workspace" "Main")"
+fi
+ok "first agent — $AGENT_ROOT/$AGENT_NAME"
 
 # ── 1. Claude Code ──────────────────────────────────────────────────────────
 
@@ -237,7 +245,10 @@ if [ -n "$CLAUDE" ]; then
     ok "already installed — $("$CLAUDE" --version 2>&1 | head -1)"
 elif [ "$WANT_CLAUDE" = "0" ]; then
     warn "not installed, and --no-claude was passed — the plugin cannot be registered without it"
-elif ask "Claude Code is not installed. Install it now?" y; then
+else
+    # Not a question: every step after this one registers a plugin, links a
+    # rule or installs a command into Claude Code. Answering no here produces
+    # an install that finishes green and delivers nothing.
     if [ "$DRY_RUN" = "1" ]; then
         would "curl -fsSL https://claude.ai/install.sh | bash"
     elif run_long "downloading Claude Code" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'; then
@@ -246,8 +257,6 @@ elif ask "Claude Code is not installed. Install it now?" y; then
     else
         warn "the Claude Code installer failed; see $LAST_LOG"
     fi
-else
-    warn "skipped — the plugin steps below will be skipped too"
 fi
 
 # The installer drops it in ~/.local/bin, which is not on a default PATH.
@@ -325,15 +334,6 @@ fi
 if [ -n "$existing" ]; then
     ok "$AGENT_ROOT already holds agents"
 else
-    if [ -z "$AGENT_NAME" ]; then
-        if [ "$ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
-            AGENT_NAME="Main"
-        else
-            printf '  Name for your first agent workspace [Main]: '
-            read -r AGENT_NAME </dev/tty || AGENT_NAME=""
-            AGENT_NAME="${AGENT_NAME:-Main}"
-        fi
-    fi
     seat="$AGENT_ROOT/$AGENT_NAME"
     if [ -f "$seat/CLAUDE.md" ]; then
         ok "$seat/CLAUDE.md already exists"
@@ -473,14 +473,15 @@ else
     fi
 fi
 
-if [ "$WANT_SCHEDULER" = "1" ] || ask "Install the scheduler daemon as a user service? (needed for recurring wakes)" n; then
-    if [ "$DRY_RUN" = "1" ]; then
-        would "$BIN/jstack-scheduler install"
-    else
-        "$PY" "$BIN/jstack-scheduler" install && ok "daemon installed" || warn "daemon install reported a problem"
-    fi
+# Not a question. `jstack-doctor` runs at the end of this script and grades an
+# absent scheduler as a warning — so asking here hands the reader a warning they
+# chose and cannot act on. Installed by default; --no-scheduler declines it.
+if [ "$WANT_SCHEDULER" = "0" ]; then
+    note "skipped by --no-scheduler — run \`jstack-scheduler install\` any time"
+elif [ "$DRY_RUN" = "1" ]; then
+    would "$BIN/jstack-scheduler install"
 else
-    note "skipped — run \`jstack-scheduler install\` any time"
+    "$PY" "$BIN/jstack-scheduler" install && ok "daemon installed" || warn "daemon install reported a problem"
 fi
 
 # ── 8. the host and its menu bar icon ───────────────────────────────────────
@@ -532,10 +533,10 @@ fi
 # a machine set up to be reached, with nothing on it that can reach, is half
 # an install that reads as a finished one.
 #
-# Offered, not assumed — it downloads a signed release, and that is a
-# different kind of decision from building a local source file. app/install.sh
-# verifies the hash, the signature, notarization and the signing team before
-# anything lands in /Applications.
+# It downloads a signed release rather than building from this checkout, which
+# is why it is the one step that can be declined without leaving a hole:
+# --no-app. app/install.sh verifies the hash, the signature, notarization and
+# the signing team before anything lands in /Applications.
 
 step "The Mac app"
 
@@ -546,16 +547,12 @@ elif [ ! -f "$APP_INSTALLER" ]; then
     note "no app installer in this checkout — skipped"
 elif [ "$WANT_APP" = "0" ]; then
     note "skipped by --no-app — run $APP_INSTALLER any time"
-elif ask "Install the Mac app (downloads a signed, notarized release)?" y; then
-    if [ "$DRY_RUN" = "1" ]; then
-        would "$APP_INSTALLER"
-    elif run_long "downloading and verifying the app" bash "$APP_INSTALLER"; then
-        ok "app installed in ${LAST_ELAPSED}s"
-    else
-        warn "app install reported a problem — re-run $APP_INSTALLER to see it: $LAST_LOG"
-    fi
+elif [ "$DRY_RUN" = "1" ]; then
+    would "$APP_INSTALLER"
+elif run_long "downloading and verifying the app" bash "$APP_INSTALLER"; then
+    ok "app installed in ${LAST_ELAPSED}s"
 else
-    note "skipped — run $APP_INSTALLER any time"
+    warn "app install reported a problem — re-run $APP_INSTALLER to see it: $LAST_LOG"
 fi
 
 # ── 10. the verdict ─────────────────────────────────────────────────────────

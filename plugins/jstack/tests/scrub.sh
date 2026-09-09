@@ -36,7 +36,7 @@ repo_root = sys.argv[1]
 # label → (pattern, flags). Word-bounded so the public owner username (which
 # merely CONTAINS two of these) never matches. Extend here, nowhere else.
 TERMS = [
-    ("jremote",   r"\bjremote\b",   re.I),  # closed-source sibling product
+    ("jremote",   r"\bjremote\b",   re.I),  # the app; its host lives here, see ALLOW_PREFIX
     ("jarvis",    r"\bjarvis\b",    re.I),  # org agent / machine account (covers its /Users path)
     ("lynda",     r"\blynda\b",     re.I),  # org agent
     ("mario",     r"\bmario\b",     re.I),  # org agent
@@ -73,7 +73,31 @@ ALLOW = {
         "fixture board title matching the shipped default place-issue routes to",
 }
 
+# ── the allowlist, by subtree ────────────────────────────────────────────────
+# (path prefix, term label) → why every file under it may hold this term. A
+# per-file entry is the right shape for a stray literal; it is the wrong shape
+# for a term that is the subject of a whole directory.
+#
+# `jremote` was banned as a "closed-source sibling product", and that reason
+# retired when the host moved in: `host/` IS the jRemote host, and a package
+# that may not say its own name cannot document itself, name its state
+# directory, or print an error anyone can act on. What the ban was actually
+# protecting is untouched — every other term still fails under `host/`, which
+# is where the org's names would do real damage. The *app* remains closed; its
+# bundle id and its repository are not in this tree and are not excused here.
+ALLOW_PREFIX = {
+    ("host/", "jremote"):
+        "the host of that app, open-sourced deliberately — it names itself",
+}
+
 SELF = "plugins/jstack/tests/scrub.sh"  # holds the term list; cannot scan itself
+
+
+def _allowed(rel: str, label: str) -> bool:
+    if (rel, label) in ALLOW:
+        return True
+    return any(rel.startswith(pfx) and label == lbl
+               for pfx, lbl in ALLOW_PREFIX)
 
 res = subprocess.run(["git", "-C", repo_root, "ls-files", "-z"],
                      capture_output=True, text=True)
@@ -88,7 +112,7 @@ hits, allowed_used, scanned = [], set(), 0
 for rel in paths:
     # File NAMES carry identity too (a term list can't reach a path otherwise).
     for label, rx in COMPILED:
-        if rx.search(rel) and (rel, label) not in ALLOW:
+        if rx.search(rel) and not _allowed(rel, label):
             hits.append((rel, 0, label, "(in the file's path)"))
     try:
         with open(f"{repo_root}/{rel}", "rb") as fh:
@@ -102,7 +126,7 @@ for rel in paths:
         for label, rx in COMPILED:
             if not rx.search(line):
                 continue
-            if (rel, label) in ALLOW:
+            if _allowed(rel, label):
                 allowed_used.add((rel, label))
                 continue
             hits.append((rel, lineno, label, line.strip()[:120]))
@@ -110,6 +134,11 @@ for rel in paths:
 # An allowlist entry nothing matches is rot — it would mask a future hit in a
 # file that no longer holds one for a reason anyone remembers.
 stale = sorted(set(ALLOW) - allowed_used)
+for pfx, lbl in sorted(ALLOW_PREFIX):
+    if not any(r.startswith(pfx) and l == lbl for r, l in allowed_used):
+        hits.append((pfx, 0, lbl,
+                     "(stale prefix allowlist entry — nothing under it holds "
+                     "the term; delete it)"))
 for rel, label in stale:
     hits.append((rel, 0, label, "(stale allowlist entry — term no longer present; delete it)"))
 

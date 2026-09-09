@@ -71,6 +71,12 @@ ALLOW = {
         "fixtures proving routing and tie-breaks against the shipped default board",
     ("plugins/jstack/tests/file-issue.sh", "auto-work"):
         "fixture board title matching the shipped default place-issue routes to",
+    ("install.sh", "jarvis"):
+        "the shipped default name for the first agent workspace — a product "
+        "default the owner chose, printed in --help and used when the prompt "
+        "is accepted. Same shape as the auto-work board name: load-bearing, "
+        "reported rather than scrubbed. Every other file still fails on it, "
+        "including the /Users path this term exists to catch",
 }
 
 # ── the allowlist, by subtree ────────────────────────────────────────────────

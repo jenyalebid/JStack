@@ -656,9 +656,10 @@ fi
 # on an install that just did everything else by itself.
 #
 # So the hub introduces itself. It mints a one-time enrolment code and hands it
-# to the app over `jremote://pair`; the app spends it for its own device token
-# and writes the machine down. That is also what opens the app, which is the
-# other thing this step is for.
+# to the app over the app's own URL scheme; the app spends it for its own device
+# token and writes the machine down. That is also what opens the app, which is
+# the other thing this step is for. `jstack-host pair --open` is the whole of
+# it, and `host/jstack_host/cli.py` is where the mechanism is written down.
 #
 # The hub is the only party that CAN do this — it is the only one that knows
 # the address before the machine has a resolvable name, and the only one

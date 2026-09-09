@@ -1,0 +1,53 @@
+#!/bin/sh
+# jRemote's external editor for managed agent sessions.
+#
+# The compose surface used to read the CLI's input box off the screen. The
+# screen is a view of the buffer, not the buffer: the agent scrolls its own box
+# once it stops growing, and folds a paste into a `[Pasted text #1]` chip. What
+# came back was a subset, and the take deleted the whole thing on the strength
+# of it — 200 words in, 56 words out, 144 words gone.
+#
+# The agent already knows how to hand over the buffer, whole and expanded:
+# ctrl+G (`chat:externalEditor`) writes it to a file and runs $VISUAL on it,
+# then reads the file back when the editor exits 0. This is that editor. It
+# parks the path where the host can find it, waits to be released, and exits.
+#
+# Failure is the safe direction on purpose. Timing out, a missing state dir, a
+# host that never comes back — every one of them exits 0 with the file as the
+# agent wrote it, and the agent reloads exactly what the user typed. Nothing
+# here can delete words; the worst it can do is decline to move them.
+
+f="$1"
+
+# Only the agent's prompt file parks. VISUAL is inherited by everything else
+# that runs in this pane — `git commit` most of all — and a shell waiting
+# forever on a file no host is watching is its own kind of broken.
+case "${f##*/}" in
+    claude-prompt-*) ;;
+    *) exec ${JREMOTE_EDITOR_FALLBACK:-${EDITOR:-vi}} "$@" ;;
+esac
+
+dir="${JREMOTE_COMPOSE_DIR:-$HOME/.local/state/jremote/compose}"
+key="${JREMOTE_SID:-$$}"
+mkdir -p "$dir" 2>/dev/null || exit 0
+
+park="$dir/$key.park"
+release="$dir/$key.release"
+printf '%s\n' "$f" > "$park" 2>/dev/null || exit 0
+
+# The pane is on the agent's alternate screen with nothing drawn in it while
+# this blocks. Say why, for anyone looking at the terminal instead of the app.
+printf '\n  jRemote — this prompt is open in compose on your device.\n'
+
+# 60s: the host's round trip is milliseconds, so this only ever fires when the
+# host died mid-lift. Long enough to never cut a live one short, short enough
+# that a session is not held hostage by an app that went away.
+i=0
+while [ ! -e "$release" ]; do
+    i=$((i + 1))
+    [ "$i" -gt 600 ] && break
+    sleep 0.1
+done
+
+rm -f "$park" "$release" 2>/dev/null
+exit 0

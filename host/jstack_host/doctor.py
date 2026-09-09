@@ -1,0 +1,262 @@
+"""The setup validator — does this machine have what a jRemote host needs?
+
+`python3 -m jstack_host.install_host doctor`, and the tail of every
+install. The contract a host stands on is small and every part of it is
+observable, so this checks each part the way the host actually uses it and
+says what to do about the ones that fail — rather than leaving a fresh
+install to be diagnosed screen by screen from a phone.
+
+Three grades. **fail** is something the host cannot serve without: no
+`claude`, no `tmux`, no WebSocket server, no token. **warn** is a screen that
+will be honest about being absent until the thing arrives: no JStack timeline
+yet, no registry, an allowance nobody has sampled. **ok** is ok. The exit
+status is the worst grade — a script can gate on it, a person can read it.
+
+Every check is a function of the same seams the host reads at runtime
+(`hostenv`, the spawn path, the feature modules), so a green doctor and a
+working host are the same fact. A check that raises is a check that fails:
+the validator must never be the thing that hides a broken machine.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from . import hostenv
+
+OK, WARN, FAIL = "ok", "warn", "fail"
+_RANK = {OK: 0, WARN: 1, FAIL: 2}
+
+
+def _check(name: str, grade: str, detail: str, hint: str = "") -> dict:
+    return {"name": name, "grade": grade, "detail": detail, "hint": hint}
+
+
+def _which(binary: str) -> str | None:
+    """Resolved against the host's spawn path, NOT this shell's — a binary
+    only the shell can see is exactly the failure this exists to catch."""
+    return shutil.which(binary, path=hostenv.spawn_path())
+
+
+def _version(argv: list[str]) -> str:
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        return (r.stdout or r.stderr).strip().splitlines()[0] if (r.stdout or r.stderr) else ""
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return ""
+
+
+# ── the checks ──
+
+def check_python() -> dict:
+    v = sys.version_info
+    if v < (3, 11):
+        return _check("python", FAIL, f"{v.major}.{v.minor} — needs 3.11 or newer",
+                      "brew install python@3.12 and re-run the installer")
+    return _check("python", OK, f"{v.major}.{v.minor}.{v.micro} ({sys.executable})")
+
+
+def check_claude() -> dict:
+    path = _which("claude")
+    if not path:
+        return _check("claude", FAIL, "not on the host's spawn path",
+                      f"install Claude Code, or symlink it into ~/.local/bin — "
+                      f"the host looks in: {hostenv.spawn_path()}")
+    return _check("claude", OK, f"{path} — {_version([path, '--version']) or 'version unknown'}")
+
+
+def check_tmux() -> dict:
+    path = _which("tmux")
+    if not path:
+        return _check("tmux", FAIL, "not on the host's spawn path",
+                      "brew install tmux — every chat runs inside it")
+    return _check("tmux", OK, f"{path} — {_version([path, '-V']) or 'version unknown'}")
+
+
+def check_websocket() -> dict:
+    for mod in ("wsproto", "websockets"):
+        try:
+            m = importlib.import_module(mod)
+            return _check("websocket", OK,
+                          f"{mod} {getattr(m, '__version__', '')}".strip())
+        except ImportError:
+            continue
+    return _check("websocket", FAIL, "no WebSocket server library in the venv",
+                  "pip install wsproto — without it every terminal attach is a 404")
+
+
+def check_fd_limit() -> dict:
+    try:
+        import resource
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ImportError, ValueError, OSError):
+        return _check("open files", WARN, "limit unreadable")
+    if soft < 1024:
+        return _check("open files", WARN, f"soft limit {soft} in this shell",
+                      "the host raises its own to 8192 at startup; nothing to do")
+    return _check("open files", OK, f"soft limit {soft}")
+
+
+def check_token() -> dict:
+    path = hostenv.token_path()
+    if not path.exists():
+        return _check("token", FAIL, f"missing at {path}",
+                      "run the installer — it mints one")
+    return _check("token", OK, f"present at {path}")
+
+
+def check_profile() -> dict:
+    p = hostenv.profile()
+    if p.name == "default":
+        root = getattr(p, "root", None)
+        return _check("profile", OK, f"default — agents root {root}")
+    return _check("profile", OK, f"{p.name}")
+
+
+def check_agents() -> dict:
+    agents = hostenv.active_agents()
+    if not agents:
+        return _check("agents", WARN, "no agent directories found",
+                      "every directory under the agents root is an agent; "
+                      "point JREMOTE_INSTANCE_ROOT at the tree that holds them")
+    drawn = sum(1 for a in agents.values() if a.get("emoji"))
+    names = ", ".join(sorted(agents))
+    return _check("agents", OK, f"{len(agents)} ({names}); {drawn} with an emoji")
+
+
+def check_registry() -> dict:
+    p = hostenv.profile()
+    if p.name != "default":
+        return _check("registry", OK, f"the {p.name} profile's own")
+    path = p.registry_path()
+    if not path.exists():
+        return _check("registry", WARN, f"no agents.json at {path}",
+                      "JStack's agent registry names, emojis and seats the "
+                      "cards; without it agents are bare directories")
+    reg = p._registry()
+    if not reg:
+        return _check("registry", WARN, f"{path} holds no agent entries",
+                      "each key is an agent id: {name, emoji, workspace, repos}")
+    return _check("registry", OK, f"{path} — {len(reg)} entries")
+
+
+def check_timeline() -> dict:
+    from . import timeline
+    db = hostenv.timeline_db()
+    binary = timeline.log_event_bin()
+    if binary is None:
+        return _check("timeline", WARN, "JStack's log_event not installed",
+                      "install the JStack plugin — the Timeline tab and tags "
+                      "read its store")
+    if not db.exists():
+        return _check("timeline", WARN, f"log_event at {binary}, no store yet at {db}",
+                      "the first session that logs an entry creates it")
+    return _check("timeline", OK, f"{db}")
+
+
+def check_transcripts() -> dict:
+    root = Path.home() / ".claude" / "projects"
+    if not root.is_dir():
+        return _check("transcripts", WARN, f"{root} does not exist",
+                      "the board fills in as Claude Code sessions run")
+    n = sum(1 for _ in root.glob("*/*.jsonl"))
+    return _check("transcripts", OK if n else WARN, f"{n} under {root}")
+
+
+def check_scheduler() -> dict:
+    d = hostenv.scheduler_dir()
+    if not (d / "config" / "schedule.json").exists():
+        return _check("scheduler", WARN, f"no schedule at {d}",
+                      "optional — JStack's scheduler journal feeds the Runs "
+                      "source of the Timeline")
+    return _check("scheduler", OK, f"{d}")
+
+
+def check_allowance() -> dict:
+    from . import allowance
+    sample = allowance.cli_cache_sample()
+    if sample is None:
+        return _check("allowance", WARN, "Claude Code has not cached a usage reading",
+                      "open any interactive claude session once; the Usage "
+                      "bars read the CLI's own cache")
+    import time
+    age = int(time.time() - float(sample.get("sampled_at") or 0))
+    pcts = ", ".join(f"{w['label']} {w['pct']:.0f}%" for w in sample["windows"])
+    return _check("allowance", OK, f"{pcts} (cached {age}s ago)")
+
+
+def check_repos() -> dict:
+    repos = hostenv.repos()
+    if not repos:
+        return _check("repos", WARN, "no git checkouts found",
+                      "the Commits source of the Timeline scans the repo root "
+                      "(JSTACK_REPO_ROOT, default: parent of the agents root)")
+    return _check("repos", OK, f"{len(repos)} checkouts")
+
+
+def check_service() -> dict:
+    """Only meaningful once installed — reported as-is, never as a failure of
+    the machine: the doctor also runs before the LaunchAgent exists. A profile
+    may declare the host runs embedded in another server (`embedded_in`), and
+    then there is no LaunchAgent to look for."""
+    from . import install_host
+    embedded = getattr(hostenv.profile(), "embedded_in", "")
+    if embedded:
+        return _check("service", OK, f"embedded in {embedded}")
+    if not install_host.plist_path().exists():
+        return _check("service", WARN, "LaunchAgent not installed")
+    served = install_host.health(install_host.DEFAULT_PORT)
+    if not served:
+        return _check("service", FAIL, "installed but nothing answers on "
+                      f"{install_host.DEFAULT_PORT}",
+                      "launchctl kickstart -k gui/$(id -u)/com.jremote.host; "
+                      "then read logs/host.err in the state dir")
+    return _check("service", OK, f"answering on {install_host.DEFAULT_PORT}, "
+                  f"profile {served.get('profile')}")
+
+
+CHECKS = (check_python, check_claude, check_tmux, check_websocket, check_fd_limit,
+          check_token, check_profile, check_agents, check_registry, check_timeline,
+          check_transcripts, check_scheduler, check_allowance, check_repos,
+          check_service)
+
+
+def checks() -> list[dict]:
+    out = []
+    for fn in CHECKS:
+        try:
+            out.append(fn())
+        except Exception as e:                              # noqa: BLE001
+            name = fn.__name__.removeprefix("check_").replace("_", " ")
+            out.append(_check(name, FAIL, f"check crashed: {type(e).__name__}: {e}"))
+    return out
+
+
+def worst(results: list[dict]) -> str:
+    return max((r["grade"] for r in results), key=lambda g: _RANK[g], default=OK)
+
+
+def report(out=None) -> int:
+    """Print the table; exit status 0 ok, 1 warnings only, 2 something the
+    host cannot serve without."""
+    out = out or sys.stdout
+    results = checks()
+    mark = {OK: "ok  ", WARN: "warn", FAIL: "FAIL"}
+    for r in results:
+        print(f"{mark[r['grade']]}  {r['name']:<12} {r['detail']}", file=out)
+        if r["hint"] and r["grade"] != OK:
+            print(f"      → {r['hint']}", file=out)
+    grade = worst(results)
+    summary = {OK: "every check passed", WARN: "serving; some screens wait on the warnings above",
+               FAIL: "the host cannot serve chats until the failures above are fixed"}
+    print(f"\n{summary[grade]}", file=out)
+    return _RANK[grade]
+
+
+if __name__ == "__main__":
+    raise SystemExit(report())

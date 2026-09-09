@@ -164,6 +164,13 @@ enum HostAgent {
     static func logDirectory() -> URL {
         stateDir().appendingPathComponent("logs")
     }
+
+    /// The program launchd execs for the host. Its *directory* is the useful
+    /// part: an embedded host runs out of some environment's `bin`, and the
+    /// host's own tooling is installed into that same `bin`.
+    static func programPath() -> String? {
+        (job()?["ProgramArguments"] as? [String])?.first
+    }
 }
 
 // MARK: - What the host says
@@ -634,6 +641,22 @@ enum HostControl {
            FileManager.default.isExecutableFile(atPath: args[i + 1]) {
             return args[i + 1]
         }
+        // Beside the host's own interpreter, before any fixed location.
+        //
+        // An embedded host runs out of the environment the larger application
+        // was installed into, and `jstack-host` is installed into that same
+        // environment — so the agent's own argv names the copy that belongs to
+        // the host actually running here. The fixed paths below can only find
+        // whichever copy a machine happens to have on it, which on a machine
+        // with two is a coin toss, and on this one is nothing at all: the
+        // binary is in the dashboard's virtualenv and none of them look there.
+        // That is why Pair a Device quietly failed to appear.
+        if let program = HostAgent.programPath() {
+            let sibling = URL(fileURLWithPath: program)
+                .deletingLastPathComponent()
+                .appendingPathComponent("jstack-host").path
+            if FileManager.default.isExecutableFile(atPath: sibling) { return sibling }
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         for candidate in ["\(home)/.local/bin/jstack-host",
                           "/opt/homebrew/bin/jstack-host",
@@ -906,19 +929,12 @@ final class StatusController: NSObject {
             sub.addItem(bar)
         }
 
-        // ── What this app is talking to ─────────────────────────────────────
-        //
-        // The agent label first, because it is what decides the two paths under
-        // it: read the wrong agent and both belong to a different, empty host.
-        // Shown and not editable — they are install-time facts, and a menu
-        // offering to change them would be offering to disagree with whatever
-        // is actually running.
-        sub.addItem(.separator())
-        sub.addItem(Self.caption("Agent · \(HostAgent.label)"))
-        sub.addItem(Self.caption("State · \(Self.short(HostAgent.stateDir()))"))
-        sub.addItem(Self.caption("Token · \(Self.short(HostAgent.tokenPath()))"
-                                 + (HostAgent.token() == nil ? " — missing" : "")))
-
+        // No agent label, state dir or token path on the menu. They are the
+        // answer to "why is this menu wrong", which is a question asked while
+        // something is broken and never while it works — and a permanent row
+        // that cannot be clicked reads as a control that died, not as a fact.
+        // Copy Diagnostics carries all three, untruncated, to the place they
+        // are actually usable.
         sub.addItem(.separator())
         let copy = Self.action("Copy Diagnostics", #selector(doCopyDiagnostics), self,
                                symbol: "doc.on.clipboard")
@@ -927,15 +943,6 @@ final class StatusController: NSObject {
         sub.addItem(copy)
 
         return sub
-    }
-
-    /// A path short enough for a menu: the tilde form, and only its last two
-    /// components once that is still long. The whole path goes to the clipboard
-    /// under Copy Diagnostics, which is where a full path is actually usable.
-    private static func short(_ url: URL) -> String {
-        let tilde = (url.path as NSString).abbreviatingWithTildeInPath
-        guard tilde.count > 34 else { return tilde }
-        return "…/\(url.pathComponents.suffix(2).joined(separator: "/"))"
     }
 
     /// A checkbox row. `.on`/`.off` rather than a tick drawn into the title, so

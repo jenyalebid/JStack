@@ -99,6 +99,45 @@ die()   { printf '  %sfail%s %s\n' "$RED" "$Z" "$1" >&2; exit 1; }
 note()  { printf '  %s%s%s\n' "$DIM" "$1" "$Z"; }
 would() { printf '  %swould%s %s\n' "$DIM" "$Z" "$1"; }
 
+# The file this machine's shell reads, and where a root declaration lands.
+profile_path() {
+    case "${SHELL:-}" in
+        */zsh)  printf '%s\n' "$HOME/.zshrc" ;;
+        */bash) printf '%s\n' "$HOME/.bash_profile" ;;
+        *)      printf '%s\n' "$HOME/.profile" ;;
+    esac
+}
+
+# The root this machine has already been told about, if any.
+#
+# WHY THIS EXISTS. The declaration is an `export JSTACK_ROOT=…` line in the
+# shell profile, and the documented way to re-run this installer is
+# `curl … | bash` — a non-login, non-interactive shell, which sources no
+# profile at all. So a machine with a perfectly good root elsewhere arrived at
+# the question with $JSTACK_ROOT unset and was offered $HOME as the default.
+# Pressing return on an update then declared a SECOND root and orphaned the
+# tree the first one owns: agents, logs and credentials still on disk under a
+# root nothing points at any more.
+#
+# A re-install must not be able to lose the root by agreeing with the prompt.
+# Reading it back from where the last install wrote it is the whole fix; every
+# profile is checked, not just this shell's, because the shell that installed
+# is not always the shell that updates.
+declared_root() {
+    local line=""
+    for f in "$(profile_path)" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+        [ -f "$f" ] || continue
+        line="$(grep -hE '^[[:space:]]*export[[:space:]]+JSTACK_ROOT=' "$f" 2>/dev/null | tail -1)"
+        [ -n "$line" ] || continue
+        line="${line#*JSTACK_ROOT=}"
+        line="${line%\"*}"; line="${line#\"}"
+        line="${line%\'*}"; line="${line#\'}"
+        line="${line/#\~/$HOME}"
+        case "$line" in /*) printf '%s\n' "$line"; return 0 ;; esac
+    done
+    return 1
+}
+
 # Everything that changes the machine goes through here, so --dry-run is a
 # property of the script rather than a flag each step remembers to check.
 run() {
@@ -218,6 +257,13 @@ if [ -n "${JSTACK_ROOT:-}" ]; then
         /*) ok "root declared in the environment — $JSTACK_ROOT" ;;
         *)  die "JSTACK_ROOT=$JSTACK_ROOT is not an absolute path — launchd refuses a relative one and the daemons will not start. Try $HOME/${JSTACK_ROOT#./}" ;;
     esac
+elif JSTACK_ROOT="$(declared_root)"; then
+    # Already answered on this machine, on a previous install. Asking again
+    # would put the tree one keystroke from being orphaned — see
+    # `declared_root`. `--root` still overrides, because it arrives as
+    # $JSTACK_ROOT above and never reaches here.
+    ok "root already declared on this machine — $JSTACK_ROOT"
+    note "re-run with --root DIR to move it"
 else
     # Re-asked until it is absolute, rather than accepted and repaired.
     #
@@ -478,11 +524,7 @@ link_stage "$PLUGIN/commands-stage" "$HOME/.claude/commands" "bare commands"
 
 step "Adapters on PATH"
 
-case "${SHELL:-}" in
-    */zsh)  PROFILE="$HOME/.zshrc" ;;
-    */bash) PROFILE="$HOME/.bash_profile" ;;
-    *)      PROFILE="$HOME/.profile" ;;
-esac
+PROFILE="$(profile_path)"
 LINE="export PATH=\"$BIN:\$PATH\"  # jstack"
 
 if command -v log_event >/dev/null 2>&1; then

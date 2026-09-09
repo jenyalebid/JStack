@@ -126,6 +126,45 @@ def test_a_revoked_legacy_is_not_regrandfathered(store, legacy_file):
     assert devices.authenticate("the-shared-token") is None
 
 
+# ── adopting a freshly minted token file ─────────────────────────────────────
+
+def test_a_new_install_names_its_own_token_not_legacy(store, legacy_file):
+    """A Mac minutes old has no legacy. Left to the grandfather, its first
+    authenticated call files the installer's token under `legacy` and the
+    device list opens on a credential named after an era this machine never
+    lived through — seen one second ago, on a board nobody has used yet."""
+    assert devices.adopt_master_token("the-shared-token") is True
+    row = store.device("legacy")
+    assert row["name"] == devices.MASTER_NAME
+    assert "legacy" not in row["name"].lower()
+    # Still the working credential, and still under the id the wire uses.
+    assert devices.authenticate("the-shared-token") == "legacy"
+
+
+def test_adopting_never_overwrites_a_table_that_has_decided(store, legacy_file):
+    """The same gate the grandfather keeps: a re-run installer must not be
+    able to re-key a live row, or "write a new file" becomes a back door
+    around revocation."""
+    devices.mint("my-iphone")
+    assert devices.adopt_master_token("a-different-token") is False
+    assert store.device("legacy") is None
+
+
+def test_adopting_leaves_a_real_legacy_host_alone(store, legacy_file):
+    """A token file already on disk is a real legacy candidate — the
+    installer only adopts one it minted this minute, so the rescue path is
+    untouched and no install can lock a host out by claiming a history it
+    does not have."""
+    assert devices.authenticate("the-shared-token") == "legacy"
+    assert store.device("legacy")["name"] == "legacy"
+    assert devices.adopt_master_token("the-shared-token") is False
+
+
+def test_adopting_nothing_is_not_a_row(store):
+    assert devices.adopt_master_token("") is False
+    assert store.device("legacy") is None
+
+
 # ── revocation ───────────────────────────────────────────────────────────────
 
 def test_revoke_is_immediate_and_idempotent(store):

@@ -59,6 +59,13 @@ TOKEN_PREFIX = "jr1"
 LEGACY_ID = "legacy"
 INTERNAL_ID = "host-internal"
 
+# What the shared token file is called in the registry when this install is the
+# one that minted it. The id stays `legacy` — `parse()` returns it for any
+# unstructured token and that is a wire fact — but the NAME is a display fact,
+# and on a machine born after enrolment "legacy" describes nothing that ever
+# happened here. See `adopt_master_token`.
+MASTER_NAME = "This Mac — command line"
+
 # The mesh subnet, mirrored from wg_peer.py's SUBNET_PREFIX. On the hub the
 # mint gate asks tunnel.is_lan_caller, which reads the subnet out of that
 # script; a leaf host has no script to read, and its fallback must still
@@ -180,6 +187,33 @@ def _grandfather(store) -> dict | None:
         return None
     store.add_device(LEGACY_ID, "legacy", _hash(file_token))
     return store.device(LEGACY_ID)
+
+
+def adopt_master_token(token: str) -> bool:
+    """Register a just-minted token file as this Mac's own row, at install.
+
+    Without this the first authenticated call does it instead, through
+    `_grandfather`, which files the row under `legacy` — so a Mac that is
+    minutes old opens its device list on a credential named after an era it
+    never lived through, "last seen 1 second ago", and the person reading it
+    has every reason to think somebody else is already in.
+
+    The installer is the one caller that knows the difference, because
+    `mint_token` tells it whether the file was written now or was already
+    there. A file already there is a real legacy candidate and is left alone —
+    grandfathering stays exactly as it was, and no install can lock a host out
+    by claiming a history it does not have.
+
+    Gated on the same empty table `_grandfather` requires, for the same
+    reason: a table that has decided is never re-written from a file. False
+    when there was nothing to do.
+    """
+    if not token:
+        return False
+    store = _store()
+    if any(r["id"] != INTERNAL_ID for r in store.list_devices()):
+        return False
+    return store.add_device(LEGACY_ID, MASTER_NAME, _hash(token))
 
 
 def _note_seen(device_id: str) -> None:

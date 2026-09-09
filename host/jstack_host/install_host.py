@@ -361,6 +361,17 @@ def install(*, port: int = DEFAULT_PORT, bind: str = DEFAULT_BIND,
     logs = log_dir()
     logs.mkdir(parents=True, exist_ok=True)
     token, minted = mint_token(hostenv.token_path())
+    if minted:
+        # A token file written *now* has no history to grandfather. Say so
+        # while the fact is still known — see devices.adopt_master_token.
+        # Never fatal: a registry that could not be opened is a device list
+        # that reads oddly, not an install that failed.
+        try:
+            from . import devices
+            devices.adopt_master_token(token)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  note: could not register this Mac's own token ({exc})",
+                  file=out)
 
     path = plist_path(label)
     path.parent.mkdir(parents=True, exist_ok=True)

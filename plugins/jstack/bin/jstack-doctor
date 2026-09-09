@@ -219,8 +219,14 @@ def check_timeline() -> dict:
         return _check("timeline", FAIL, f"cannot write {d}",
                       "log_event, msg and the session-end engine all write here")
     if not db.exists():
-        return _check("timeline", WARN, f"no timeline.db yet at {db}",
-                      "expected on a fresh install — the first `log_event` creates it")
+        # OK, not WARN. The directory is writable — checked above — so the only
+        # thing missing is a file `log_event` creates on first use, and nothing
+        # is broken until it cannot. A check that grades the state it calls
+        # expected as a warning teaches the reader to skim warnings, which is
+        # the one habit that makes the real ones invisible: a fresh install
+        # ended on three warnings, and this one had no action behind it.
+        return _check("timeline", OK, f"{db} — not created yet",
+                      "normal until the first `log_event`, which creates it")
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             rows = conn.execute("SELECT count(*) FROM entries").fetchone()[0]

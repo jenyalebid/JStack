@@ -87,6 +87,16 @@ g=$(grade_of "$TMP/empty.json" root)
 [ "$g" = "ok" ] || fail "absent-but-creatable dirs should grade ok, got '$g'"
 [ "$g" = "ok" ] && pass "absent derived dirs are ok, not a failure"
 
+# Same rule, and it was broken here longest: a timeline.db that does not exist
+# yet is what every fresh install looks like, and the check said so in its own
+# hint — "expected on a fresh install" — while grading itself WARN. A warning
+# with no action behind it teaches the reader to skim warnings, and skimmed
+# warnings are how the real ones get missed. The directory being writable is
+# the thing worth checking, and that is checked separately.
+g=$(grade_of "$TMP/empty.json" timeline)
+[ "$g" = "ok" ] || fail "an uncreated timeline.db should grade ok, got '$g'"
+[ "$g" = "ok" ] && pass "no timeline.db yet is ok — log_event creates it"
+
 # ── one agent flips it, and gets named ──────────────────────────────────────
 
 mkdir -p "$TMP/root/Agents/Testbed"

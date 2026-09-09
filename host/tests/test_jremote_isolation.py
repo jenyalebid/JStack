@@ -38,6 +38,35 @@ def test_the_package_never_reaches_for_an_embedding_hosts_own_modules():
         "fact through the profile seam instead:\n" + "\n".join(hits))
 
 
+def test_no_module_imports_its_way_out_of_the_package():
+    """`from ..anything import x` resolves to a sibling of this package, which
+    is a thing only an embedding tree has.
+
+    This is not hypothetical: `showdoc` reached `..shared.context_inventory`
+    for its read fence, which resolved happily while the package sat inside a
+    dashboard and raised `ImportError: attempted relative import beyond
+    top-level package` the moment it stood alone. Neither probe beside this
+    one saw it — the import probe because the import was inside a function,
+    the `lib` probe because the escape was spelled with dots rather than a
+    module name. The fence now lives in `docfence`, in here, where it ships.
+
+    One leading dot is the package reaching itself and is how these modules
+    should talk. Two or more is a claim about what the package is installed
+    *into* — which is the one claim a standalone host exists to falsify.
+    """
+    pat = re.compile(r"^\s*from\s+\.{2,}")
+    hits = []
+    for f in sorted(PKG.glob("*.py")):
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            if pat.search(line):
+                hits.append(f"{f.name}:{i}: {line.strip()[:80]}")
+    assert not hits, (
+        "a relative import escapes the package — it resolves only while the "
+        "package sits inside some larger tree, and raises ImportError on a "
+        "standalone host. Move the code into the package or route the fact "
+        "through the profile seam:\n" + "\n".join(hits))
+
+
 def test_no_module_resolves_a_path_by_counting_parents():
     """`parents[N]` is a constant that keeps working right up until the package
     moves, and then silently picks a directory that merely exists.

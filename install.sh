@@ -399,15 +399,16 @@ if command -v log_event >/dev/null 2>&1; then
     ok "already reachable — $(command -v log_event)"
 elif [ -f "$PROFILE" ] && grep -qF "$BIN" "$PROFILE" 2>/dev/null; then
     ok "$PROFILE already has it — open a new shell to pick it up"
-elif ask "Add $BIN to PATH in $PROFILE?" y; then
-    if [ "$DRY_RUN" = "1" ]; then
-        would "append to $PROFILE: $LINE"
-    else
-        printf '\n%s\n' "$LINE" >> "$PROFILE"
-        ok "appended to $PROFILE — open a new shell, or: source $PROFILE"
-    fi
+elif [ "$DRY_RUN" = "1" ]; then
+    would "append to $PROFILE: $LINE"
 else
-    warn "skipped — log_event, msg and schedule-self stay unreachable by bare name"
+    # Appended, not asked. Every skill, hook and agent in the stack calls these
+    # 18 tools by bare name, so declining left an install that was complete and
+    # unusable — and said so in one yellow line above a green verdict. The line
+    # is printed instead, which is what a prompt was really for.
+    printf '\n%s\n' "$LINE" >> "$PROFILE"
+    ok "appended to $PROFILE — open a new shell, or: source $PROFILE"
+    note "$LINE"
 fi
 export PATH="$BIN:$PATH"
 
@@ -443,10 +444,25 @@ if "$PY" -c 'import dateutil' 2>/dev/null; then
     ok "python-dateutil present"
 elif [ "$DRY_RUN" = "1" ]; then
     would "$PY -m pip install --user python-dateutil"
-elif run_long "installing python-dateutil" "$PY" -m pip install --quiet --user python-dateutil; then
-    ok "python-dateutil installed — recurring jobs can book"
 else
-    warn "could not install python-dateutil; recurring jobs will not book — see $LAST_LOG"
+    # Two attempts, because the interpreter this resolves to on a Mac with
+    # Homebrew is one pip refuses to install into: PEP 668 marks it
+    # externally managed and the plain --user install exits 1 with a wall of
+    # text about virtualenvs. --break-system-packages is the documented
+    # override and Homebrew's own message recommends pairing it with --user,
+    # which keeps the package in the user site and out of the managed tree.
+    #
+    # The verdict is the import, not pip's exit status. A wheel can land and
+    # still not be importable by the interpreter the scheduler will run under,
+    # and that is the only question worth reporting.
+    run_long "installing python-dateutil" "$PY" -m pip install --quiet --user python-dateutil \
+        || run_long "installing python-dateutil (PEP 668 override)" \
+               "$PY" -m pip install --quiet --user --break-system-packages python-dateutil
+    if "$PY" -c 'import dateutil' 2>/dev/null; then
+        ok "python-dateutil installed — recurring jobs can book"
+    else
+        warn "could not install python-dateutil; recurring jobs will not book — see $LAST_LOG"
+    fi
 fi
 
 if [ "$WANT_SCHEDULER" = "1" ] || ask "Install the scheduler daemon as a user service? (needed for recurring wakes)" n; then
@@ -484,7 +500,12 @@ if [ ! -f "$HOST_INSTALLER" ]; then
     note "no host installer in this checkout — skipped"
 elif [ "$WANT_HOST" = "0" ]; then
     note "skipped by --no-host — run $HOST_INSTALLER any time"
-elif ask "Install the host and its menu bar icon?" y; then
+else
+    # Not a question. The host is the machine's reachability and the icon is
+    # the only surface that ever says whether it is running — asking makes
+    # both read as extras, and a "no" here produces an install that looks
+    # complete and answers nothing. --no-host is the way out, stated in
+    # --help, rather than a prompt that has one sensible answer.
     host_args=(--yes)
     [ "$WANT_MENUBAR" = "0" ] && host_args+=(--no-menubar)
     if [ "$DRY_RUN" = "1" ]; then
@@ -494,8 +515,6 @@ elif ask "Install the host and its menu bar icon?" y; then
     else
         warn "host install reported a problem — re-run $HOST_INSTALLER to see it"
     fi
-else
-    note "skipped — run $HOST_INSTALLER any time"
 fi
 
 # ── 9. the Mac app ──────────────────────────────────────────────────────────

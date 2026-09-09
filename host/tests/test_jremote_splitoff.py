@@ -34,8 +34,21 @@ def client(monkeypatch):
 
 @pytest.fixture
 def home(monkeypatch, tmp_path):
-    """A throwaway HOME holding one transcript under the real-cwd key."""
+    """A throwaway HOME holding one transcript under the real-cwd key.
+
+    The agent root is built here too: a project-dir key is Claude Code's own
+    encoding of a working directory, so it only decodes against the instance
+    root it was made from — a literal one resolved on exactly one machine.
+    """
+    import sys
+    from jstack_host import hostenv
     monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "Agents"
+    (root / "Nova" / "chat").mkdir(parents=True)
+    monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(root))
+    hostenv.reset_profile()
+    monkeypatch.setattr(sys.modules[__name__], "KEY",
+                        str(root).replace("/", "-") + "-Nova-chat")
     proj = tmp_path / ".claude" / "projects" / KEY
     proj.mkdir(parents=True)
     lines = [
@@ -73,8 +86,14 @@ def test_splitoff_dubs_and_opens_managed(client, home, opened):
     assert all(row["sessionId"] == SID for row in src_rows)
 
     # The copy opened managed, resuming its own transcript, in the source cwd.
-    assert opened == [(new_sid, "/Users/x/Agents/Nova/chat",
-                       {"resume": True})]
+    # The cwd is decoded back out of the project-dir key, so it is the
+    # fixture's own root — spelling a literal here would assert the encoding
+    # against a path the test never created.
+    # The cwd is decoded back out of the project-dir key, so it is the
+    # fixture's own root — a literal here would assert the encoding against a
+    # path the test never created.
+    cwd = str(home.parents[2] / "Agents" / "Nova" / "chat")
+    assert opened == [(new_sid, cwd, {"resume": True})]
     # Registered under the workspace's agent — the board shows a CLI row.
     assert managed._reg_load()[new_sid] == {"agent": "nova"}
 

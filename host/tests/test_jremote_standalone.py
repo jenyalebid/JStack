@@ -19,8 +19,17 @@ from pathlib import Path
 
 import pytest
 
-PKG = Path(__file__).resolve().parents[1] / "dashboard" / "jremote"
-INFRA = PKG.parents[1]
+from conftest import needs_embedding_tree
+from jstack_host import hostenv as _hostenv
+
+# The package itself, asked of the package. This spelled the old tree
+# layout literally, so after the move it pointed at a directory that does
+# not exist and the read failed before the assertion could run.
+PKG = Path(_hostenv.__file__).resolve().parent
+# Where the package imports from — asked of the package, not counted in
+# parent directories. `parents[N]` keeps working right up until the tree
+# moves and then picks a directory that merely exists.
+INFRA = _hostenv.package_root()
 
 #: Everything a standalone host would not have. `jstack_host` is absent
 #: from this list — it is the thing under test.
@@ -333,6 +342,7 @@ STATE_BINDINGS = [
 ]
 
 
+@needs_embedding_tree
 def test_this_mac_keeps_every_state_file_exactly_where_it_was():
     """The centralisation must be a no-op here. No migration, nothing stranded.
 
@@ -566,9 +576,16 @@ def test_the_hub_still_offers_pairing():
 
     A flag that reads false everywhere would 'fix' that leaf by removing
     off-LAN pairing from the one machine that has it.
+
+    Skipped where the mesh tooling is not installed beside the package: it is
+    `sudo`-run WireGuard plumbing that does not ship here, and `can_pair()`
+    answering false for its absence is the documented behaviour the leaf test
+    pins. Asserting the hub case on a checkout that has no hub would fail for
+    the one reason that is not a bug.
     """
     from jstack_host import router, tunnel
-    assert tunnel.PEER_SCRIPT.is_file(), tunnel.PEER_SCRIPT
+    if not tunnel.PEER_SCRIPT.is_file():
+        pytest.skip(f"no mesh tooling at {tunnel.PEER_SCRIPT}")
     assert router._probe("tunnel_pairing") is True
 
 

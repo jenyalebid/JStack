@@ -1,6 +1,6 @@
 """hostenv — the one seam between the jRemote host API and this machine.
 
-Everything else in `dashboard/jremote/` is generic. The roster is not: which
+Everything else in this package is generic. The roster is not: which
 agents exist, where their workspaces are, and which agent owns a Claude
 project dir are facts about the instance. These tests pin both profiles and,
 more importantly, pin the seam itself — a direct `lib.agents` import anywhere
@@ -45,19 +45,37 @@ def instance(tmp_path, monkeypatch):
 
 # ── profile selection ──
 
-def test_auto_prefers_the_machines_profile_module(monkeypatch):
-    """This Mac supplies `jremote_host_profile` at the import root, so auto
-    must resolve to it — not the fallback."""
+@pytest.fixture
+def machine_profile(monkeypatch, tmp_path):
+    """A machine that supplies its own profile module, written for the test.
+
+    The real one on any given host names that host's plumbing, so asserting
+    against it pins a machine rather than the seam. What the seam promises is
+    narrower and testable anywhere: *if* the module is importable, `auto`
+    resolves to it, and the answers come back untouched.
+    """
+    mod = tmp_path / "probe_host_profile.py"
+    mod.write_text(
+        "from pathlib import Path\n"
+        "class P:\n"
+        "    name = 'probe'\n"
+        "    def active_agents(self): return {'sentinel': {}}\n"
+        "    def workspace(self, a): return Path('/sentinel') / a\n"
+        "def make_profile(): return P()\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("JREMOTE_PROFILE_MODULE", "probe_host_profile")
+    hostenv.reset_profile()
+
+
+def test_auto_prefers_the_machines_profile_module(monkeypatch, machine_profile):
+    """A machine that supplies a profile module gets it, not the fallback."""
     monkeypatch.delenv("JREMOTE_HOST_PROFILE", raising=False)
-    assert hostenv.profile().name == "jj"
+    assert hostenv.profile().name == "probe"
 
 
-def test_external_profile_delegates_verbatim(monkeypatch):
-    """The machine's profile reinterprets nothing — it is lib.agents, called."""
+def test_external_profile_delegates_verbatim(monkeypatch, machine_profile):
+    """The seam reinterprets nothing — the profile's answer is the answer."""
     monkeypatch.setenv("JREMOTE_HOST_PROFILE", "external")
-    import lib.agents as agents
-    monkeypatch.setattr(agents, "active_agents", lambda: {"sentinel": {}})
-    monkeypatch.setattr(agents, "workspace", lambda a: Path("/sentinel") / a)
     assert hostenv.active_agents() == {"sentinel": {}}
     assert hostenv.workspace("x") == Path("/sentinel/x")
 

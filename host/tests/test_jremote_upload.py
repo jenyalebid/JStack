@@ -120,10 +120,10 @@ def test_upload_requires_token(monkeypatch, drop_pad):
 
 @pytest.fixture
 def spawn_env(monkeypatch, tmp_path):
-    import lib.agents as agents
-    from jstack_host import managed, board_watch
-    monkeypatch.setattr(agents, "workspace", lambda a: tmp_path)
-    monkeypatch.setattr(agents, "split_id", lambda a: (a, None))
+    # `hostenv`, not the tree behind it — see test_jremote_tags.spawn_env.
+    from jstack_host import managed, board_watch, hostenv
+    monkeypatch.setattr(hostenv, "workspace", lambda a: tmp_path)
+    monkeypatch.setattr(hostenv, "split_id", lambda a: (a, None))
     calls = {}
     # Signatures kept in step with the real ones, model picker included: a
     # fake that is missing a kwarg the route passes fails as a TypeError from

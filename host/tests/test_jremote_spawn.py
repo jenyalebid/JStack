@@ -50,8 +50,20 @@ def test_inner_command_wraps_prelude_and_extra():
         "exec claude --resume sid-2 --permission-mode bypassPermissions"
 
 
-def test_agent_base_resolution():
-    assert spawn.agent_base_for("/Users/x/Agents/Nova/chat") == "nova"
+def test_agent_base_resolution(tmp_path, monkeypatch):
+    """Against a tree this test builds, never the machine's own.
+
+    `agent_base_for` resolves a path through the profile's instance root, so
+    a hardcoded `/Users/x/Agents/...` only ever answered on a machine whose
+    agents happened to live at that path — which is to say the assertion was
+    passing for a reason that had nothing to do with the function.
+    """
+    from jstack_host import hostenv
+    root = tmp_path / "Agents"
+    (root / "Nova" / "chat").mkdir(parents=True)
+    monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(root))
+    hostenv.reset_profile()
+    assert spawn.agent_base_for(str(root / "Nova" / "chat")) == "nova"
     assert spawn.agent_base_for("/tmp/nowhere") == ""
 
 

@@ -12,11 +12,14 @@ import types
 
 import pytest
 
+from conftest import needs_embedding_tree
+
 from jstack_host import desk
 
 
 # ── thread_url ──
 
+@needs_embedding_tree
 def test_thread_url_carries_agent_identity(monkeypatch):
     import lib.agents as agents
     monkeypatch.setattr(agents, "project_dir_to_agent",
@@ -29,6 +32,7 @@ def test_thread_url_carries_agent_identity(monkeypatch):
     assert "emoji=%E2%9A%A1" in url
 
 
+@needs_embedding_tree
 def test_thread_url_bare_for_non_agent_dirs(monkeypatch):
     import lib.agents as agents
     monkeypatch.setattr(agents, "project_dir_to_agent", lambda name: None)

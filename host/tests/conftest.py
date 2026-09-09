@@ -61,3 +61,24 @@ def _isolate_open_registry(tmp_path, monkeypatch):
     watch-only windows while their sessions run on untouched."""
     from jstack_host import managed
     monkeypatch.setattr(managed, "_REG", tmp_path / "jremote_open.json")
+
+
+def embedding_tree() -> object | None:
+    """The host tree this package is embedded in, or None.
+
+    Some tests here are integration tests against *that* tree — the machine's
+    own agent registry, its dashboard app. They are real tests and they pass
+    where the tree exists; from a standalone checkout there is nothing for
+    them to integrate with, and skipping is the honest answer. Deleting them
+    would be the dishonest one: the coupling they pin is still a coupling.
+    """
+    try:
+        from lib import agents
+        return agents
+    except Exception:
+        return None
+
+
+needs_embedding_tree = pytest.mark.skipif(
+    embedding_tree() is None,
+    reason="no embedding tree on this machine — integration test, see conftest")

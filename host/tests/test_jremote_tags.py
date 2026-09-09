@@ -286,10 +286,12 @@ def test_a_successful_filing_repaints_the_board(client, monkeypatch, tmp_path):
 
 @pytest.fixture
 def spawn_env(monkeypatch, tmp_path):
-    import lib.agents as agents
-    from jstack_host import board_watch
-    monkeypatch.setattr(agents, "workspace", lambda a: tmp_path)
-    monkeypatch.setattr(agents, "split_id", lambda a: (a, None))
+    # `hostenv`, not the tree behind it: the package asks the seam, and a
+    # fixture that reaches past it to the machine's own registry only works on
+    # a machine that has one.
+    from jstack_host import board_watch, hostenv
+    monkeypatch.setattr(hostenv, "workspace", lambda a: tmp_path)
+    monkeypatch.setattr(hostenv, "split_id", lambda a: (a, None))
     calls = {}
 
     def fake_open(sid, cwd, resume=True, displace=None, nudge=None,

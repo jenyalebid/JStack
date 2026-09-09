@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import needs_embedding_tree
+
 from jstack_host import managed
 
 pytestmark = pytest.mark.skipif(not shutil.which(managed._TMUX),
@@ -457,6 +459,7 @@ def test_reconcile_ignores_foreign_sessions(sock, monkeypatch):
     assert "someones-work" in _sessions()
 
 
+@needs_embedding_tree
 def test_importing_the_dashboard_closes_nothing():
     """The startup pass belongs to the serving process, never to module import.
 

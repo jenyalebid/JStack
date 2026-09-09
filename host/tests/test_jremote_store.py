@@ -15,6 +15,10 @@ import pytest
 
 from jstack_host.store import SessionStore
 
+#: Claude Code encodes a project dir by replacing every `/` in the working
+#: directory with `-`, so this key is only decodable against the instance root
+#: it was built from. A literal one resolved on exactly one machine; the `home`
+#: fixture builds the root and rewrites this to match.
 KEY = "-Users-nova-Agents-Nova-chat"
 SID = "11111111-2222-3333-4444-555555550000"
 
@@ -42,7 +46,17 @@ def _assistant(text, mid="msg_1", in_tok=100, out_tok=10):
 
 @pytest.fixture
 def home(monkeypatch, tmp_path):
+    """A home whose agent root this test owns, and a KEY that decodes against it."""
+    import sys
+    from jstack_host import hostenv
     monkeypatch.setenv("HOME", str(tmp_path))
+    root = tmp_path / "Agents"
+    (root / "Nova" / "chat").mkdir(parents=True)
+    (root / "Finch" / "chat").mkdir(parents=True)
+    monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(root))
+    hostenv.reset_profile()
+    monkeypatch.setattr(sys.modules[__name__], "KEY",
+                        str(root).replace("/", "-") + "-Nova-chat")
     proj = tmp_path / ".claude" / "projects" / KEY
     proj.mkdir(parents=True)
     return tmp_path
@@ -324,7 +338,8 @@ def test_existing_store_gains_new_columns(tmp_path):
 # ── on-demand queries ──
 
 def test_query_filters_and_pages(home, store):
-    other = home / ".claude" / "projects" / "-Users-nova-Agents-Finch-chat"
+    other = (home / ".claude" / "projects"
+             / (str(home / "Agents").replace("/", "-") + "-Finch-chat"))
     other.mkdir(parents=True)
     _write(_transcript(home), _user("nova session about menus"))
     _write(other / "99999999-8888-7777-6666-555555550000.jsonl",

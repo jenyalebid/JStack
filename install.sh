@@ -5,14 +5,14 @@
 #   ./install.sh --yes --agent Ada --scheduler       # unattended, everything
 #   ./install.sh --dry-run                           # print the plan, touch nothing
 #
-# Setup used to be six steps across two surfaces, each documented, each failing
-# invisibly when skipped. This does all six and then runs `jstack-doctor`, so
-# the install ends with a verdict rather than an assumption.
+# Setup used to be seven steps across two surfaces, each documented, each
+# failing invisibly when skipped. This does all seven and then runs
+# `jstack-doctor`, so the install ends with a verdict rather than an assumption.
 #
 # What it will not do: run as root, overwrite a file it did not write, or touch
-# anything outside $CHECKOUT, ~/.claude, ~/Agents and the shell profile line it
-# appends. Every step is idempotent — running it twice is a no-op with a
-# different report, which is what makes it safe to use as an updater.
+# anything outside $CHECKOUT, ~/.claude, ~/Agents, ~/Applications and the shell
+# profile line it appends. Every step is idempotent — running it twice is a
+# no-op with a different report, which is what makes it safe as an updater.
 
 set -uo pipefail
 
@@ -27,6 +27,8 @@ DRY_RUN=0
 AGENT_NAME=""
 WANT_SCHEDULER=0
 WANT_CLAUDE=1
+WANT_HOST=1
+WANT_MENUBAR=1
 
 usage() {
     cat <<'EOF'
@@ -39,6 +41,8 @@ usage: install.sh [options]
   --checkout DIR      where to clone JStack (default: ~/JStack)
   --scheduler         also install the scheduler daemon as a user service
   --no-claude         don't install Claude Code even if it is missing
+  --no-host           don't install the host (no remote access, no icon)
+  --no-menubar        install the host but not its menu bar icon
   --help, -h          this
 
 Environment: JSTACK_REPO_URL, JSTACK_CHECKOUT, JSTACK_AGENT_ROOT override the
@@ -56,6 +60,8 @@ while [ $# -gt 0 ]; do
         --checkout)    CHECKOUT="${2:-}"; shift ;;
         --scheduler)   WANT_SCHEDULER=1 ;;
         --no-claude)   WANT_CLAUDE=0 ;;
+        --no-host)     WANT_HOST=0 ;;
+        --no-menubar)  WANT_MENUBAR=0 ;;
         -h|--help)     usage; exit 0 ;;
         *)             echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -327,7 +333,46 @@ else
     note "skipped — run \`jstack-scheduler install\` any time"
 fi
 
-# ── 8. the verdict ──────────────────────────────────────────────────────────
+# ── 8. the host and its menu bar icon ───────────────────────────────────────
+#
+# Steps 1-7 leave a stack you drive from a terminal on this machine. The host
+# is what makes the machine reachable at all — from a phone, from another Mac,
+# across the tunnel — and the menu bar icon is the only surface that ever says
+# whether it is running.
+#
+# Chained here because the first line of this file promises a working stack in
+# one command, and until now it stopped one installer short of one: a stranger
+# who ran it got no host and no icon, and nothing on screen said a second
+# command existed. That gap was found by installing onto a clean VM and asking
+# where the icon was — the answer was that this script never put one there.
+#
+# The host binds 0.0.0.0 by design (a host only 127.0.0.1 can see is not a
+# host) and every route but /api/health requires its bearer token. --no-host
+# skips it; `host/install.sh --uninstall` removes it later without touching
+# the state or the token.
+
+step "Host and menu bar"
+
+HOST_INSTALLER="$CHECKOUT/host/install.sh"
+if [ ! -f "$HOST_INSTALLER" ]; then
+    note "no host installer in this checkout — skipped"
+elif [ "$WANT_HOST" = "0" ]; then
+    note "skipped by --no-host — run $HOST_INSTALLER any time"
+elif ask "Install the host and its menu bar icon?" y; then
+    host_args=(--yes)
+    [ "$WANT_MENUBAR" = "0" ] && host_args+=(--no-menubar)
+    if [ "$DRY_RUN" = "1" ]; then
+        would "$HOST_INSTALLER ${host_args[*]}"
+    elif bash "$HOST_INSTALLER" "${host_args[@]}"; then
+        ok "host installed"
+    else
+        warn "host install reported a problem — re-run $HOST_INSTALLER to see it"
+    fi
+else
+    note "skipped — run $HOST_INSTALLER any time"
+fi
+
+# ── 9. the verdict ──────────────────────────────────────────────────────────
 
 step "Verifying"
 

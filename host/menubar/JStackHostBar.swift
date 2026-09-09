@@ -337,6 +337,71 @@ final class HostProbe {
 /// tools a person would type — `launchctl` for the agent, `jstack-host` for the
 /// host — because a second implementation of "restart the host" is a second
 /// thing to keep true.
+/// What this Mac *is*, for the row that names it.
+///
+/// "Hosting — jj · port 9090" described the software's configuration, which is
+/// not what someone opening a menu about their machine is looking for. A hub
+/// is a machine; the row should say which one, the way every other Apple
+/// surface does — a Mac Studio icon and the words "M2 Max Mac Studio".
+enum Machine {
+    /// `system_profiler` is the only source that knows the marketing name, and
+    /// it costs the better part of a second — so it is asked once, lazily, at
+    /// the first menu build rather than on every poll.
+    static let name: String = {
+        let out = HostControl.run("/usr/sbin/system_profiler", ["SPHardwareDataType"]).out
+        func field(_ label: String) -> String {
+            for line in out.split(separator: "\n") {
+                let parts = line.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2,
+                      parts[0].trimmingCharacters(in: .whitespaces) == label
+                else { continue }
+                return parts[1].trimmingCharacters(in: .whitespaces)
+            }
+            return ""
+        }
+        let model = field("Model Name")                       // "Mac Studio"
+        // "Apple M2 Max" — the word Apple is not information on an Apple menu.
+        var chip = field("Chip")
+        if chip.hasPrefix("Apple ") { chip.removeFirst("Apple ".count) }
+        switch (model.isEmpty, chip.isEmpty) {
+        case (false, false): return "\(chip) \(model)"        // "M2 Max Mac Studio"
+        case (false, true):  return model
+        case (true, false):  return chip
+        case (true, true):   return Host.current().localizedName ?? "This Mac"
+        }
+    }()
+
+    /// The device glyph. Named from the marketing name rather than the model
+    /// identifier: `Mac14,13` says nothing without a table that goes stale
+    /// every autumn, and "Mac Studio" is stable English.
+    static let symbol: String = {
+        let m = name.lowercased()
+        if m.contains("macbook")    { return "laptopcomputer" }
+        if m.contains("mac studio") { return "macstudio" }
+        if m.contains("mac mini")   { return "macmini" }
+        if m.contains("mac pro")    { return "macpro.gen3" }
+        if m.contains("imac")       { return "desktopcomputer" }
+        return "desktopcomputer"
+    }()
+}
+
+/// The client app, if this Mac has one installed.
+///
+/// Found by bundle id rather than a path: an app is wherever the person who
+/// installed it put it, and `/Applications` is a guess. `JREMOTE_APP_BUNDLE_ID`
+/// names a different build — a debug one, say — without a rebuild of this.
+enum RemoteApp {
+    static let bundleID = ProcessInfo.processInfo
+        .environment["JREMOTE_APP_BUNDLE_ID"] ?? "dev.jenya.jRemote"
+
+    /// Resolved on every read, not cached: the app can be installed while this
+    /// menu bar item is running, and an item that stays missing until the next
+    /// login is one that looks broken.
+    static var url: URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+    }
+}
+
 enum HostControl {
     /// `gui/<uid>`: the per-user domain, which is where a LaunchAgent lives and
     /// the reason none of this needs a password.
@@ -434,9 +499,16 @@ final class StatusController: NSObject {
     private func draw() {
         guard let button = item.button else { return }
         let unprovisioned = state.isUp && !state.isProvisioned
-        button.image = Self.glyph(unprovisioned
-            ? "desktopcomputer.trianglebadge.exclamationmark"
-            : "desktopcomputer")
+        // `server.rack`: what this machine is doing, not what it is. A desktop
+        // glyph in a menu bar reads as "a Mac" — which is every Mac — where a
+        // rack reads as the thing serving, which is the one fact the icon has
+        // room to carry.
+        button.image = Self.glyph("server.rack")
+        // Colour rather than a second silhouette, so the shape stays learnable:
+        // the badged variants exist only for some symbols, and swapping to one
+        // moves the icon's outline the moment something is wrong — exactly when
+        // you want to find it in the same place.
+        button.contentTintColor = unprovisioned ? .systemOrange : nil
         button.appearsDisabled = !state.isUp
         // The count is the running indicator: a number that appears when work
         // is actually in flight, and no chrome at all when the machine is idle.
@@ -449,31 +521,51 @@ final class StatusController: NSObject {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        menu.addItem(Self.caption(state.summary))
-        menu.addItem(.separator())
-        for row in activeRows() { menu.addItem(row) }
-        menu.addItem(.separator())
+        // ── This Mac ────────────────────────────────────────────────────────
+        menu.addItem(Self.section("This Mac"))
 
-        // Only when there is an agent to operate. A host running in a terminal
+        // The machine, named and drawn. Its subtitle carries what the old
+        // top line said — profile and port — because that is reference
+        // material you go looking for, not the headline of the menu.
+        let machine = Self.caption(Machine.name, dim: false)
+        machine.image = Self.glyph(Machine.symbol, size: 16)
+        machine.toolTip = state.summary
+        menu.addItem(machine)
+
+        // Only when there is an agent to operate. A hub running in a terminal
         // is stopped by the terminal it is running in, and a Stop button that
         // boots out a job that does not exist is a button that lies.
         if state.installed {
             if state.isUp {
-                menu.addItem(Self.action("Restart Host", #selector(doRestart), self))
-                menu.addItem(Self.action("Stop Hosting", #selector(doStop), self))
+                menu.addItem(Self.action("Restart Hub", #selector(doRestart), self,
+                                         symbol: "arrow.clockwise", indent: 1))
+                menu.addItem(Self.action("Shut Down Hub", #selector(doStop), self,
+                                         symbol: "power", indent: 1))
             } else {
-                menu.addItem(Self.action("Start Hosting", #selector(doStart), self))
+                menu.addItem(Self.action("Start Hub", #selector(doStart), self,
+                                         symbol: "power", indent: 1))
             }
         }
         if state.isUp, HostControl.hostBinary != nil {
-            menu.addItem(Self.action("Pair a Device…", #selector(doPair), self))
+            menu.addItem(Self.action("Pair a Device…", #selector(doPair), self,
+                                     symbol: "plus.circle", indent: 1))
         }
 
+        // ── What is running ─────────────────────────────────────────────────
+        for row in activeRows() { menu.addItem(row) }
+
+        // ── The app ─────────────────────────────────────────────────────────
         menu.addItem(.separator())
-        if FileManager.default.fileExists(atPath: HostAgent.logDirectory().path) {
-            menu.addItem(Self.action("Open Log Folder", #selector(doLogs), self))
+        if RemoteApp.url != nil {
+            menu.addItem(Self.action("jRemote", #selector(doOpenApp), self,
+                                     symbol: "macwindow"))
         }
-        menu.addItem(Self.action("Refresh Now", #selector(doRefresh), self))
+        if FileManager.default.fileExists(atPath: HostAgent.logDirectory().path) {
+            menu.addItem(Self.action("Open Log Folder", #selector(doLogs), self,
+                                     symbol: "folder"))
+        }
+        menu.addItem(Self.action("Refresh Now", #selector(doRefresh), self,
+                                 symbol: "arrow.triangle.2.circlepath"))
 
         // No Quit by default. This is the hub's indicator, and the hub runs
         // whether or not anyone is looking at it — so "quit" here never meant
@@ -498,24 +590,80 @@ final class StatusController: NSObject {
     private func activeRows() -> [NSMenuItem] {
         guard state.isUp else { return [] }
         if !state.isProvisioned {
-            return [Self.caption("No token, so every request is refused."),
+            return [Self.section("Not Provisioned"),
+                    Self.caption("No token, so every request is refused."),
                     Self.caption("Run: jstack-host status")]
         }
         if state.unauthorized {
-            return [Self.caption("The token on disk was refused by the host.")]
+            return [Self.section("Refused"),
+                    Self.caption("The token on disk was refused by the hub.")]
         }
         if state.sessions.isEmpty {
-            return [Self.caption("Nothing running")]
+            return [Self.section("Nothing Running")]
         }
         let sorted = state.sessions.sorted {
             ($0.live == true ? 0 : 1, $0.title) < ($1.live == true ? 0 : 1, $1.title)
         }
-        let header = Self.caption("Active — \(sorted.count)")
+        // "23 active processes" — the count belongs in the heading, where it
+        // is read once, rather than tacked onto a row you have to find.
+        let header = Self.section("\(sorted.count) Active "
+                                  + (sorted.count == 1 ? "Process" : "Processes"))
         return [header] + sorted.map { session in
             let emoji = (session.emoji ?? "").isEmpty ? "" : "\(session.emoji!) "
-            return Self.caption("  \(session.mark) \(emoji)\(session.title)",
-                                dim: session.live != true)
+            let row = Self.caption("\(emoji)\(session.title)",
+                                   dim: session.live != true)
+            // The dot is the state, and it is an icon rather than a character
+            // in the title so every row's text starts at the same x — a list
+            // whose left edge moves with the status is one you cannot scan.
+            row.image = Self.dot(live: session.live == true,
+                                 idle: session.onMac == true || session.managed == true)
+            row.indentationLevel = 1
+            return row
         }
+    }
+
+    /// A filled dot for a session that is producing, a hollow one for a session
+    /// that is up but quiet, nothing for the rest.
+    private static func dot(live: Bool, idle: Bool) -> NSImage? {
+        guard live || idle else { return blank(width: 10) }
+        let name = live ? "circle.fill" : "circle"
+        let config = NSImage.SymbolConfiguration(pointSize: 7, weight: .semibold)
+        let image = NSImage(systemSymbolName: name, accessibilityDescription:
+                                live ? "running" : "idle")?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = true
+        return image ?? blank(width: 10)
+    }
+
+    /// Occupies the icon column so a row with no dot still lines up with one
+    /// that has.
+    private static func blank(width: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: width, height: 1))
+        image.isTemplate = true
+        return image
+    }
+
+    private static func glyph(_ symbol: String, size: CGFloat) -> NSImage? {
+        let config = NSImage.SymbolConfiguration(pointSize: size, weight: .regular)
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: nil)
+        let out = image?.withSymbolConfiguration(config)
+        out?.isTemplate = true
+        return out
+    }
+
+    /// A heading. macOS 14 draws these small, uppercase and unclickable, which
+    /// is exactly the treatment these want; before that they are a dim caption.
+    private static func section(_ title: String) -> NSMenuItem {
+        if #available(macOS 14.0, *) {
+            return NSMenuItem.sectionHeader(title: title)
+        }
+        let item = caption(title.uppercased())
+        item.attributedTitle = NSAttributedString(string: title.uppercased(), attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        return item
     }
 
     // MARK: Items
@@ -536,10 +684,14 @@ final class StatusController: NSObject {
     }
 
     private static func action(_ title: String, _ selector: Selector,
-                               _ target: AnyObject) -> NSMenuItem {
+                               _ target: AnyObject,
+                               symbol: String? = nil,
+                               indent: Int = 0) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
         item.target = target
         item.isEnabled = true
+        item.indentationLevel = indent
+        if let symbol { item.image = glyph(symbol, size: 13) }
         return item
     }
 
@@ -561,6 +713,17 @@ final class StatusController: NSObject {
     }
 
     @objc private func doRefresh() { refresh() }
+
+    /// Opens the client app, or brings it forward if it is already running.
+    ///
+    /// Activation rather than a second copy: two instances of a client that
+    /// each hold their own connection to a hub is a way to be told two
+    /// different things about one machine.
+    @objc private func doOpenApp() {
+        guard let url = RemoteApp.url else { return }
+        NSWorkspace.shared.openApplication(at: url,
+                                           configuration: NSWorkspace.OpenConfiguration())
+    }
 
     @objc private func doLogs() {
         NSWorkspace.shared.open(HostAgent.logDirectory())

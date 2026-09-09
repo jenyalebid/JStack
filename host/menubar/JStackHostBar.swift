@@ -709,28 +709,6 @@ enum LoginAgent {
     }
 }
 
-/// This app's own preferences.
-///
-/// `UserDefaults` and not the plist's environment: a setting a person changes
-/// from the menu belongs where the app can write it without rewriting its own
-/// LaunchAgent, and `menubar/install.sh` re-runs would flatten anything kept
-/// there anyway. The `JREMOTE_*` variables stay what they are — how a *host*
-/// is configured at install time — and this stays what a person clicked.
-enum Prefs {
-    private static let showQuitKey = "ShowQuitItem"
-
-    /// The environment variable still wins where it is set, because it is the
-    /// documented way to force the item on for a build somebody else installed.
-    static var quitForced: Bool {
-        ProcessInfo.processInfo.environment["JREMOTE_MENUBAR_QUIT"] == "1"
-    }
-
-    static var showQuit: Bool {
-        get { quitForced || UserDefaults.standard.bool(forKey: showQuitKey) }
-        set { UserDefaults.standard.set(newValue, forKey: showQuitKey) }
-    }
-}
-
 /// This app's own LaunchAgent label — its bundle identifier, which is what
 /// `install.sh` writes into both the bundle and the plist. Read rather than
 /// repeated, so the two cannot drift apart.
@@ -840,7 +818,6 @@ final class StatusController: NSObject {
             menu.addItem(Self.action("Open Log Folder", #selector(doLogs), self,
                                      symbol: "folder"))
         }
-        menu.addItem(settingsItem())
         // No Refresh. `menuWillOpen` re-polls, so everything below the pointer
         // was fetched on the way to it — a button that re-fetches data a
         // fraction of a second old is a button that can only ever appear to do
@@ -849,10 +826,13 @@ final class StatusController: NSObject {
         // No Quit by default. This is the hub's indicator, and the hub runs
         // whether or not anyone is looking at it — so "quit" here never meant
         // "stop the hub", it meant "hide the icon", which is not a thing worth
-        // a permanent slot in a menu about the hub. Settings puts it back —
-        // or JREMOTE_MENUBAR_QUIT=1 forces it on for a build somebody else
-        // installed; `menubar/install.sh --uninstall` removes it for good.
-        if Prefs.showQuit {
+        // a permanent slot in a menu about the hub. Set JREMOTE_MENUBAR_QUIT=1
+        // to put it back; `menubar/install.sh --uninstall` removes it for good.
+        //
+        // An environment variable and not a checkbox: a setting whose whole
+        // effect is whether a menu item exists is a menu item about the menu,
+        // and it would sit in the same list as the ones about the hub.
+        if ProcessInfo.processInfo.environment["JREMOTE_MENUBAR_QUIT"] == "1" {
             menu.addItem(.separator())
             let quit = Self.action("Quit Menu Bar", #selector(doQuit), self)
             quit.toolTip = "Takes this icon off until the next login. "
@@ -893,7 +873,81 @@ final class StatusController: NSObject {
         if sub.items.isEmpty {
             sub.addItem(Self.caption("No agent to operate this hub."))
         }
+
+        // ── Login ───────────────────────────────────────────────────────────
+        //
+        // Here and not behind a Settings row of its own. Whether the hub comes
+        // up at login is a fact about this machine's hub, which is what this
+        // submenu already is — a Settings item next to it would be a second
+        // door onto the same room.
+        sub.addItem(.separator())
+        if HostAgent.isInstalled {
+            let hub = Self.check("Start Hub at Login",
+                                 on: LoginAgent.startsAtLogin(HostAgent.label),
+                                 #selector(doToggleHubLogin), self)
+            if LoginAgent.pinnedOn(HostAgent.label) {
+                hub.action = nil
+                hub.isEnabled = false
+                hub.toolTip = "Always on: this agent is set to be kept running, "
+                    + "so launchd starts it at login whatever this says. "
+                    + "Change it where the agent is installed from."
+            } else {
+                hub.toolTip = "Nothing to grant — a user LaunchAgent loads at "
+                    + "login on its own. Takes effect at the next login."
+            }
+            sub.addItem(hub)
+        }
+        if LoginAgent.exists(MenuBarAgent.label) {
+            let bar = Self.check("Start Menu Bar at Login",
+                                 on: LoginAgent.startsAtLogin(MenuBarAgent.label),
+                                 #selector(doToggleBarLogin), self)
+            bar.toolTip = "Off means the icon is gone until you launch the app "
+                + "again. The hub is unaffected either way."
+            sub.addItem(bar)
+        }
+
+        // ── What this app is talking to ─────────────────────────────────────
+        //
+        // The agent label first, because it is what decides the two paths under
+        // it: read the wrong agent and both belong to a different, empty host.
+        // Shown and not editable — they are install-time facts, and a menu
+        // offering to change them would be offering to disagree with whatever
+        // is actually running.
+        sub.addItem(.separator())
+        sub.addItem(Self.caption("Agent · \(HostAgent.label)"))
+        sub.addItem(Self.caption("State · \(Self.short(HostAgent.stateDir()))"))
+        sub.addItem(Self.caption("Token · \(Self.short(HostAgent.tokenPath()))"
+                                 + (HostAgent.token() == nil ? " — missing" : "")))
+
+        sub.addItem(.separator())
+        let copy = Self.action("Copy Diagnostics", #selector(doCopyDiagnostics), self,
+                               symbol: "doc.on.clipboard")
+        copy.toolTip = "Everything on this submenu, plus what the host answered, "
+            + "as text. No token value is copied."
+        sub.addItem(copy)
+
         return sub
+    }
+
+    /// A path short enough for a menu: the tilde form, and only its last two
+    /// components once that is still long. The whole path goes to the clipboard
+    /// under Copy Diagnostics, which is where a full path is actually usable.
+    private static func short(_ url: URL) -> String {
+        let tilde = (url.path as NSString).abbreviatingWithTildeInPath
+        guard tilde.count > 34 else { return tilde }
+        return "…/\(url.pathComponents.suffix(2).joined(separator: "/"))"
+    }
+
+    /// A checkbox row. `.on`/`.off` rather than a tick drawn into the title, so
+    /// it reads as a setting to the system and to VoiceOver both.
+    private static func check(_ title: String, on: Bool,
+                              _ selector: Selector,
+                              _ target: AnyObject) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = target
+        item.isEnabled = true
+        item.state = on ? .on : .off
+        return item
     }
 
     /// The processes row: a count you read at the top level, a list you open.
@@ -975,102 +1029,9 @@ final class StatusController: NSObject {
         }
         let title = "\(sorted.count) "
             + (sorted.count == 1 ? "Process" : "Processes")
-        let item = Self.opener(title, symbol: "list.bullet.rectangle", submenu: sub)
+        let item = Self.opener(title, symbol: "person.2", submenu: sub)
         item.attributedTitle = Self.twoLine(title, subtitle)
-        item.image = Self.glyph("list.bullet.rectangle", size: 26)
-        return item
-    }
-
-    /// What opens off Settings: the handful of things a person can actually
-    /// change from here, and the handful of facts they would otherwise have to
-    /// read a plist to learn.
-    ///
-    /// Deliberately short. Every other knob this app has — port, bind address,
-    /// state dir, token path, which agent owns the hub — is decided at install
-    /// time by `install.sh`, and a menu that offered to change them would be
-    /// offering to disagree with the thing that is actually running. Those are
-    /// shown, not edited.
-    private func settingsItem() -> NSMenuItem {
-        let sub = NSMenu()
-        sub.autoenablesItems = false
-
-        // ── Login ───────────────────────────────────────────────────────────
-        if HostAgent.isInstalled {
-            let hub = Self.check("Start Hub at Login",
-                                 on: LoginAgent.startsAtLogin(HostAgent.label),
-                                 #selector(doToggleHubLogin), self)
-            if LoginAgent.pinnedOn(HostAgent.label) {
-                hub.action = nil
-                hub.isEnabled = false
-                hub.toolTip = "Always on: this agent is set to be kept running, "
-                    + "so launchd starts it at login whatever this says. "
-                    + "Change it where the agent is installed from."
-            } else {
-                hub.toolTip = "Nothing to grant — a user LaunchAgent loads at "
-                    + "login on its own. Takes effect at the next login."
-            }
-            sub.addItem(hub)
-        } else {
-            sub.addItem(Self.caption("No hub agent on this Mac."))
-        }
-
-        if LoginAgent.exists(MenuBarAgent.label) {
-            let bar = Self.check("Start Menu Bar at Login",
-                                 on: LoginAgent.startsAtLogin(MenuBarAgent.label),
-                                 #selector(doToggleBarLogin), self)
-            bar.toolTip = "Off means the icon is gone until you launch the app "
-                + "again. The hub is unaffected either way."
-            sub.addItem(bar)
-        }
-
-        sub.addItem(Self.check("Show Quit in This Menu", on: Prefs.showQuit,
-                               #selector(doToggleQuit), self))
-        if Prefs.quitForced {
-            sub.items.last?.action = nil
-            sub.items.last?.isEnabled = false
-            sub.items.last?.toolTip = "Forced on by JREMOTE_MENUBAR_QUIT."
-        }
-
-        // ── What this app is talking to ─────────────────────────────────────
-        //
-        // The agent label first, because it is the setting that decides all the
-        // others: read the wrong agent and every path below it is a different,
-        // empty host's.
-        sub.addItem(.separator())
-        sub.addItem(Self.caption("Agent · \(HostAgent.label)"))
-        sub.addItem(Self.caption("State · \(Self.short(HostAgent.stateDir()))"))
-        sub.addItem(Self.caption("Token · \(Self.short(HostAgent.tokenPath()))"
-                                 + (HostAgent.token() == nil ? " — missing" : "")))
-
-        sub.addItem(.separator())
-        let copy = Self.action("Copy Diagnostics", #selector(doCopyDiagnostics), self,
-                               symbol: "doc.on.clipboard")
-        copy.toolTip = "Everything on this submenu, plus what the host answered, "
-            + "as text. No token value is copied."
-        sub.addItem(copy)
-
-        return Self.opener("Settings", symbol: "gearshape", submenu: sub)
-    }
-
-    /// A path short enough for a menu: the tilde form, and only its last two
-    /// components once that is still long. The whole path goes to the clipboard
-    /// under Copy Diagnostics, which is where a full path is actually usable.
-    private static func short(_ url: URL) -> String {
-        let tilde = (url.path as NSString).abbreviatingWithTildeInPath
-        guard tilde.count > 34 else { return tilde }
-        let parts = url.pathComponents.suffix(2).joined(separator: "/")
-        return "…/\(parts)"
-    }
-
-    /// A checkbox row. `.on`/`.off` rather than a tick drawn into the title, so
-    /// it reads as a setting to the system and to VoiceOver both.
-    private static func check(_ title: String, on: Bool,
-                              _ selector: Selector,
-                              _ target: AnyObject) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-        item.target = target
-        item.isEnabled = true
-        item.state = on ? .on : .off
+        item.image = Self.glyph("person.2", size: 26)
         return item
     }
 
@@ -1353,12 +1314,6 @@ final class StatusController: NSObject {
             NSApp.activate(ignoringOtherApps: true)
             note.runModal()
         }
-    }
-
-    @objc private func doToggleQuit(_ sender: NSMenuItem) {
-        Prefs.showQuit = sender.state != .on
-        sender.state = Prefs.showQuit ? .on : .off
-        build()
     }
 
     /// The state of everything, as text, for pasting into a message when

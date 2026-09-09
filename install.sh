@@ -29,6 +29,10 @@ WANT_SCHEDULER=0
 WANT_CLAUDE=1
 WANT_HOST=1
 WANT_MENUBAR=1
+WANT_APP=1
+DECLARE_ROOT=0
+LAST_LOG=""
+LAST_ELAPSED=""
 
 usage() {
     cat <<'EOF'
@@ -43,6 +47,7 @@ usage: install.sh [options]
   --no-claude         don't install Claude Code even if it is missing
   --no-host           don't install the host (no remote access, no icon)
   --no-menubar        install the host but not its menu bar icon
+  --no-app            don't offer the Mac app
   --help, -h          this
 
 Environment: JSTACK_REPO_URL, JSTACK_CHECKOUT, JSTACK_AGENT_ROOT override the
@@ -62,6 +67,7 @@ while [ $# -gt 0 ]; do
         --no-claude)   WANT_CLAUDE=0 ;;
         --no-host)     WANT_HOST=0 ;;
         --no-menubar)  WANT_MENUBAR=0 ;;
+        --no-app)      WANT_APP=0 ;;
         -h|--help)     usage; exit 0 ;;
         *)             echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -87,16 +93,72 @@ run() {
     "$@"
 }
 
+# Is there a human at a terminal to answer a question?
+#
+# NOT `[ -t 0 ]`. The documented way to run this is `curl … | bash`, which
+# makes stdin the pipe carrying the script itself — never a tty, no matter who
+# is sitting there. Testing stdin therefore silently turned every question in
+# this installer into its default for the one invocation the README teaches:
+# the workspace path was stamped as ~/Agents/Main without asking, the scheduler
+# was skipped without offering, and the install ended by telling the operator
+# to go run the thing it had just decided not to run.
+#
+# /dev/tty is the controlling terminal regardless of what stdin is piped from,
+# which is exactly the question being asked. Absent — cron, a Docker build, a
+# CI step — it cannot be opened, and defaults are right.
+interactive() {
+    [ "$ASSUME_YES" = "1" ] && return 1
+    [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
+    # Readable and writable is not the same as attached: a detached process
+    # keeps the device node and fails at open. Prove it by opening it.
+    { : >/dev/tty; } 2>/dev/null || return 1
+    return 0
+}
+
 ask() {
-    # $1 prompt, $2 default (y/n). --yes and a non-tty both take the default.
+    # $1 prompt, $2 default (y/n). --yes and no terminal both take the default.
     local reply
-    if [ "$ASSUME_YES" = "1" ] || [ ! -t 0 ]; then
+    if ! interactive; then
         [ "$2" = "y" ]; return
     fi
-    printf '  %s [%s] ' "$1" "$([ "$2" = y ] && echo Y/n || echo y/N)"
+    printf '  %s [%s] ' "$1" "$([ "$2" = y ] && echo Y/n || echo y/N)" >/dev/tty
     read -r reply </dev/tty || reply=""
     reply="${reply:-$2}"
     case "$reply" in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
+# Free-text answer with a default. $1 prompt, $2 default.
+ask_value() {
+    local reply
+    if ! interactive; then printf '%s' "$2"; return; fi
+    printf '  %s [%s]: ' "$1" "$2" >/dev/tty
+    read -r reply </dev/tty || reply=""
+    printf '%s' "${reply:-$2}"
+}
+
+# A long step that would otherwise look hung. Runs the command with its output
+# in a log, prints elapsed seconds in place, and leaves one line behind.
+#
+# The Claude Code download, the clone and the host's wheel build are minutes
+# each with nothing on screen; silence for that long reads as a hang, and the
+# operator's next move is Ctrl-C on a working install.
+run_long() {
+    local label="$1"; shift
+    local log; log="$(mktemp -t jstack-step)"
+    if [ "$DRY_RUN" = "1" ]; then would "$*"; return 0; fi
+    "$@" >"$log" 2>&1 &
+    local pid=$! start=$SECONDS elapsed
+    while kill -0 "$pid" 2>/dev/null; do
+        elapsed=$((SECONDS - start))
+        printf '\r  %s…%s %s  %ss' "$DIM" "$Z" "$label" "$elapsed"
+        sleep 1
+    done
+    wait "$pid"; local rc=$?
+    elapsed=$((SECONDS - start))
+    printf '\r\033[2K'
+    LAST_LOG="$log"
+    LAST_ELAPSED="$elapsed"
+    return $rc
 }
 
 # ── 0. preflight ────────────────────────────────────────────────────────────
@@ -123,6 +185,39 @@ done
 [ -n "$PY" ] || die "no python3 >= $MIN_PY_MAJOR.$MIN_PY_MINOR on PATH — the scheduler needs zoneinfo, which arrived in 3.9"
 ok "python — $("$PY" --version 2>&1) at $PY"
 
+# ── 0.5 where the stack keeps everything ────────────────────────────────────
+#
+# Asked, not assumed. Every derived path — Agents, Systems, Config, State,
+# Logs, Credentials — hangs off this one answer, and an installer that picks
+# it silently has decided the layout of somebody's home directory on their
+# behalf and then told them about it in a doctor line afterwards.
+#
+# $HOME stays the default because it is right for a personal machine. A shared
+# box, an external volume or a machine where the operation lives under one
+# directory is exactly when the question needs to have been asked.
+
+step "Where the stack lives"
+
+if [ -n "${JSTACK_ROOT:-}" ]; then
+    ok "root declared in the environment — $JSTACK_ROOT"
+else
+    JSTACK_ROOT="$(ask_value "Root for Agents, Logs, Config, State and Credentials" "$HOME")"
+    JSTACK_ROOT="${JSTACK_ROOT/#\~/$HOME}"
+    if [ "$JSTACK_ROOT" != "$HOME" ]; then
+        DECLARE_ROOT=1
+        ok "root — $JSTACK_ROOT (will be declared in your shell profile)"
+    else
+        ok "root — $HOME (the default; nothing is written to declare it)"
+    fi
+fi
+export JSTACK_ROOT
+
+# --agent-root wins where it was given; otherwise the root answer governs.
+case "$AGENT_ROOT" in
+    "$HOME/Agents") AGENT_ROOT="$JSTACK_ROOT/Agents" ;;
+esac
+note "agents will live in $AGENT_ROOT"
+
 # ── 1. Claude Code ──────────────────────────────────────────────────────────
 
 step "Claude Code"
@@ -137,11 +232,11 @@ elif [ "$WANT_CLAUDE" = "0" ]; then
 elif ask "Claude Code is not installed. Install it now?" y; then
     if [ "$DRY_RUN" = "1" ]; then
         would "curl -fsSL https://claude.ai/install.sh | bash"
-    elif curl -fsSL https://claude.ai/install.sh | bash >/tmp/jstack-claude-install.log 2>&1; then
+    elif run_long "downloading Claude Code" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'; then
         CLAUDE="$HOME/.local/bin/claude"
-        ok "installed — $("$CLAUDE" --version 2>&1 | head -1)"
+        ok "installed in ${LAST_ELAPSED}s — $("$CLAUDE" --version 2>&1 | head -1)"
     else
-        warn "the Claude Code installer failed; see /tmp/jstack-claude-install.log"
+        warn "the Claude Code installer failed; see $LAST_LOG"
     fi
 else
     warn "skipped — the plugin steps below will be skipped too"
@@ -169,8 +264,8 @@ if [ -d "$CHECKOUT/.git" ]; then
 elif [ -e "$CHECKOUT" ]; then
     die "$CHECKOUT exists and is not a git checkout — move it aside or pass --checkout DIR"
 else
-    run git clone --quiet "$REPO_URL" "$CHECKOUT" || die "clone failed"
-    [ "$DRY_RUN" = "1" ] || ok "cloned at $(git -C "$CHECKOUT" log --oneline -1)"
+    run_long "cloning $REPO_URL" git clone --quiet "$REPO_URL" "$CHECKOUT" || die "clone failed — see $LAST_LOG"
+    [ "$DRY_RUN" = "1" ] || ok "cloned in ${LAST_ELAPSED}s at $(git -C "$CHECKOUT" log --oneline -1)"
 fi
 
 PLUGIN="$CHECKOUT/plugins/jstack"
@@ -316,12 +411,43 @@ else
 fi
 export PATH="$BIN:$PATH"
 
-# ── 7. the scheduler daemon (optional) ──────────────────────────────────────
+# A non-default root is only real if it outlives this shell. Everything the
+# stack derives — Agents, Logs, Config, State, Credentials — reads this, so a
+# root chosen at install time and never exported is a root that applies to the
+# installer and to nothing afterwards.
+if [ "$DECLARE_ROOT" = "1" ]; then
+    ROOT_LINE="export JSTACK_ROOT=\"$JSTACK_ROOT\""
+    if [ -f "$PROFILE" ] && grep -qF "JSTACK_ROOT" "$PROFILE" 2>/dev/null; then
+        ok "$PROFILE already declares a root"
+    elif [ "$DRY_RUN" = "1" ]; then
+        would "append to $PROFILE: $ROOT_LINE"
+    else
+        printf '%s\n' "$ROOT_LINE" >> "$PROFILE"
+        ok "declared JSTACK_ROOT=$JSTACK_ROOT in $PROFILE"
+    fi
+fi
+
+# ── 7. the scheduler and what it needs ──────────────────────────────────────
 #
 # Booking and firing are different halves. Without a daemon the registry accepts
 # a job, `list` shows it, and the hour passes in silence.
+#
+# dateutil is installed rather than reported. It is the difference between
+# recurring jobs working and not, it is one pip install, and an installer that
+# ends by handing the operator a command it could have run itself has not
+# finished — that warning was the first thing a fresh install put on screen.
 
 step "Scheduler daemon"
+
+if "$PY" -c 'import dateutil' 2>/dev/null; then
+    ok "python-dateutil present"
+elif [ "$DRY_RUN" = "1" ]; then
+    would "$PY -m pip install --user python-dateutil"
+elif run_long "installing python-dateutil" "$PY" -m pip install --quiet --user python-dateutil; then
+    ok "python-dateutil installed — recurring jobs can book"
+else
+    warn "could not install python-dateutil; recurring jobs will not book — see $LAST_LOG"
+fi
 
 if [ "$WANT_SCHEDULER" = "1" ] || ask "Install the scheduler daemon as a user service? (needed for recurring wakes)" n; then
     if [ "$DRY_RUN" = "1" ]; then
@@ -372,7 +498,40 @@ else
     note "skipped — run $HOST_INSTALLER any time"
 fi
 
-# ── 9. the verdict ──────────────────────────────────────────────────────────
+# ── 9. the Mac app ──────────────────────────────────────────────────────────
+#
+# The host makes the machine reachable; the app is what reaches it. Offered
+# here rather than left to a second document, for the same reason the host is:
+# a machine set up to be reached, with nothing on it that can reach, is half
+# an install that reads as a finished one.
+#
+# Offered, not assumed — it downloads a signed release, and that is a
+# different kind of decision from building a local source file. app/install.sh
+# verifies the hash, the signature, notarization and the signing team before
+# anything lands in /Applications.
+
+step "The Mac app"
+
+APP_INSTALLER="$CHECKOUT/app/install.sh"
+if [ "$(uname -s)" != "Darwin" ]; then
+    note "macOS only — skipped"
+elif [ ! -f "$APP_INSTALLER" ]; then
+    note "no app installer in this checkout — skipped"
+elif [ "$WANT_APP" = "0" ]; then
+    note "skipped by --no-app — run $APP_INSTALLER any time"
+elif ask "Install the Mac app (downloads a signed, notarized release)?" y; then
+    if [ "$DRY_RUN" = "1" ]; then
+        would "$APP_INSTALLER"
+    elif run_long "downloading and verifying the app" bash "$APP_INSTALLER"; then
+        ok "app installed in ${LAST_ELAPSED}s"
+    else
+        warn "app install reported a problem — re-run $APP_INSTALLER to see it: $LAST_LOG"
+    fi
+else
+    note "skipped — run $APP_INSTALLER any time"
+fi
+
+# ── 10. the verdict ─────────────────────────────────────────────────────────
 
 step "Verifying"
 

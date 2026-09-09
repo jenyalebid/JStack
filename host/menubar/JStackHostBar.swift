@@ -293,22 +293,14 @@ struct HostState {
             }
         }
         if !isProvisioned { parts.append("no token") }
+        // A host answering with no agent of its own and no larger app behind it
+        // is `jstack-host serve` — a foreground run in somebody's terminal.
+        // Worth a word, because it is the one arrangement that does not survive
+        // closing that window.
+        if !installed && !embedded { parts.append("in a terminal") }
         return parts.joined(separator: " · ")
     }
 
-    var summary: String {
-        guard isUp else {
-            return installed ? "Host is not answering" : "No host on this Mac"
-        }
-        guard isProvisioned else { return "Hosting — no token" }
-        let profile = health?.profile ?? "host"
-        // A host serving with no agent and no larger app behind it is
-        // `jstack-host serve` — a foreground run in somebody's terminal. Worth
-        // saying, because it is the one that will not survive closing that
-        // window.
-        let how = (installed || embedded) ? "" : " · in a terminal"
-        return "Hosting — \(profile) · port \(HostAgent.port())\(how)"
-    }
 }
 
 // MARK: - Asking
@@ -588,6 +580,100 @@ enum HostControl {
     }()
 }
 
+/// Whether a LaunchAgent brings itself up at login, and flipping that.
+///
+/// There is no permission to grant here and no API to ask. A *user* LaunchAgent
+/// in `~/Library/LaunchAgents` is loaded at login by launchd with no prompt and
+/// no sudo — it shows up afterwards in Login Items & Extensions as a switch you
+/// may turn off, not as one you had to turn on. So the setting is a property of
+/// the plist, and this reads and writes exactly that.
+enum LoginAgent {
+    static func plistURL(_ label: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+    }
+
+    static func exists(_ label: String) -> Bool {
+        FileManager.default.fileExists(atPath: plistURL(label).path)
+    }
+
+    private static func job(_ label: String) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: plistURL(label)),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data, options: [], format: nil) as? [String: Any]
+        else { return nil }
+        return plist
+    }
+
+    /// Does it come up at login?
+    ///
+    /// `RunAtLoad` is the obvious half. The other half is `KeepAlive` as a bare
+    /// `true`, which means "keep this running" with no condition attached — so
+    /// launchd starts it the moment the job is loaded, whatever `RunAtLoad`
+    /// says or fails to say. A *dictionary* `KeepAlive` is conditional
+    /// (`SuccessfulExit` and friends) and starts nothing on its own.
+    ///
+    /// Getting this wrong is how a checkbox ends up unticked next to a hub that
+    /// has come up at every login for months.
+    static func startsAtLogin(_ label: String) -> Bool {
+        guard let job = job(label) else { return false }
+        if job["KeepAlive"] as? Bool == true { return true }
+        return job["RunAtLoad"] as? Bool == true
+    }
+
+    /// True where `KeepAlive` alone guarantees the start. Then `RunAtLoad` is
+    /// not the knob, and a switch offering to flip it is a switch that lies —
+    /// so the row is shown ticked and locked, with the reason on the tooltip,
+    /// rather than offered as a choice that would not take.
+    static func pinnedOn(_ label: String) -> Bool {
+        job(label)?["KeepAlive"] as? Bool == true
+    }
+
+    /// Write the flag. Nothing is unloaded and nothing is restarted: launchd
+    /// reads these files fresh at the next login, which is the only moment this
+    /// setting means anything — and booting the job out to make a next-login
+    /// setting "take" would stop the very thing being configured.
+    @discardableResult
+    static func setStartsAtLogin(_ label: String, _ on: Bool) -> Bool {
+        guard var job = job(label) else { return false }
+        job["RunAtLoad"] = on
+        guard let data = try? PropertyListSerialization.data(
+                  fromPropertyList: job, format: .xml, options: 0),
+              (try? data.write(to: plistURL(label), options: .atomic)) != nil
+        else { return false }
+        return true
+    }
+}
+
+/// This app's own preferences.
+///
+/// `UserDefaults` and not the plist's environment: a setting a person changes
+/// from the menu belongs where the app can write it without rewriting its own
+/// LaunchAgent, and `menubar/install.sh` re-runs would flatten anything kept
+/// there anyway. The `JREMOTE_*` variables stay what they are — how a *host*
+/// is configured at install time — and this stays what a person clicked.
+enum Prefs {
+    private static let showQuitKey = "ShowQuitItem"
+
+    /// The environment variable still wins where it is set, because it is the
+    /// documented way to force the item on for a build somebody else installed.
+    static var quitForced: Bool {
+        ProcessInfo.processInfo.environment["JREMOTE_MENUBAR_QUIT"] == "1"
+    }
+
+    static var showQuit: Bool {
+        get { quitForced || UserDefaults.standard.bool(forKey: showQuitKey) }
+        set { UserDefaults.standard.set(newValue, forKey: showQuitKey) }
+    }
+}
+
+/// This app's own LaunchAgent label — its bundle identifier, which is what
+/// `install.sh` writes into both the bundle and the plist. Read rather than
+/// repeated, so the two cannot drift apart.
+enum MenuBarAgent {
+    static let label = Bundle.main.bundleIdentifier ?? "com.jremote.menubar"
+}
+
 // MARK: - The menu bar
 
 final class StatusController: NSObject {
@@ -649,7 +735,9 @@ final class StatusController: NSObject {
         // is actually in flight, and no chrome at all when the machine is idle.
         let live = state.liveCount
         button.title = live > 0 ? " \(live)" : ""
-        button.toolTip = state.summary
+        // The same line the menu's first row shows, since it is the answer to
+        // "what is this icon telling me" and the icon has no room for it.
+        button.toolTip = "\(Machine.name) — \(state.headline)"
     }
 
     private func build() {
@@ -669,7 +757,9 @@ final class StatusController: NSObject {
         let machine = NSMenuItem(title: Machine.name, action: nil, keyEquivalent: "")
         machine.image = Self.glyph(Machine.symbol, size: 26)
         machine.attributedTitle = Self.twoLine(Machine.name, state.headline)
-        machine.toolTip = state.summary
+        // No tooltip. The row already says the two things there are to say, on
+        // two lines, without being hovered — a bubble that fades in over them a
+        // second later can only repeat it or contradict it.
         machine.submenu = controlsMenu()
         menu.addItem(machine)
 
@@ -685,6 +775,7 @@ final class StatusController: NSObject {
             menu.addItem(Self.action("Open Log Folder", #selector(doLogs), self,
                                      symbol: "folder"))
         }
+        menu.addItem(settingsItem())
         // No Refresh. `menuWillOpen` re-polls, so everything below the pointer
         // was fetched on the way to it — a button that re-fetches data a
         // fraction of a second old is a button that can only ever appear to do
@@ -693,9 +784,10 @@ final class StatusController: NSObject {
         // No Quit by default. This is the hub's indicator, and the hub runs
         // whether or not anyone is looking at it — so "quit" here never meant
         // "stop the hub", it meant "hide the icon", which is not a thing worth
-        // a permanent slot in a menu about the hub. Set JREMOTE_MENUBAR_QUIT=1
-        // to put it back; `menubar/install.sh --uninstall` removes it for good.
-        if ProcessInfo.processInfo.environment["JREMOTE_MENUBAR_QUIT"] == "1" {
+        // a permanent slot in a menu about the hub. Settings puts it back —
+        // or JREMOTE_MENUBAR_QUIT=1 forces it on for a build somebody else
+        // installed; `menubar/install.sh --uninstall` removes it for good.
+        if Prefs.showQuit {
             menu.addItem(.separator())
             let quit = Self.action("Quit Menu Bar", #selector(doQuit), self)
             quit.toolTip = "Takes this icon off until the next login. "
@@ -821,6 +913,99 @@ final class StatusController: NSObject {
         let item = Self.opener(title, symbol: "list.bullet.rectangle", submenu: sub)
         item.attributedTitle = Self.twoLine(title, subtitle)
         item.image = Self.glyph("list.bullet.rectangle", size: 26)
+        return item
+    }
+
+    /// What opens off Settings: the handful of things a person can actually
+    /// change from here, and the handful of facts they would otherwise have to
+    /// read a plist to learn.
+    ///
+    /// Deliberately short. Every other knob this app has — port, bind address,
+    /// state dir, token path, which agent owns the hub — is decided at install
+    /// time by `install.sh`, and a menu that offered to change them would be
+    /// offering to disagree with the thing that is actually running. Those are
+    /// shown, not edited.
+    private func settingsItem() -> NSMenuItem {
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        // ── Login ───────────────────────────────────────────────────────────
+        if HostAgent.isInstalled {
+            let hub = Self.check("Start Hub at Login",
+                                 on: LoginAgent.startsAtLogin(HostAgent.label),
+                                 #selector(doToggleHubLogin), self)
+            if LoginAgent.pinnedOn(HostAgent.label) {
+                hub.action = nil
+                hub.isEnabled = false
+                hub.toolTip = "Always on: this agent is set to be kept running, "
+                    + "so launchd starts it at login whatever this says. "
+                    + "Change it where the agent is installed from."
+            } else {
+                hub.toolTip = "Nothing to grant — a user LaunchAgent loads at "
+                    + "login on its own. Takes effect at the next login."
+            }
+            sub.addItem(hub)
+        } else {
+            sub.addItem(Self.caption("No hub agent on this Mac."))
+        }
+
+        if LoginAgent.exists(MenuBarAgent.label) {
+            let bar = Self.check("Start Menu Bar at Login",
+                                 on: LoginAgent.startsAtLogin(MenuBarAgent.label),
+                                 #selector(doToggleBarLogin), self)
+            bar.toolTip = "Off means the icon is gone until you launch the app "
+                + "again. The hub is unaffected either way."
+            sub.addItem(bar)
+        }
+
+        sub.addItem(Self.check("Show Quit in This Menu", on: Prefs.showQuit,
+                               #selector(doToggleQuit), self))
+        if Prefs.quitForced {
+            sub.items.last?.action = nil
+            sub.items.last?.isEnabled = false
+            sub.items.last?.toolTip = "Forced on by JREMOTE_MENUBAR_QUIT."
+        }
+
+        // ── What this app is talking to ─────────────────────────────────────
+        //
+        // The agent label first, because it is the setting that decides all the
+        // others: read the wrong agent and every path below it is a different,
+        // empty host's.
+        sub.addItem(.separator())
+        sub.addItem(Self.caption("Agent · \(HostAgent.label)"))
+        sub.addItem(Self.caption("State · \(Self.short(HostAgent.stateDir()))"))
+        sub.addItem(Self.caption("Token · \(Self.short(HostAgent.tokenPath()))"
+                                 + (HostAgent.token() == nil ? " — missing" : "")))
+
+        sub.addItem(.separator())
+        let copy = Self.action("Copy Diagnostics", #selector(doCopyDiagnostics), self,
+                               symbol: "doc.on.clipboard")
+        copy.toolTip = "Everything on this submenu, plus what the host answered, "
+            + "as text. No token value is copied."
+        sub.addItem(copy)
+
+        return Self.opener("Settings", symbol: "gearshape", submenu: sub)
+    }
+
+    /// A path short enough for a menu: the tilde form, and only its last two
+    /// components once that is still long. The whole path goes to the clipboard
+    /// under Copy Diagnostics, which is where a full path is actually usable.
+    private static func short(_ url: URL) -> String {
+        let tilde = (url.path as NSString).abbreviatingWithTildeInPath
+        guard tilde.count > 34 else { return tilde }
+        let parts = url.pathComponents.suffix(2).joined(separator: "/")
+        return "…/\(parts)"
+    }
+
+    /// A checkbox row. `.on`/`.off` rather than a tick drawn into the title, so
+    /// it reads as a setting to the system and to VoiceOver both.
+    private static func check(_ title: String, on: Bool,
+                              _ selector: Selector,
+                              _ target: AnyObject) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = target
+        item.isEnabled = true
+        item.state = on ? .on : .off
         return item
     }
 
@@ -1062,6 +1247,80 @@ final class StatusController: NSObject {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(code, forType: .string)
         }
+    }
+
+    // MARK: Settings
+
+    @objc private func doToggleHubLogin(_ sender: NSMenuItem) {
+        setLogin(HostAgent.label, sender, what: "the hub")
+    }
+
+    @objc private func doToggleBarLogin(_ sender: NSMenuItem) {
+        setLogin(MenuBarAgent.label, sender, what: "the menu bar app")
+    }
+
+    /// Flip the flag, and say so if the file would not take it.
+    ///
+    /// Silence on failure is the thing to avoid here: the row would redraw from
+    /// the plist on the next open and simply appear not to have been clicked,
+    /// which is indistinguishable from a menu that ignores you.
+    private func setLogin(_ label: String, _ sender: NSMenuItem, what: String) {
+        let wanted = sender.state != .on
+        guard LoginAgent.setStartsAtLogin(label, wanted) else {
+            let failed = NSAlert()
+            failed.alertStyle = .warning
+            failed.messageText = "Could not change the login setting"
+            failed.informativeText = "\(LoginAgent.plistURL(label).path) could "
+                + "not be written."
+            NSApp.activate(ignoringOtherApps: true)
+            failed.runModal()
+            return
+        }
+        sender.state = wanted ? .on : .off
+        // Said out loud once, because a checkbox that ticks instantly reads as
+        // something that happened instantly — and this one has not happened yet.
+        if !wanted {
+            let note = NSAlert()
+            note.messageText = "\(what.prefix(1).uppercased())\(what.dropFirst()) "
+                + "will not start at the next login"
+            note.informativeText = "Whatever is running now keeps running. "
+                + "Turn it back on here."
+            NSApp.activate(ignoringOtherApps: true)
+            note.runModal()
+        }
+    }
+
+    @objc private func doToggleQuit(_ sender: NSMenuItem) {
+        Prefs.showQuit = sender.state != .on
+        sender.state = Prefs.showQuit ? .on : .off
+        build()
+    }
+
+    /// The state of everything, as text, for pasting into a message when
+    /// something is wrong. The token's *path* and whether it reads — never its
+    /// value: this goes to a clipboard, and a clipboard goes anywhere.
+    @objc private func doCopyDiagnostics() {
+        var lines = [
+            "JStack host — \(Machine.name)",
+            "hub        \(state.headline)",
+            "agent      \(HostAgent.label)"
+                + (HostAgent.isInstalled ? "" : " (no plist)"),
+            "login      hub \(HostAgent.isInstalled && LoginAgent.startsAtLogin(HostAgent.label) ? "yes" : "no")"
+                + ", menu bar \(LoginAgent.startsAtLogin(MenuBarAgent.label) ? "yes" : "no")",
+            "bind       \(HostAgent.bind() ?? "not recorded")",
+            "state      \(HostAgent.stateDir().path)",
+            "token      \(HostAgent.tokenPath().path)"
+                + (HostAgent.token() == nil ? " — missing" : " — present"),
+        ]
+        if let identity = state.identity {
+            lines.append("host_id    \(identity.hostId ?? "?")")
+            lines.append("profile    \(identity.profile ?? "?")")
+        }
+        lines.append("sessions   \(state.sessions.count) "
+                     + "(\(state.liveCount) working)")
+        if state.unauthorized { lines.append("auth       token refused by the hub") }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
     }
 
     private func after(_ seconds: TimeInterval, _ block: @escaping () -> Void) {

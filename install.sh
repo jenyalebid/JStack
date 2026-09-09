@@ -227,15 +227,33 @@ else
     # nobody meant to create, so the loop says why and shows the fix. Under
     # --yes or with no terminal, ask_value returns the default, which is
     # absolute — so this cannot spin.
+    # The default is shown with a trailing slash so the answer reads as a
+    # directory to put things under, not as a thing to replace; the slash is
+    # stripped again before use, because every path below joins with one.
+    #
+    # Then it is read back and confirmed. This is the one answer the installer
+    # cannot check for you — every derived directory hangs off it and it goes
+    # into the shell profile — and a typo is silent until an agent workspace
+    # turns up somewhere nobody meant. Declining goes back to the question
+    # rather than forward with the answer.
     while :; do
-        JSTACK_ROOT="$(ask_value "Root for Agents, Logs, Config, State and Credentials" "$HOME")"
+        JSTACK_ROOT="$(ask_value "Root for Agents, Logs, Config, State and Credentials" "$HOME/")"
         JSTACK_ROOT="${JSTACK_ROOT/#\~/$HOME}"
+        while [ "$JSTACK_ROOT" != "/" ] && [ "${JSTACK_ROOT%/}" != "$JSTACK_ROOT" ]; do
+            JSTACK_ROOT="${JSTACK_ROOT%/}"
+        done
         case "$JSTACK_ROOT" in
-            /*) break ;;
-            "") warn "the root cannot be empty" ;;
-            *)  warn "a root must be an absolute path — try $HOME/${JSTACK_ROOT#./}" ;;
+            /*) ;;
+            "") warn "the root cannot be empty"; interactive || die "JSTACK_ROOT must be an absolute path"; continue ;;
+            *)  warn "a root must be an absolute path — try $HOME/${JSTACK_ROOT#./}"
+                interactive || die "JSTACK_ROOT must be an absolute path"; continue ;;
         esac
-        interactive || die "JSTACK_ROOT must be an absolute path"
+        interactive || break
+        note "everything hangs off it: $JSTACK_ROOT/Agents, /Logs, /Config, /State, /Credentials"
+        case "$(ask_value "Use $JSTACK_ROOT? (y/n)" "y")" in
+            [Yy]*) break ;;
+            *) note "let's try again" ;;
+        esac
     done
     if [ "$JSTACK_ROOT" != "$HOME" ]; then
         DECLARE_ROOT=1
@@ -274,9 +292,18 @@ fi
 if [ "$have_agents" = "1" ]; then
     ok "agents — $AGENT_ROOT already holds some, nothing to name"
 else
-    if [ -z "$AGENT_NAME" ]; then
+    # Same read-back as the root: the name becomes a directory, a CLAUDE.md
+    # and the seat every later session opens into, and none of that is easy to
+    # rename afterwards.
+    while [ -z "$AGENT_NAME" ]; do
         AGENT_NAME="$(ask_value "Name for your first agent workspace" "Main")"
-    fi
+        interactive || break
+        case "$(ask_value "Create $AGENT_ROOT/$AGENT_NAME? (y/n)" "y")" in
+            [Yy]*) ;;
+            *) AGENT_NAME=""; note "let's try again" ;;
+        esac
+    done
+    AGENT_NAME="${AGENT_NAME:-Main}"
     ok "first agent — $AGENT_ROOT/$AGENT_NAME"
 fi
 

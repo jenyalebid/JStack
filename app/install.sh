@@ -210,7 +210,11 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
-echo "Downloading $ZIP_NAME…"
+# Braced on purpose. In a UTF-8 locale bash reads the ellipsis as part of the
+# name, so `$ZIP_NAME…` expands nothing and `set -u` kills the script one line
+# before the download — "ZIP_NAME…: unbound variable", on the only line where
+# the variable is obviously set.
+echo "Downloading ${ZIP_NAME}…"
 curl -fSL --max-time 900 --progress-bar "$DL/$TAG/$ZIP_NAME" -o "$WORK/$ZIP_NAME" \
     || die "download failed"
 

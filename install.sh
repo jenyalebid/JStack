@@ -251,13 +251,34 @@ case "$AGENT_ROOT" in
     "$HOME/Agents") AGENT_ROOT="$JSTACK_ROOT/Agents" ;;
 esac
 
-# The second and last question. Asked here rather than at step 4 so both
-# answers are given before anything is installed — an install that stops to ask
-# something ten minutes in cannot be walked away from.
-if [ -z "$AGENT_NAME" ]; then
-    AGENT_NAME="$(ask_value "Name for your first agent workspace" "Main")"
+# The second and last question — and only when there is something to answer.
+#
+# Asked here rather than at step 4 so both answers are given before anything is
+# installed: an install that stops to ask something ten minutes in cannot be
+# walked away from. But hoisting it that far up also hoisted it past the check
+# that made it worth asking, and re-running the installer on a machine that
+# already has agents then asked for a "first" workspace it would never create.
+#
+# The probe below is a shell approximation of root.agents(); the real answer at
+# step 4 is still root.py's, so the two cannot disagree in a way that matters.
+# This one is only ever allowed to SKIP the question — if it is wrong and finds
+# nothing, step 4 finds the agents anyway and the answer goes unused. It can
+# never cause a workspace to be created.
+have_agents=0
+if [ -d "$AGENT_ROOT" ]; then
+    for candidate in "$AGENT_ROOT"/*/CLAUDE.md "$AGENT_ROOT"/*/*/CLAUDE.md; do
+        [ -f "$candidate" ] && { have_agents=1; break; }
+    done
 fi
-ok "first agent — $AGENT_ROOT/$AGENT_NAME"
+
+if [ "$have_agents" = "1" ]; then
+    ok "agents — $AGENT_ROOT already holds some, nothing to name"
+else
+    if [ -z "$AGENT_NAME" ]; then
+        AGENT_NAME="$(ask_value "Name for your first agent workspace" "Main")"
+    fi
+    ok "first agent — $AGENT_ROOT/$AGENT_NAME"
+fi
 
 # ── 1. Claude Code ──────────────────────────────────────────────────────────
 
@@ -359,6 +380,10 @@ fi
 if [ -n "$existing" ]; then
     ok "$AGENT_ROOT already holds agents"
 else
+    # root.py is the authority here and it found nothing, so the question above
+    # was skipped by a probe that disagreed with it. Never build a path out of
+    # an empty name: "$AGENT_ROOT/" would take mkdir and the heredoc with it.
+    AGENT_NAME="${AGENT_NAME:-Main}"
     seat="$AGENT_ROOT/$AGENT_NAME"
     if [ -f "$seat/CLAUDE.md" ]; then
         ok "$seat/CLAUDE.md already exists"

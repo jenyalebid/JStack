@@ -133,6 +133,26 @@ ok "python $("$PY" -c 'import platform;print(platform.python_version())') at $PY
 command -v git >/dev/null 2>&1 || die "git is required — install the Xcode command line tools with \`xcode-select --install\`"
 ok "git $(git --version | awk '{print $3}')"
 
+# tmux, installed rather than reported.
+#
+# Every chat this host serves runs inside tmux, so its own setup check grades
+# an absent one FAIL and prints "the host cannot serve chats until the failures
+# above are fixed". macOS does not ship it. The installer knew the dependency,
+# knew the fix, ran neither, and ended a clean install on a red line telling
+# the reader to type the one command it could have typed itself.
+if command -v tmux >/dev/null 2>&1; then
+    ok "tmux $(tmux -V | awk '{print $2}')"
+elif command -v brew >/dev/null 2>&1; then
+    printf "  installing tmux…\n"
+    if brew install tmux >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1; then
+        ok "tmux $(tmux -V | awk '{print $2}') installed"
+    else
+        warn "could not install tmux — run \`brew install tmux\`; chats cannot start without it"
+    fi
+else
+    warn "tmux is missing and there is no Homebrew to install it with — chats cannot start until \`tmux\` is on PATH"
+fi
+
 # ── 1. the checkout ─────────────────────────────────────────────────────────
 #
 # Where the host runs from, permanently. The LaunchAgent points at this

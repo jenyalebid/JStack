@@ -206,7 +206,7 @@ def test_a_leaf_calls_pairing_unsupported_not_broken(wg):
     """
     tunnel.HUB_CONF.unlink()
     with pytest.raises(tunnel.PairingUnsupported) as caught:
-        tunnel.pair("jenyas-macbook-pro", "127.0.0.1")
+        tunnel.pair("my-macbook-pro", "127.0.0.1")
     assert "wg_peer.py" not in str(caught.value)
     assert "does not run the tunnel" in str(caught.value)
 
@@ -217,7 +217,7 @@ def test_a_host_from_before_the_scripts_shipped_is_still_refused_cleanly(wg):
     tunnel.PEER_SCRIPT.unlink()
     tunnel.HUB_CONF.unlink()
     with pytest.raises(tunnel.PairingUnsupported):
-        tunnel.pair("jenyas-macbook-pro", "127.0.0.1")
+        tunnel.pair("my-macbook-pro", "127.0.0.1")
 
 
 def test_the_leaf_check_comes_before_the_lan_gate(wg):

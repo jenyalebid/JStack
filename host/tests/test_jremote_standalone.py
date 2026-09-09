@@ -552,7 +552,7 @@ d = client.get("/api/jremote/v1/host", headers=AUTH).json()
 assert d["features"]["tunnel_pairing"] is False, d["features"]
 
 r = client.post("/api/jremote/v1/tunnel/pair",
-                json={"device": "jenyas-macbook-pro"}, headers=AUTH)
+                json={"device": "my-macbook-pro"}, headers=AUTH)
 assert r.status_code == 503, (r.status_code, r.text[:300])
 detail = r.json()["detail"]
 assert "wg_peer.py" not in detail and "nonexistent" not in detail, detail

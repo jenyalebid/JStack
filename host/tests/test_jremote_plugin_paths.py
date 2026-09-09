@@ -56,7 +56,7 @@ def _marketplace(home: Path, source: dict):
 def test_a_github_install_answers_from_the_cache(home):
     """The shape that broke: no `~/JStack` on disk at all. Answering the dev
     path here is a 501 on a machine that has the renderer."""
-    _marketplace(home, {"source": "github", "repo": "jenyalebid/JStack"})
+    _marketplace(home, {"source": "github", "repo": "example-org/JStack"})
     want = _cached(home, "0.57.1")
     assert plugin_paths.jstack_bin("pict") == want
     assert plugin_paths.jstack_bin("pict").exists()
@@ -65,7 +65,7 @@ def test_a_github_install_answers_from_the_cache(home):
 def test_the_newest_cached_version_wins_and_the_sort_parses(home):
     """Lexicographic order ranks 0.8.0 over 0.29.0 and would pin a machine to a
     version three releases stale, silently, forever."""
-    _marketplace(home, {"source": "github", "repo": "jenyalebid/JStack"})
+    _marketplace(home, {"source": "github", "repo": "example-org/JStack"})
     for v in ("0.8.0", "0.29.0", "0.10.0"):
         _cached(home, v)
     assert plugin_paths.jstack_bin("pict").parent.parent.name == "0.29.0"

@@ -176,13 +176,13 @@ def test_project_dir_outside_the_root_is_not_ours(instance):
 
 
 def test_a_sibling_root_cannot_claim_our_agents(instance):
-    """`~/Agents` must not swallow `~/AgentsLynda`.
+    """`~/Agents` must not swallow `~/AgentsIris`.
 
     The encoded root has to match at a path boundary. Without that, the
     sibling's dir strips to `Iris-chat` and files a foreign machine's session
     under our Iris.
     """
-    sibling = str(instance.parent / "AgentsLynda").replace("/", "-")
+    sibling = str(instance.parent / "AgentsIris").replace("/", "-")
     assert hostenv.project_dir_to_agent(sibling + "-chat") is None
 
 

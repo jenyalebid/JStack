@@ -19,7 +19,7 @@ from jstack_host import showdoc
 def test_doc_url_carries_the_path_not_the_text():
     url = showdoc.doc_url("/Users/x/Agents/A/s/pad/x.md", "x · pict")
     assert url.startswith("jremote://doc?")
-    assert "path=%2FUsers%2Fjarvis%2FAgents%2FA%2Fs%2Fpad%2Fx.md" in url
+    assert "path=%2FUsers%2Fx%2FAgents%2FA%2Fs%2Fpad%2Fx.md" in url
     assert "title=x%20%C2%B7%20pict" in url
 
 

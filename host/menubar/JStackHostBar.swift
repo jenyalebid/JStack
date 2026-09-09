@@ -39,7 +39,23 @@ import Foundation
 /// different, empty host — the same trap `jstack-host` avoids by adopting the
 /// installed environment before every read command.
 enum HostAgent {
-    static let label = "com.jremote.host"
+    /// The LaunchAgent that owns the host's lifecycle.
+    ///
+    /// `com.jremote.host` is what `jstack-host install` writes, and on a
+    /// machine the installer set up that is the answer. It is not the only
+    /// one: a host embedded in a larger application is started and stopped by
+    /// *that* application's agent, and a menu hardcoded to this label decides
+    /// there is nothing installed, hides Restart and Stop, and leaves the one
+    /// machine whose hub you would actually want to operate with a menu that
+    /// only reports. `JREMOTE_AGENT_LABEL` names the real one.
+    ///
+    /// Read from this process's own environment and never through
+    /// `environment()` below — that resolves by *reading this label's plist*,
+    /// so sourcing the label from it would be circular.
+    static let label: String = {
+        let env = ProcessInfo.processInfo.environment["JREMOTE_AGENT_LABEL"] ?? ""
+        return env.isEmpty ? "com.jremote.host" : env
+    }()
     static let defaultPort = 9090
 
     static var plistURL: URL {
@@ -458,15 +474,19 @@ final class StatusController: NSObject {
             menu.addItem(Self.action("Open Log Folder", #selector(doLogs), self))
         }
         menu.addItem(Self.action("Refresh Now", #selector(doRefresh), self))
-        menu.addItem(.separator())
-        // "Quit" and not "Stop Hosting": this quits the indicator, the host
-        // keeps serving. The subtitle says so, because a Quit in a menu that is
-        // otherwise all about the host reads as "stop hosting" — which it is
-        // not, and finding that out by trying it is expensive.
-        let quit = Self.action("Quit Menu Bar", #selector(doQuit), self)
-        quit.toolTip = "Takes this icon off until the next login. "
-            + "The host keeps running. To remove it for good: menubar/install.sh --uninstall"
-        menu.addItem(quit)
+
+        // No Quit by default. This is the hub's indicator, and the hub runs
+        // whether or not anyone is looking at it — so "quit" here never meant
+        // "stop the hub", it meant "hide the icon", which is not a thing worth
+        // a permanent slot in a menu about the hub. Set JREMOTE_MENUBAR_QUIT=1
+        // to put it back; `menubar/install.sh --uninstall` removes it for good.
+        if ProcessInfo.processInfo.environment["JREMOTE_MENUBAR_QUIT"] == "1" {
+            menu.addItem(.separator())
+            let quit = Self.action("Quit Menu Bar", #selector(doQuit), self)
+            quit.toolTip = "Takes this icon off until the next login. "
+                + "The host keeps running."
+            menu.addItem(quit)
+        }
 
         menu.delegate = self
         item.menu = menu

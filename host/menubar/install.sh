@@ -64,6 +64,7 @@ while [ $# -gt 0 ]; do
         --apps-dir)  APPS_DIR="${2:-}"; shift ;;
         --state-dir)  JREMOTE_STATE_DIR="${2:-}"; export JREMOTE_STATE_DIR; shift ;;
         --token-path) JREMOTE_TOKEN_PATH="${2:-}"; export JREMOTE_TOKEN_PATH; shift ;;
+        --agent-label) JREMOTE_AGENT_LABEL="${2:-}"; export JREMOTE_AGENT_LABEL; shift ;;
         -h|--help)   usage; exit 0 ;;
         *)           echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -228,7 +229,7 @@ fi
 ENV_VARS="JREMOTE_STATE_DIR JREMOTE_TOKEN_PATH JREMOTE_CREDENTIALS_DIR
           JREMOTE_RELEASES_DIR JREMOTE_INSTANCE_ROOT JREMOTE_PROFILE_MODULE
           JREMOTE_HOST_ID JREMOTE_HOST_NAME JREMOTE_HOST_PROFILE
-          JREMOTE_PEER_SCRIPT"
+          JREMOTE_PEER_SCRIPT JREMOTE_AGENT_LABEL JREMOTE_MENUBAR_QUIT"
 ENV_XML=""
 for var in $ENV_VARS; do
     eval "val=\${$var:-}"

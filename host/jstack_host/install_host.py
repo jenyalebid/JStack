@@ -116,6 +116,33 @@ def installed_environment(path: Path | None = None) -> dict[str, str]:
     return {str(k): str(v) for k, v in env.items() if str(k).startswith("JREMOTE_")}
 
 
+def installed_port(path: Path | None = None) -> int | None:
+    """The port the installed agent is actually serving on, or None.
+
+    Read off `ProgramArguments`, which is the only record of it — the port is
+    an argv flag, not an environment variable, so `installed_environment()`
+    cannot see it. Anything that builds an address for this host has to ask
+    here rather than assume `DEFAULT_PORT`: a machine installed with `--port`
+    would otherwise be handed a URL for a port nothing is listening on, and
+    the failure arrives later, somewhere else, as "the app cannot reach it".
+    """
+    path = path or plist_path()
+    try:
+        with path.open("rb") as fh:
+            job = plistlib.load(fh)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+    argv = job.get("ProgramArguments") if isinstance(job, dict) else None
+    if not isinstance(argv, list):
+        return None
+    argv = [str(a) for a in argv]
+    try:
+        value = int(argv[argv.index("--port") + 1])
+    except (ValueError, IndexError):
+        return None
+    return value if 1 <= value <= 65535 else None
+
+
 def adopt_installed_environment(path: Path | None = None) -> None:
     """Apply `installed_environment()` beneath whatever the shell already
     set — an explicit export or `--state-dir` still wins — and re-resolve."""

@@ -37,6 +37,7 @@ DO_UPDATE=0
 DO_UNINSTALL=0
 FORCE=0
 WANT_MENUBAR=1
+WANT_PAIR=1
 PORT=9090
 BIND="0.0.0.0"
 STATE_DIR=""
@@ -57,6 +58,10 @@ usage: install.sh [options]
   --checkout DIR     where to clone JStack (default ~/JStack)
   --no-menubar       skip the menu bar app (the host is a terminal program
                      either way; the app is only its indicator)
+  --no-pair          don't introduce the app to this host at the end
+                     (the top-level installer passes this, because it puts
+                     the app on the disk AFTER this script runs and does the
+                     introduction itself once both halves exist)
   --help, -h         this
 
 The default bind is 0.0.0.0 on purpose: a host is reached over a tunnel or
@@ -74,6 +79,7 @@ while [ $# -gt 0 ]; do
         --uninstall)  DO_UNINSTALL=1 ;;
         --force)      FORCE=1 ;;
         --no-menubar) WANT_MENUBAR=0 ;;
+        --no-pair)    WANT_PAIR=0 ;;
         --port)       PORT="${2:-}"; shift ;;
         --bind)       BIND="${2:-}"; shift ;;
         --state-dir)  STATE_DIR="${2:-}"; shift ;;
@@ -307,18 +313,22 @@ fi
 
 # ── 7. pairing ──────────────────────────────────────────────────────────────
 #
-# The last mile, and the one people get stuck on: the host is up and the app
-# still has to be told about it. A code rather than the raw token — it expires,
-# it names the device before the device connects, and revoking it later does
-# not re-key everything else.
+# The last mile, and the one people used to get stuck on: the host is up and
+# the app still has to be told about it. A code rather than the raw token — it
+# expires, it names the device before the device connects, and revoking it
+# later does not re-key everything else.
+#
+# `--open` because on THIS machine there is nobody to read a code to. The app
+# is right here; the code goes to it over `jremote://pair` and it enrols
+# itself. A Mac with no app installed falls back to printing the code, which
+# is what this step always did.
 
-step "Pairing"
-
-DEVICE_NAME="${JSTACK_DEVICE_NAME:-My device}"
-if "$HOSTBIN" pair "$DEVICE_NAME"; then
-    :
-else
-    warn "could not mint a pairing code — run \`jstack-host pair\` yourself"
+if [ "$WANT_PAIR" = "1" ]; then
+    step "Pairing"
+    DEVICE_NAME="${JSTACK_DEVICE_NAME:-$(scutil --get ComputerName 2>/dev/null || hostname -s)}"
+    if ! "$HOSTBIN" pair "$DEVICE_NAME" --open; then
+        warn "could not mint a pairing code — run \`jstack-host pair\` yourself"
+    fi
 fi
 
 cat <<EOF
@@ -327,7 +337,8 @@ ${B}Your Mac is a jRemote host.${Z}
 
   jstack-host status      is it up
   jstack-host doctor      what is missing, and how to fix each thing
-  jstack-host pair NAME   another code, for another device
+  jstack-host pair NAME   a code for another device
+  jstack-host pair --open pair the app on this Mac again
   jstack-host where       every path this host resolves
 
   $0 --update             take new code

@@ -2,6 +2,7 @@
 
     jstack-host install          turn this Mac into a host, and keep it one
     jstack-host pair "iPhone"    a code to type into the app
+    jstack-host pair --open      pair the app on this Mac, no code typed
     jstack-host status           is it up, and what does it know
     jstack-host doctor           what is missing, and how to fix each thing
     jstack-host uninstall        take it back off
@@ -49,6 +50,11 @@ def _cmd_pair(args) -> int:
     the device ever connects, and it can be revoked without re-keying every
     other device on the host. `jstack-host token` still prints the token for
     the case where someone is adding a host by hand.
+
+    `--open` is the same code, delivered rather than displayed. On the machine
+    that has just installed both halves there is nobody to read a code to —
+    the app is right here — so it goes over the `jremote://pair` URL and the
+    app spends it without anybody typing anything. See `pair_link`.
     """
     _adopt(args)
     from . import enrolment
@@ -57,10 +63,63 @@ def _cmd_pair(args) -> int:
               file=sys.stderr)
         return 1
     row = enrolment.mint_code(args.name, created_by="", ttl=args.ttl)
+    if getattr(args, "open", False):
+        return _hand_to_app(row)
     mins = row["expires_in"] // 60
     print(f"\n    {row['code']}\n")
     print(f"for {row['name']} — good for {mins} minute{'' if mins == 1 else 's'}.")
-    print(f"In the app: Instances › Add a Mac › Enter a code.")
+    print("In the app on that device: Instances › Add a Mac — this Mac's "
+          "address, and this code.")
+    return 0
+
+
+def pair_link(code: str, port: int, name: str = "") -> str:
+    """The `jremote://pair` URL that hands `code` to the app on this Mac.
+
+    Loopback, always. This link is only ever fired at the app running on the
+    host's own machine, and 127.0.0.1 is the one address that is true before
+    the machine has a name anything else can resolve — a fresh install has no
+    DNS entry, no Bonjour name it has published, and possibly no LAN. The app
+    re-settles its own route on every launch anyway (it prefers loopback when
+    the host it reaches IS the machine it is on), so this is the starting
+    address and not a decision the app is stuck with.
+    """
+    from urllib.parse import urlencode
+    query = {"code": code, "url": f"http://127.0.0.1:{port}"}
+    if name:
+        query["name"] = name
+    return "jremote://pair?" + urlencode(query)
+
+
+def _hand_to_app(row: dict) -> int:
+    """Fire the pair link at the local app, or say what to do instead.
+
+    Never fatal, and never silent about which of the two happened: a machine
+    with no app installed is a normal outcome of `--open` (the app step is
+    declinable), and the code is already minted and still good — so the
+    fallback is to print it exactly as the plain form would.
+    """
+    import shutil
+    import subprocess
+    from . import install_host
+
+    port = install_host.installed_port() or install_host.DEFAULT_PORT
+    link = pair_link(row["code"], port, hostenv.host_name())
+    opener = shutil.which("open")
+    if opener:
+        try:
+            subprocess.run([opener, link], check=True, capture_output=True,
+                           timeout=20)
+            print(f"paired the app on this Mac as {row['name']} — it should be "
+                  "opening now")
+            return 0
+        except (OSError, subprocess.SubprocessError):
+            pass
+    mins = row["expires_in"] // 60
+    print("no app on this Mac answered that link — install it, then type this "
+          "code into it:")
+    print(f"\n    {row['code']}\n")
+    print(f"good for {mins} minute{'' if mins == 1 else 's'}.")
     return 0
 
 
@@ -161,6 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="what to call the device in this host's device list")
     p.add_argument("--ttl", type=int, default=600,
                    help="seconds the code stays good (default 600)")
+    p.add_argument("--open", action="store_true",
+                   help="hand the code to the app on this Mac instead of "
+                        "printing it — it pairs itself and opens")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_pair)
 

@@ -33,6 +33,11 @@ WANT_APP=1
 DECLARE_ROOT=0
 LAST_LOG=""
 LAST_ELAPSED=""
+# Set by the two steps that can each half-fail without stopping the install.
+# Pairing needs BOTH — a host with no app has nothing to introduce itself to,
+# and an app with no host has nothing to be introduced to.
+HOST_INSTALLED=0
+APP_INSTALLED=0
 
 usage() {
     cat <<'EOF'
@@ -592,12 +597,16 @@ else
     # both read as extras, and a "no" here produces an install that looks
     # complete and answers nothing. --no-host is the way out, stated in
     # --help, rather than a prompt that has one sensible answer.
-    host_args=(--yes)
+    # --no-pair: the app is installed in the NEXT step, so pairing here would
+    # be introducing the host to something that is not on the disk yet. Step 10
+    # does it, once both halves exist.
+    host_args=(--yes --no-pair)
     [ "$WANT_MENUBAR" = "0" ] && host_args+=(--no-menubar)
     if [ "$DRY_RUN" = "1" ]; then
         would "$HOST_INSTALLER ${host_args[*]}"
     elif bash "$HOST_INSTALLER" "${host_args[@]}"; then
         ok "host installed"
+        HOST_INSTALLED=1
     else
         warn "host install reported a problem — re-run $HOST_INSTALLER to see it"
     fi
@@ -629,7 +638,7 @@ elif [ "$DRY_RUN" = "1" ]; then
 else
     run_long "downloading and verifying the app" bash "$APP_INSTALLER"
     case $? in
-        0) ok "app installed in ${LAST_ELAPSED}s" ;;
+        0) ok "app installed in ${LAST_ELAPSED}s"; APP_INSTALLED=1 ;;
         # 3 is "no release published yet" — a fact about the repository that no
         # reader of this output can act on. It gets a note; a warn here would
         # end a clean install on a line that looks like something to fix.
@@ -638,7 +647,38 @@ else
     esac
 fi
 
-# ── 10. the verdict ─────────────────────────────────────────────────────────
+# ── 10. introducing the two halves ──────────────────────────────────────────
+#
+# Both halves are on the disk and they have never heard of each other. Left
+# there, the next thing this install asks of a person is the hardest thing in
+# it: open the app, find Add a Mac, type an address and a 43-character token
+# that has to be copied off a terminal — for a machine sitting under the app,
+# on an install that just did everything else by itself.
+#
+# So the hub introduces itself. It mints a one-time enrolment code and hands it
+# to the app over `jremote://pair`; the app spends it for its own device token
+# and writes the machine down. That is also what opens the app, which is the
+# other thing this step is for.
+#
+# The hub is the only party that CAN do this — it is the only one that knows
+# the address before the machine has a resolvable name, and the only one
+# authorized to mint a credential. Which is the point: adding a machine is
+# something the hub does, never something an app talks its way into.
+
+if [ "$HOST_INSTALLED" = "1" ] && [ "$APP_INSTALLED" = "1" ] && [ "$DRY_RUN" = "0" ]; then
+    step "Pairing the app to this Mac"
+    HOSTBIN="$HOME/.local/bin/jstack-host"
+    device_name="$(scutil --get ComputerName 2>/dev/null || hostname -s)"
+    if [ ! -x "$HOSTBIN" ]; then
+        warn "jstack-host is not on this Mac — pair by hand with \`jstack-host pair\`"
+    elif "$HOSTBIN" pair "$device_name" --open >/dev/null 2>&1; then
+        ok "the app is open and connected to this Mac — nothing to type"
+    else
+        warn "could not pair the app — run \`jstack-host pair --open\` to retry"
+    fi
+fi
+
+# ── 11. the verdict ─────────────────────────────────────────────────────────
 
 step "Verifying"
 

@@ -6,7 +6,10 @@ from jstack_host import codex_transcript, load, messages
 from jstack_host.store import SessionStore
 
 
-SID = "01a04181-fe7a-7773-b651-f6a22d87ba9a"
+# Synthetic on purpose. This was a real session id lifted off a real machine,
+# which is how the isolation gap above stayed invisible: the id resolved
+# against that machine's live index and the test read the actual transcript.
+SID = "deadbeef-0000-7000-8000-000000000001"
 
 
 def _rollout(path: Path) -> Path:

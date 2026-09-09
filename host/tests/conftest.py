@@ -63,6 +63,41 @@ def _isolate_open_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(managed, "_REG", tmp_path / "jremote_open.json")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_index(tmp_path, monkeypatch):
+    """Every test reads its own session index, never the machine's.
+
+    The third call-time seam, and the one that bit: `messages._find_session_file`
+    tries four sources in order, and the live index sits ahead of the codex
+    root a test can patch. So a test that pointed `codex_transcript.root` at
+    `tmp_path` still got a real answer — the index knew that session id and
+    handed back the running machine's own transcript, thirteen megabytes of it.
+    It read as a passing test anywhere that session had never existed.
+
+    Lazy, like `_isolate_devices`: only tests that actually reach the index pay
+    for a store. Every `get_store` caller in the package imports it inside the
+    function, so patching the module attribute catches all of them.
+
+    It defers to an injected `_store` first because that is what the real
+    `get_store` does, and `test_jremote_store` hands itself a store that way —
+    isolation that quietly ignored the package's own injection point would be
+    swapping one wrong answer for another.
+    """
+    from jstack_host import store
+
+    holder = {}
+
+    def _test_store():
+        if store._store is not None:
+            return store._store
+        if "s" not in holder:
+            holder["s"] = store.SessionStore(db_path=tmp_path / "index-probe.sqlite")
+        return holder["s"]
+
+    monkeypatch.setattr(store, "get_store", _test_store)
+    monkeypatch.setattr(store, "_store", None)
+
+
 def embedding_tree() -> object | None:
     """The host tree this package is embedded in, or None.
 

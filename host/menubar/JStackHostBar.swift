@@ -90,6 +90,23 @@ enum HostAgent {
         return p
     }
 
+    /// The address the host was installed to bind, or nil where nothing on
+    /// disk says.
+    ///
+    /// Nil is a real answer and not a default: an embedded host has no agent
+    /// of its own to read, and guessing `0.0.0.0` there would put "reachable
+    /// from your LAN" under a machine's name on the evidence of nothing.
+    static func bind() -> String? {
+        let mine = ProcessInfo.processInfo.arguments
+        if let i = mine.firstIndex(of: "--bind"), i + 1 < mine.count {
+            return mine[i + 1]
+        }
+        guard let args = job()?["ProgramArguments"] as? [String],
+              let i = args.firstIndex(of: "--bind"), i + 1 < args.count
+        else { return nil }
+        return args[i + 1]
+    }
+
     /// The state dir the host is using. From the agent when there is one;
     /// otherwise the package's own default — which is the right answer for a
     /// host started with `jstack-host serve`, a documented way to run one and
@@ -207,6 +224,16 @@ struct HostIdentity: Decodable {
     var hostId: String?
     var name: String?
     var profile: String?
+    var features: [String: Bool]?
+
+    /// Hub or leaf, taken from the host's own answer rather than inferred.
+    ///
+    /// `tunnel_pairing` is true only where `wg0.conf` is — and that file *is*
+    /// the mesh, the peer list the interface honours. A hub holds it; a leaf
+    /// dialled out to one and has no peers of its own to mint. Nil where the
+    /// host did not say, which is not the same as leaf and must not be drawn
+    /// as one.
+    var isHub: Bool? { features?["tunnel_pairing"] }
 }
 
 /// One snapshot of the machine, as the menu will render it.
@@ -226,18 +253,44 @@ struct HostState {
     var isProvisioned: Bool { health?.provisioned == true }
     var liveCount: Int { sessions.filter { $0.live == true }.count }
 
-    /// The machine row's second line. Shorter than `summary` on purpose: it
-    /// sits under the machine's name, where the question is "is it up and how
-    /// busy", not "how was it configured" — that stays in the tooltip.
+    /// Which machine on the mesh this is, and what it is doing about it.
+    var identity: HostIdentity?
+    /// The bind address the agent was installed with, where a plist says so.
+    var bind: String?
+
+    /// The machine row's second line: the port, and what this Mac is on the
+    /// mesh.
+    ///
+    /// The port because it is the fact you actually need — the thing you type,
+    /// the thing you forward, the thing that is wrong when nothing answers.
+    /// "1 working" was a number already on the row above it.
+    ///
+    /// Hub or leaf is said outright because the two are reached in opposite
+    /// directions and the menu is where that gets confused: a hub is dialled
+    /// *into* and only from outside your LAN if something forwards or tunnels
+    /// to it, while a leaf dialled *out* to its hub and needs nothing forwarded
+    /// at all. Saying "hub" without saying it is not itself reachable from the
+    /// internet would be the more useful half of the truth left out.
     var headline: String {
         guard isUp else {
-            return installed ? "Hub is not answering" : "No hub on this Mac"
+            return installed ? "Not answering on port \(HostAgent.port())"
+                             : "No hub on this Mac"
         }
-        guard isProvisioned else { return "Hub running · no token" }
-        let live = liveCount
-        if live > 0 { return "Hub running · \(live) working" }
-        return sessions.isEmpty ? "Hub running · idle"
-                                : "Hub running · \(sessions.count) open"
+        var parts = ["Port \(HostAgent.port())"]
+        // Loopback is the one bind that changes what the port means, and it is
+        // knowable only where an agent plist recorded it. Unknown says nothing
+        // rather than claiming reach this app never measured.
+        if let bind, bind == "127.0.0.1" || bind == "localhost" {
+            parts.append("this Mac only")
+        } else {
+            switch identity?.isHub {
+            case true:  parts.append("hub")
+            case false: parts.append("leaf")
+            case nil:   break
+            }
+        }
+        if !isProvisioned { parts.append("no token") }
+        return parts.joined(separator: " · ")
     }
 
     var summary: String {
@@ -283,6 +336,7 @@ final class HostProbe {
     func poll(_ done: @escaping (HostState) -> Void) {
         var state = HostState()
         state.installed = HostAgent.isInstalled
+        state.bind = HostAgent.bind()
         let port = HostAgent.port()
         let base = "http://127.0.0.1:\(port)"
         let finish = { DispatchQueue.main.async { done(state) } }
@@ -305,7 +359,20 @@ final class HostProbe {
                 }
             }
 
-            if state.isUp { return loadSessions() }
+            // `/host` on the healthy path too, not only the embedded one. It
+            // carries hub-or-leaf, and a menu that can only say which of those
+            // this Mac is when the host was awkward to find is a menu that
+            // says it least often on the machines set up properly.
+            if state.isUp {
+                guard let token else { return loadSessions() }
+                return self.get("\(base)\(Self.apiPrefix)/host", token: token) { data, _ in
+                    if let data,
+                       let identity = try? Self.decoder.decode(HostIdentity.self, from: data) {
+                        state.identity = identity
+                    }
+                    loadSessions()
+                }
+            }
 
             // `/api/health` did not claim to be a host. That is not the same as
             // no host: the router is mountable inside a larger app, and such a
@@ -323,6 +390,7 @@ final class HostProbe {
                                       profile: identity.profile,
                                       provisioned: true)
                 state.embedded = true
+                state.identity = identity
                 loadSessions()
             }
         }

@@ -54,6 +54,27 @@ _RATE_LIMIT_BLIND_RETRY_SECONDS = 2700
 # _DEFERS` bounds how many times we try; this bounds how long we keep trying.
 _MAX_RATE_LIMIT_RECOVERY_SECONDS = 6 * 3600
 
+# Auth-expiry defer: a run whose claude child died because its OAuth session
+# could not be refreshed (status `auth_expired`) is transient the same way a
+# rate limit is, but it must NOT take the immediate-retry arm below. The
+# credential has not healed seconds later — a re-spawn meets the same one and
+# dies the same way — so pin next_run a few minutes out instead, exactly the
+# shape `_defer_for_rate_limit` uses.
+_AUTH_RETRY_SECONDS = 300
+# And stop after a handful. The observed fault self-heals, but the same output
+# is also what a genuinely dead login prints, and no amount of retrying fixes
+# that one. Past the cap the job takes the error streak and stops chasing, so
+# the health surface can tell a human a re-login is owed.
+_MAX_AUTH_RETRIES = 3
+# The cap counts one EPISODE, not a job's lifetime. An episode is a chain of
+# retries minutes apart; a failure arriving long after the previous one is a
+# fresh fault, not a continuation of that chain, and gets its own retries.
+# Without this the counter would be spent for good on the first bad morning and
+# the SECOND morning would drop its work with no retry at all — the exact
+# outage this change exists to close, just one day later. Any window past the
+# chain's own span works; this is that span plus one retry.
+_AUTH_EPISODE_SECONDS = _AUTH_RETRY_SECONDS * (_MAX_AUTH_RETRIES + 1)
+
 
 def _schedule_fp(job: dict) -> str:
     canonical = json.dumps(job.get("schedule") or {}, sort_keys=True)
@@ -357,18 +378,29 @@ class Engine:
             st["last_status"] = status
             st["last_duration_ms"] = duration_ms
             st["last_session_id"] = run.session_id
+            # An auth expiry is transient only while retries remain. Roll the
+            # episode FIRST so a failure long after the last one starts its own
+            # chain, then read the counter — the answer decides both whether the
+            # error streak moves and whether a defer is booked below.
+            if status == "auth_expired":
+                self._roll_auth_episode(st, now_ms)
+            auth_retry_left = (status == "auth_expired"
+                               and int(st.get("auth_retries") or 0) < _MAX_AUTH_RETRIES)
             if status == "ok":
                 st["consecutive_errors"] = 0
                 st["last_error"] = None
                 st["rate_limit_defers"] = 0
+                st["auth_retries"] = 0
                 # The wall's anchor goes with the counter — a job that finally
                 # got through has no outage left to be measured from, and a
                 # stale anchor would expire its NEXT rate limit instantly.
                 st.pop("rate_limit_anchor_ms", None)
-            elif status == "rate_limited":
-                # transient usage-window exhaustion — not a job fault, so it must
-                # not increment the error streak that drives alerting.
-                st["last_error"] = "rate_limited"
+                st.pop("auth_last_fail_ms", None)
+            elif status == "rate_limited" or auth_retry_left:
+                # transient usage-window exhaustion, or an auth expiry with a
+                # deferred retry still coming — not a job fault, so it must not
+                # increment the error streak that drives alerting.
+                st["last_error"] = status
             else:
                 st["consecutive_errors"] = int(st.get("consecutive_errors") or 0) + 1
                 st["last_error"] = status + (f" ({kill_reason})" if kill_reason else "")
@@ -387,6 +419,25 @@ class Engine:
                 # left as-is it dangles enabled with next_run=null, a zombie that
                 # reads red forever and never fires again. Finalize → park.
                 if not deferred and (job.get("schedule") or {}).get("kind") == "once":
+                    self._finalize_once(job, status)
+                return
+
+            # Auth expiry: deferred retry while the episode has retries left,
+            # then a hard park. Placed above the immediate-retry arm because the
+            # whole point is that this fault must NOT be re-spawned seconds
+            # later into the same unrefreshable credential.
+            if status == "auth_expired":
+                if auth_retry_left:
+                    self._defer_for_auth_expiry(job, st, run)
+                    return
+                # Cap spent. The streak was already bumped above; name the cause
+                # so the surface that reads it says what a human has to do.
+                st["last_error"] = (f"auth_expired (retry cap {_MAX_AUTH_RETRIES} "
+                                    f"reached — re-login may be needed)")
+                journal.save_state(self.state)
+                _log(f"auth-expired {jid} run={run.run_id} — retry cap "
+                     f"({_MAX_AUTH_RETRIES}) reached; parking as a hard failure")
+                if (job.get("schedule") or {}).get("kind") == "once":
                     self._finalize_once(job, status)
                 return
 
@@ -477,6 +528,45 @@ class Engine:
              f"({_MAX_RATE_LIMIT_DEFERS}) reached; normal schedule stands")
         journal.save_state(self.state)
         return False
+
+    def _roll_auth_episode(self, st: dict, now_ms: int) -> None:
+        """Start a fresh retry budget when this auth failure is a new episode.
+
+        The retry chain runs minutes apart, so two failures separated by much
+        more than that are unrelated faults. Zeroing the counter for the second
+        one is what keeps the cap from being a once-per-job-lifetime allowance:
+        a job that spent it on Monday and never succeeded afterwards would meet
+        Tuesday's transient expiry with no retries at all."""
+        last_ms = int(st.get("auth_last_fail_ms") or 0)
+        if now_ms - last_ms > _AUTH_EPISODE_SECONDS * 1000:
+            st["auth_retries"] = 0
+        st["auth_last_fail_ms"] = now_ms
+
+    def _defer_for_auth_expiry(self, job: dict, st: dict, run) -> None:
+        """Pin next_run a few minutes out after an auth expiry.
+
+        Deferred, not immediate: the child died before reaching the model
+        because the CLI could not refresh its stored OAuth session, and a
+        re-spawn in the same breath meets that same credential. A few minutes
+        gives the refresh a different attempt to make.
+
+        Unlike the rate-limit defer there is no elapsed-time wall, because there
+        is nothing to read a reset out of and nothing to chase: this books a
+        FIXED delay a bounded number of times, so the drift is capped at
+        `_MAX_AUTH_RETRIES * _AUTH_RETRY_SECONDS` by construction — a quarter of
+        an hour, well inside the staleness the rate-limit wall exists to bound.
+
+        Always books a retry; the caller checks the cap first (`auth_retry_left`)
+        and takes the terminal branch itself when it is spent."""
+        jid = job["id"]
+        retries = int(st.get("auth_retries") or 0)
+        retry_ms = _ms(self._now()) + _AUTH_RETRY_SECONDS * 1000
+        st["next_run_at_ms"] = retry_ms
+        st["auth_retries"] = retries + 1
+        _log(f"auth-expired {jid} run={run.run_id} — deferred to "
+             f"{datetime.fromtimestamp(retry_ms / 1000, tz=timezone.utc).isoformat()} "
+             f"(retry {retries + 1}/{_MAX_AUTH_RETRIES})")
+        journal.save_state(self.state)
 
     def _finalize_once(self, job: dict, status: str) -> None:
         jid = job["id"]

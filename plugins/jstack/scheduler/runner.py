@@ -70,6 +70,37 @@ def is_transient_api_error(output: str) -> bool:
     return any(m in low for m in _TRANSIENT_API_MARKERS)
 
 
+# A run can also die BEFORE it ever reaches the model: the CLI fails to renew
+# its stored OAuth credential, exits nonzero, and its whole output is
+# "Failed to authenticate: OAuth session expired and could not be refreshed".
+# The condition self-heals — observed twice on the same daily job (2026-09-07
+# and 09-08, dead in 2-5s), then a one-shot through the SAME daemon, spawn path
+# and keychain item finished ok hours later with no re-login and no credential
+# change. So it is an infrastructure fault like the two families above, not a
+# job or content fault, and scoring it `error` costs a daily job its whole day.
+#
+# It gets its OWN status rather than joining is_transient_api_error(): that
+# predicate means "the API dropped us mid-turn" and earns an IMMEDIATE retry,
+# which is wrong here — a session that could not be refreshed meets the same
+# credential seconds later and dies identically. This family wants a deferred
+# retry and a small cap (engine._defer_for_auth_expiry), because the other
+# reading of the same failure is a login that is genuinely dead and needs a
+# human at `claude /login`; that one must stop being retried and surface.
+#
+# Match the expiry FAMILY, not the one literal — the CLI owns the wording and
+# prints it more than one way ("OAuth session expired and could not be
+# refreshed" from the headless path, "OAuth token expired and refresh failed
+# (re-login required)" elsewhere). Requiring the word "expired" is what keeps
+# the CLI's plain "Please run /login" — a state no retry can fix — out of this
+# arm, and the bounded gap keeps it from matching prose.
+_AUTH_EXPIRED_RE = re.compile(r"\bo?auth\s+(?:session|token)\s+(?:has\s+)?expired\b",
+                              re.IGNORECASE)
+
+
+def is_auth_expired(output: str) -> bool:
+    return bool(output) and bool(_AUTH_EXPIRED_RE.search(output))
+
+
 def rate_limit_reset(output: str, now: datetime) -> "datetime|None":
     """The next reset datetime quoted in a usage-limit message, else None.
 
@@ -294,6 +325,7 @@ class Run:
         self.rate_limited: bool = False
         self.rate_limit_reset_at: "datetime|None" = None
         self.transient_api_error: bool = False
+        self.auth_expired: bool = False
         self._kill_lock = threading.Lock()
         self._jsonl: "Path|None" = None
         self._log_path: "Path|None" = None
@@ -401,6 +433,8 @@ class Run:
             if is_usage_limit(out):
                 self.rate_limited = True
                 self.rate_limit_reset_at = rate_limit_reset(out, datetime.now(timezone.utc))
+            elif is_auth_expired(out):
+                self.auth_expired = True
             elif is_transient_api_error(out):
                 self.transient_api_error = True
         status = self._status(exit_code)
@@ -418,6 +452,11 @@ class Run:
             return _KILL_STATUS.get(self.kill_reason, "killed")
         if self.rate_limited:
             return "rate_limited"
+        # Ahead of api_error deliberately, and _exited_status below matches this
+        # order: an auth failure can also print an "API Error: 401 …" line, and
+        # the more specific family is the one whose retry timing is right.
+        if self.auth_expired:
+            return "auth_expired"
         if self.transient_api_error:
             return "api_error"
         return "ok" if exit_code == 0 else "error"
@@ -527,6 +566,8 @@ class AdoptedRun:
         if is_usage_limit(out):
             self.rate_limit_reset_at = rate_limit_reset(out, datetime.now(timezone.utc))
             return "rate_limited"
+        if is_auth_expired(out):
+            return "auth_expired"
         if is_transient_api_error(out):
             return "api_error"
         # A Stop hook only fires on a turn that ENDED; stdout under

@@ -792,24 +792,36 @@ final class StatusController: NSObject {
             row.submenu = actions
             sub.addItem(row)
         }
-        // "2 working, 3 running" rather than one total.
+        // Kill All last and behind a separator, so the pointer travelling down
+        // the list of sessions does not arrive on it.
+        sub.addItem(.separator())
+        let killAll = Self.action("Kill All", #selector(doKillAll), self,
+                                  symbol: "xmark.octagon")
+        killAll.representedObject = sorted
+        sub.addItem(killAll)
+
+        // Same shape as the machine's row: a count, and the split underneath.
         //
         // The two states are what you opened the menu to tell apart — a
-        // machine with five sessions where none are producing is idle, and a
-        // machine with five where two are mid-turn is busy, and "5 Active
-        // Processes" says the same thing about both. They partition the list:
-        // working is a subset of running everywhere else, so counting it in
-        // both places here would mean the numbers never add up to the rows
-        // underneath them.
+        // machine with five sessions all idle and one with five mid-turn are
+        // not the same machine, and a single total says the same thing about
+        // both. They partition the list rather than nest: working is a subset
+        // of running everywhere else in this API, and counting it twice here
+        // would leave the numbers refusing to add up to the rows beneath them.
         let working = sorted.filter { $0.live == true }.count
         let idle = sorted.count - working
-        let title: String
+        let subtitle: String
         switch (working, idle) {
-        case (0, _): title = "\(idle) running"
-        case (_, 0): title = "\(working) working"
-        default:     title = "\(working) working, \(idle) running"
+        case (0, _): subtitle = "\(idle) running"
+        case (_, 0): subtitle = "\(working) working"
+        default:     subtitle = "\(working) working, \(idle) running"
         }
-        return Self.opener(title, symbol: "list.bullet.rectangle", submenu: sub)
+        let title = "\(sorted.count) "
+            + (sorted.count == 1 ? "Process" : "Processes")
+        let item = Self.opener(title, symbol: "list.bullet.rectangle", submenu: sub)
+        item.attributedTitle = Self.twoLine(title, subtitle)
+        item.image = Self.glyph("list.bullet.rectangle", size: 26)
+        return item
     }
 
     /// The header row's two lines: what the machine is, and what it is doing.
@@ -948,6 +960,49 @@ final class StatusController: NSObject {
                 failed.alertStyle = .warning
                 failed.messageText = "Could not kill \(session.title)"
                 failed.informativeText = detail
+                failed.runModal()
+            }
+            self?.refresh()
+        }
+    }
+
+    /// Kill everything on the list.
+    ///
+    /// Spelled out in the confirmation, count and all, because this is the one
+    /// control in the menu that can end work you were not thinking about —
+    /// including the session you are reading this from.
+    @objc private func doKillAll(_ sender: NSMenuItem) {
+        guard let sessions = sender.representedObject as? [Session],
+              !sessions.isEmpty, let token = HostAgent.token() else { return }
+        let sids = sessions.compactMap { $0.sessionId }.filter { !$0.isEmpty }
+        guard !sids.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Kill all \(sids.count) processes?"
+        alert.informativeText = "Every one stops mid-turn — no clean exit, no "
+            + "review. This includes any session you are currently talking to. "
+            + "Transcripts are kept, so they can be resumed later."
+        alert.addButton(withTitle: "Kill All")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let group = DispatchGroup()
+        var failures: [String] = []
+        for sid in sids {
+            group.enter()
+            probe.kill(sid: sid, token: token) { ok, detail in
+                if !ok { failures.append("\(sid.prefix(8)): \(detail)") }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) { [weak self] in
+            if !failures.isEmpty {
+                let failed = NSAlert()
+                failed.alertStyle = .warning
+                failed.messageText = "\(failures.count) of \(sids.count) did not stop"
+                failed.informativeText = failures.joined(separator: "\n")
                 failed.runModal()
             }
             self?.refresh()

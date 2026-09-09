@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# The host's menu bar app — build it here, install it, keep it running.
+#
+#   ./install.sh                  build and install
+#   ./install.sh --dry-run        print the plan, touch nothing
+#   ./install.sh --uninstall      take the icon off and remove the app
+#
+# There is nothing to download and nothing to trust. The app is one Swift file
+# next to this script, compiled on this Mac by this Mac's own toolchain — so
+# there is no signature to check, no notarization to verify, and no publisher
+# to believe. What ends up in your menu bar was built from the source you can
+# read, by you.
+#
+# It installs as a **user** LaunchAgent, like the host itself: no sudo, nothing
+# written outside your home directory. The agent is what makes the icon mean
+# anything — a status item belongs to the process that made it, so an indicator
+# that only runs while some other app is open is an indicator that lies the
+# moment you quit that app.
+#
+# Requires a Swift compiler. That is the Xcode command line tools, which is the
+# same `xcode-select --install` the host installer already asks for when git is
+# missing. No Xcode, no project file, no package manifest.
+
+set -uo pipefail
+
+APP_NAME="JStack Host"
+BUNDLE_ID="com.jremote.menubar"
+LABEL="com.jremote.menubar"
+SOURCE="JStackHostBar.swift"
+
+APPS_DIR="${JSTACK_APPS_DIR:-$HOME/Applications}"
+BIN_DIR="${JSTACK_BIN_DIR:-$HOME/.local/bin}"
+
+DRY_RUN=0
+DO_UNINSTALL=0
+
+usage() {
+    cat <<'EOF'
+usage: menubar/install.sh [options]
+
+  --dry-run          print what would happen and change nothing
+  --uninstall        unload the agent and remove the app
+  --apps-dir DIR     where to install the app (default ~/Applications)
+  --help, -h         this
+
+The app shows whether this Mac's host is up, what it is serving, and which
+sessions are running on it right now. It can restart, stop and start the host,
+because it is a locally built app and not a sandboxed one.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run)   DRY_RUN=1 ;;
+        --uninstall) DO_UNINSTALL=1 ;;
+        --apps-dir)  APPS_DIR="${2:-}"; shift ;;
+        -h|--help)   usage; exit 0 ;;
+        *)           echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [ -t 1 ]; then B=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; Z=$'\033[0m'
+else B=""; DIM=""; RED=""; GRN=""; YEL=""; Z=""; fi
+
+step()  { printf '\n%s==>%s %s\n' "$B" "$Z" "$1"; }
+ok()    { printf '  %sok%s   %s\n' "$GRN" "$Z" "$1"; }
+warn()  { printf '  %swarn%s %s\n' "$YEL" "$Z" "$1"; }
+die()   { printf '  %sfail%s %s\n' "$RED" "$Z" "$1" >&2; exit 1; }
+note()  { printf '  %s%s%s\n' "$DIM" "$1" "$Z"; }
+would() { printf '  %swould%s %s\n' "$DIM" "$Z" "$1"; }
+run()   { if [ "$DRY_RUN" = "1" ]; then would "$*"; return 0; fi; "$@"; }
+# `ok` for a fact observed, `did` for an action taken — and in a dry run no
+# action was taken, so `did` says nothing. An "ok installed" printed by
+# --dry-run is a check reporting state it cannot observe.
+did()   { [ "$DRY_RUN" = "1" ] || ok "$1"; }
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP="$APPS_DIR/$APP_NAME.app"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+DOMAIN="gui/$(id -u)"
+
+# ── uninstall ───────────────────────────────────────────────────────────────
+
+if [ "$DO_UNINSTALL" = "1" ]; then
+    step "Removing the menu bar app"
+    run launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null
+    run rm -f "$PLIST"
+    run rm -rf "$APP"
+    did "the icon is off your menu bar; the host is untouched"
+    exit 0
+fi
+
+# ── 0. the toolchain ────────────────────────────────────────────────────────
+
+step "Checking prerequisites"
+
+[ "$(uname -s)" = "Darwin" ] || die "this builds a macOS app; $(uname -s) is not supported"
+
+# Through `xcrun`, never the path `xcrun --find` prints. That path is the raw
+# compiler inside the toolchain, and run directly it has no SDK to compile
+# against — "unable to load standard library" on every Mac with Xcode, which is
+# most of them. `xcrun` is what resolves the active developer directory and
+# hands the SDK over, and it is also what `/usr/bin/swiftc` is a shim for.
+SWIFTC=()
+if xcrun --find swiftc >/dev/null 2>&1; then
+    SWIFTC=(xcrun swiftc)
+elif command -v swiftc >/dev/null 2>&1; then
+    SWIFTC=(swiftc)
+fi
+[ ${#SWIFTC[@]} -gt 0 ] || die "no Swift compiler — run \`xcode-select --install\` and try again"
+ok "swift compiler: ${SWIFTC[*]}"
+
+[ -f "$SELF_DIR/$SOURCE" ] || die "no $SOURCE beside this script"
+ok "source at $SELF_DIR/$SOURCE"
+
+# Where `jstack-host` ended up, baked into the agent's arguments. The app can
+# search for it, but this script is the one thing that knows for certain, and a
+# search that guesses wrong on a machine with two installs picks the wrong host.
+HOST_BIN=""
+for cand in "$BIN_DIR/jstack-host" "$SELF_DIR/../.venv/bin/jstack-host" \
+            /opt/homebrew/bin/jstack-host /usr/local/bin/jstack-host; do
+    if [ -x "$cand" ]; then HOST_BIN="$(cd "$(dirname "$cand")" && pwd)/$(basename "$cand")"; break; fi
+done
+if [ -n "$HOST_BIN" ]; then ok "jstack-host at $HOST_BIN"
+else warn "jstack-host not found — the app will search for it at launch"; fi
+
+# ── 1. build ────────────────────────────────────────────────────────────────
+#
+# Into a temp bundle, then moved into place. Compiling straight over the
+# installed app would leave a half-written binary in the menu bar if the build
+# failed, which is the one state worse than the old version still running.
+
+step "Building"
+
+if [ "$DRY_RUN" = "1" ]; then
+    would "${SWIFTC[*]} -O -o <bundle>/Contents/MacOS/JStackHostBar $SELF_DIR/$SOURCE"
+    would "install $APP"
+    would "launchctl bootstrap $DOMAIN $PLIST"
+    printf '\n%sDry run — nothing was changed.%s\n' "$B" "$Z"
+    exit 0
+fi
+
+BUILD="$(mktemp -d)"
+trap 'rm -rf "$BUILD"' EXIT
+STAGE="$BUILD/$APP_NAME.app"
+mkdir -p "$STAGE/Contents/MacOS"
+
+"${SWIFTC[@]}" -O -o "$STAGE/Contents/MacOS/JStackHostBar" "$SELF_DIR/$SOURCE" \
+    || die "the build failed — the compiler output above says why"
+ok "compiled"
+
+# LSUIElement is what makes it an agent app: no Dock tile, no app menu, nothing
+# but the status item. The app also sets it at runtime, so a binary run out of a
+# build directory behaves the same as the installed bundle.
+cat > "$STAGE/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>JStackHostBar</string>
+    <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+    <key>CFBundleName</key><string>$APP_NAME</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+EOF
+
+# Ad-hoc, so the bundle has a stable identity for the system to hang
+# permissions and login state off. Locally built code needs no notarization —
+# nothing here was downloaded, so nothing here is quarantined.
+codesign --force --sign - "$STAGE" >/dev/null 2>&1 \
+    || warn "could not ad-hoc sign the bundle; it will still run"
+ok "bundle assembled"
+
+# ── 2. install ──────────────────────────────────────────────────────────────
+
+step "Installing"
+
+# Out of the menu bar before the bundle underneath it is replaced: an app whose
+# executable is swapped while running is one that crashes at its next page-in.
+launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1
+pkill -f "$APP_NAME.app/Contents/MacOS/JStackHostBar" >/dev/null 2>&1
+
+mkdir -p "$APPS_DIR"
+rm -rf "$APP"
+mv "$STAGE" "$APP" || die "could not install to $APP"
+did "$APP"
+
+ARGS_XML="        <string>$APP/Contents/MacOS/JStackHostBar</string>"
+if [ -n "$HOST_BIN" ]; then
+    ARGS_XML="$ARGS_XML
+        <string>--host-bin</string>
+        <string>$HOST_BIN</string>"
+fi
+
+mkdir -p "$(dirname "$PLIST")"
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+$ARGS_XML
+    </array>
+    <key>RunAtLoad</key><true/>
+    <!-- Restart it when it crashes, never when it was quit. A plain
+         KeepAlive would make the menu's own Quit item a no-op: launchd would
+         put the icon straight back, and the one control the app offers over
+         itself would be the one thing that does not work. -->
+    <key>KeepAlive</key>
+    <dict><key>SuccessfulExit</key><false/></dict>
+    <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+EOF
+did "$PLIST"
+
+if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
+    # Already loaded is the ordinary case on a re-run, not a failure. What
+    # would be a failure is nothing in the menu bar afterwards, which the
+    # check below is for.
+    launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1
+fi
+launchctl kickstart "$DOMAIN/$LABEL" >/dev/null 2>&1
+
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if pgrep -f "$APP/Contents/MacOS/JStackHostBar" >/dev/null 2>&1; then
+        ok "running"
+        break
+    fi
+    sleep 0.4
+done
+
+if ! pgrep -f "$APP/Contents/MacOS/JStackHostBar" >/dev/null 2>&1; then
+    warn "the agent is installed but the app is not running yet"
+    note "open it once by hand: open \"$APP\""
+fi
+
+cat <<EOF
+
+${B}The icon is on your menu bar.${Z}
+
+  It shows whether the host is up, and how many sessions are live right now.
+  Open it for the list, and for start / stop / restart.
+
+  $0 --uninstall       take the icon back off
+EOF

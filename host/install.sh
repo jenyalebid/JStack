@@ -36,6 +36,7 @@ DRY_RUN=0
 DO_UPDATE=0
 DO_UNINSTALL=0
 FORCE=0
+WANT_MENUBAR=1
 PORT=9090
 BIND="0.0.0.0"
 STATE_DIR=""
@@ -54,6 +55,8 @@ usage: install.sh [options]
                      (default ~/.local/state/jremote)
   --force            install even if something already answers on the port
   --checkout DIR     where to clone JStack (default ~/JStack)
+  --no-menubar       skip the menu bar app (the host is a terminal program
+                     either way; the app is only its indicator)
   --help, -h         this
 
 The default bind is 0.0.0.0 on purpose: a host is reached over a tunnel or
@@ -70,6 +73,7 @@ while [ $# -gt 0 ]; do
         --update)     DO_UPDATE=1 ;;
         --uninstall)  DO_UNINSTALL=1 ;;
         --force)      FORCE=1 ;;
+        --no-menubar) WANT_MENUBAR=0 ;;
         --port)       PORT="${2:-}"; shift ;;
         --bind)       BIND="${2:-}"; shift ;;
         --state-dir)  STATE_DIR="${2:-}"; shift ;;
@@ -215,6 +219,10 @@ esac
 
 if [ "$DO_UNINSTALL" = "1" ]; then
     step "Removing the host"
+    # The indicator first: an icon left in the menu bar after the thing it
+    # indicates is gone is the one state worse than no icon at all.
+    [ -x "$HOST_DIR/menubar/install.sh" ] && \
+        run "$HOST_DIR/menubar/install.sh" --uninstall >/dev/null 2>&1
     run "$HOSTBIN" uninstall
     printf '\n%sThe host is off this Mac.%s Your state and token were left in place,\n' "$B" "$Z"
     printf 'so reinstalling brings the same instance back rather than a new one.\n'
@@ -231,6 +239,7 @@ ARGS=(install --port "$PORT" --bind "$BIND")
 
 if [ "$DRY_RUN" = "1" ]; then
     would "$HOSTBIN ${ARGS[*]}"
+    [ "$WANT_MENUBAR" = "1" ] && would "$HOST_DIR/menubar/install.sh"
     printf '\n%sDry run — nothing was changed.%s\n' "$B" "$Z"
     exit 0
 fi
@@ -241,7 +250,25 @@ if ! "$HOSTBIN" "${ARGS[@]}"; then
     exit 1
 fi
 
-# ── 6. pairing ──────────────────────────────────────────────────────────────
+# ── 6. the menu bar ─────────────────────────────────────────────────────────
+#
+# The host's own indicator. Never fatal: the host is a terminal program and is
+# already up and serving by this point — failing the whole install because a
+# Mac has no Swift compiler would be refusing the thing that works over the
+# thing that is decoration.
+
+if [ "$WANT_MENUBAR" = "1" ] && [ -x "$HOST_DIR/menubar/install.sh" ]; then
+    step "Menu bar"
+    if "$HOST_DIR/menubar/install.sh" >/dev/null 2>&1; then
+        ok "icon installed — it shows whether this host is up and what is running"
+    else
+        warn "the menu bar app did not build (a Swift compiler is needed)"
+        note "the host is up regardless; add the icon later with:"
+        note "  $HOST_DIR/menubar/install.sh"
+    fi
+fi
+
+# ── 7. pairing ──────────────────────────────────────────────────────────────
 #
 # The last mile, and the one people get stuck on: the host is up and the app
 # still has to be told about it. A code rather than the raw token — it expires,
@@ -268,4 +295,8 @@ ${B}Your Mac is a jRemote host.${Z}
 
   $0 --update             take new code
   $0 --uninstall          take it back off
+
+The menu bar icon is the host's own UI — status, live sessions, and start /
+stop / restart. It runs under its own agent, so it stays whatever else you
+quit. ${HOST_DIR}/menubar/install.sh --uninstall takes just the icon off.
 EOF

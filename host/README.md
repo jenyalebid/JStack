@@ -15,6 +15,26 @@ Clones nothing you have not already cloned, builds a virtualenv beside the
 package, installs a **user** LaunchAgent, and prints a pairing code for the app.
 No `sudo`, nothing written outside your home directory.
 
+## Menu bar
+
+The host is a terminal program, so it has no way to tell you it is up. The menu
+bar app is that — status, the sessions running right now, and start / stop /
+restart. `install.sh` builds it unless you pass `--no-menubar`; it needs a Swift
+compiler (`xcode-select --install`) and the host installs fine without it.
+
+```bash
+menubar/install.sh              # build and install it on its own
+menubar/install.sh --uninstall  # just the icon; the host stays
+```
+
+One Swift file in `menubar/`, compiled on your machine into `~/Applications`
+and run by its own user LaunchAgent. Nothing is downloaded, so there is no
+signature to trust — what lands in your menu bar was built from the source
+beside it. It runs under its own agent rather than inside any client app,
+because a status item dies with the process that made it: an indicator that
+only survives while some app is open is one that goes dark while the host it
+reports on is still serving.
+
 ## Commands
 
 ```

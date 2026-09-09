@@ -185,18 +185,26 @@ done
 [ -n "$PY" ] || die "no python3 >= $MIN_PY_MAJOR.$MIN_PY_MINOR on PATH — the scheduler needs zoneinfo, which arrived in 3.9"
 ok "python — $("$PY" --version 2>&1) at $PY"
 
-# ── 0.5 where the stack keeps everything ────────────────────────────────────
+# ── 0.5 everything this install needs to be told ────────────────────────────
 #
-# Asked, not assumed. Every derived path — Agents, Systems, Config, State,
-# Logs, Credentials — hangs off this one answer, and an installer that picks
-# it silently has decided the layout of somebody's home directory on their
-# behalf and then told them about it in a doctor line afterwards.
+# Every question lives here, before any of them is acted on, and there are
+# three. Nothing below this block stops to ask.
 #
-# $HOME stays the default because it is right for a personal machine. A shared
-# box, an external volume or a machine where the operation lives under one
-# directory is exactly when the question needs to have been asked.
+# The rule that decides what belongs here: a question earns its place when the
+# answer genuinely differs between machines AND cannot be worked out from the
+# machine itself. The root does — a personal Mac, a shared box and an external
+# volume are three different right answers. The workspace name does — it is a
+# name, and only a person has one. The app does — it downloads a signed
+# release from the internet, which is a different kind of decision from
+# building a local file.
+#
+# Everything else got asked once and shouldn't have been. PATH, the host, the
+# icon, dateutil, the scheduler: each had exactly one sensible answer, each
+# produced a broken-but-green install when answered the other way, and each
+# turned a three-minute install into a quiz. They are flags in --help now,
+# which is where a rarely-wanted answer belongs.
 
-step "Where the stack lives"
+step "What this install needs to know"
 
 if [ -n "${JSTACK_ROOT:-}" ]; then
     ok "root declared in the environment — $JSTACK_ROOT"
@@ -205,9 +213,9 @@ else
     JSTACK_ROOT="${JSTACK_ROOT/#\~/$HOME}"
     if [ "$JSTACK_ROOT" != "$HOME" ]; then
         DECLARE_ROOT=1
-        ok "root — $JSTACK_ROOT (will be declared in your shell profile)"
+        ok "root — $JSTACK_ROOT (declared in your shell profile below)"
     else
-        ok "root — $HOME (the default; nothing is written to declare it)"
+        ok "root — $HOME"
     fi
 fi
 export JSTACK_ROOT

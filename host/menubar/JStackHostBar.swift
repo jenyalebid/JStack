@@ -529,6 +529,70 @@ enum RemoteApp {
     }
 }
 
+/// The client app's mark, drawn rather than shipped.
+///
+/// A chevron and a cursor — a prompt, which is what the app opens onto. The
+/// geometry is the app icon's own, reduced to what it actually is: two
+/// round-capped strokes on SF Symbols' 70.459-unit cap-height canvas, so it
+/// carries the same optical weight as the system glyphs on the rows around it
+/// at every size and in both appearances.
+///
+/// Drawn in code because this app is one Swift file compiled by `install.sh`
+/// with nothing but `swiftc`. A custom SF Symbol means an asset catalog, an
+/// asset catalog means `actool`, and `actool` ships with Xcode rather than the
+/// command line tools — a whole new build dependency for one icon. A PDF or a
+/// PNG in the bundle would be a binary blob in a repository whose entire claim
+/// is that you can read the thing you are about to run.
+enum JRemoteGlyph {
+    /// The canvas the geometry was authored on: SF Symbols' cap height, which
+    /// is why scaling against the system font's cap height below lines this up
+    /// with `NSImage(systemSymbolName:)` instead of near it.
+    private static let capHeight: CGFloat = 70.459
+    private static let width: CGFloat = 92.6406
+    private static let stroke: CGFloat = 18.2672
+    /// The left edge of the *drawn* result — the first stroke's centre less its
+    /// own round cap, which is what actually reaches the edge of the box.
+    private static let originX: CGFloat = 9.766
+
+    /// Centre lines in the authoring space, where y runs negative upward from
+    /// the baseline.
+    private static let chevron = [
+        CGPoint(x: 18.8996, y: -61.3254),
+        CGPoint(x: 55.4339, y: -35.2295),
+        CGPoint(x: 18.8996, y: -9.1336),
+    ]
+    private static let cursor = [
+        CGPoint(x: 65.8722, y: -9.1336),
+        CGPoint(x: 93.2730, y: -9.1336),
+    ]
+
+    static func image(size pointSize: CGFloat) -> NSImage {
+        let scale = NSFont.systemFont(ofSize: pointSize).capHeight / capHeight
+        let box = NSSize(width: width * scale, height: capHeight * scale)
+        let image = NSImage(size: box, flipped: false) { _ in
+            func map(_ p: CGPoint) -> NSPoint {
+                NSPoint(x: (p.x - originX) * scale, y: -p.y * scale)
+            }
+            let path = NSBezierPath()
+            path.move(to: map(chevron[0]))
+            for point in chevron.dropFirst() { path.line(to: map(point)) }
+            path.move(to: map(cursor[0]))
+            path.line(to: map(cursor[1]))
+            path.lineWidth = stroke * scale
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            NSColor.black.setStroke()
+            path.stroke()
+            return true
+        }
+        // A template, so it inverts with the menu the way every other row's
+        // glyph does — a mark that stays black on a highlighted row is the one
+        // that reads as pasted on.
+        image.isTemplate = true
+        return image
+    }
+}
+
 enum HostControl {
     /// `gui/<uid>`: the per-user domain, which is where a LaunchAgent lives and
     /// the reason none of this needs a password.
@@ -768,8 +832,9 @@ final class StatusController: NSObject {
         // ── The app ─────────────────────────────────────────────────────────
         menu.addItem(.separator())
         if RemoteApp.url != nil {
-            menu.addItem(Self.action("jRemote", #selector(doOpenApp), self,
-                                     symbol: "macwindow"))
+            let remote = Self.action("jRemote", #selector(doOpenApp), self)
+            remote.image = JRemoteGlyph.image(size: 13)
+            menu.addItem(remote)
         }
         if FileManager.default.fileExists(atPath: HostAgent.logDirectory().path) {
             menu.addItem(Self.action("Open Log Folder", #selector(doLogs), self,

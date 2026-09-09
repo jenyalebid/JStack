@@ -134,6 +134,20 @@ def _name(sid: str) -> str:
     return "jr-" + sid[:8]
 
 
+def compose_shim() -> Path:
+    """The compose editor shim, beside this package.
+
+    One answer, exported, because the test that pins the shim into `VISUAL`
+    used to compute the path a second time — and computed it from a different
+    starting point. Both were right while the package sat two levels inside a
+    larger tree; after the move the module found the shim and the test looked
+    for it one directory up, so the suite failed against a working feature.
+    A path two places derive independently is a path they will eventually
+    disagree about.
+    """
+    return Path(__file__).resolve().parent / "bin" / "jremote-compose-editor"
+
+
 def _compose_exports(sid: str) -> str:
     """The env that lets compose lift the input box out whole (`composer.py`).
 
@@ -144,7 +158,7 @@ def _compose_exports(sid: str) -> str:
     not an agent prompt, so `git commit` in this pane is unaffected.
     """
     from .composer import compose_dir
-    shim = Path(__file__).resolve().parent / "bin" / "jremote-compose-editor"
+    shim = compose_shim()
     if not shim.exists():
         return ""
     return (f"export VISUAL={shlex.quote(str(shim))}; "

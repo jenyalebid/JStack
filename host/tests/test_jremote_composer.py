@@ -15,12 +15,13 @@ import pytest
 
 from jstack_host import composer, managed
 
-SHIM = Path(__file__).resolve().parents[1] / "bin" / "jremote-compose-editor"
+# Asked of the package, never recomputed here — see `managed.compose_shim`.
+SHIM = managed.compose_shim()
 
 
 def test_managed_sessions_are_spawned_with_the_shim_as_visual():
-    """VISUAL, not EDITOR — this machine's settings.json sets EDITOR=cot -w for
-    The user's own ctrl+G and the CLI resolves VISUAL first, so the managed pane
+    """VISUAL, not EDITOR — a machine's settings.json may set EDITOR for the
+    user's own ctrl+G, and the CLI resolves VISUAL first, so the managed pane
     gets the shim without taking their desk editor away."""
     exports = managed._compose_exports("sid-1234")
     assert "export VISUAL=" in exports

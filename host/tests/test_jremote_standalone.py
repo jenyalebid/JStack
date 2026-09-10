@@ -585,15 +585,17 @@ def test_the_hub_still_offers_pairing():
     A flag that reads false everywhere would 'fix' that leaf by removing
     off-LAN pairing from the one machine that has it.
 
-    Skipped where the mesh tooling is not installed beside the package: it is
-    `sudo`-run WireGuard plumbing that does not ship here, and `can_pair()`
-    answering false for its absence is the documented behaviour the leaf test
-    pins. Asserting the hub case on a checkout that has no hub would fail for
-    the one reason that is not a bug.
+    Skipped where this checkout is not a configured hub. The tooling itself now
+    ships with the package (`wg_peer.py` and its scripts are in the tree), so its
+    presence no longer tells a hub from a leaf — what does is `wg0.conf`, the
+    `sudo`-created interface a machine has only after `install_hub.sh` ran on it.
+    `can_pair()` answering false for a checkout that never became a hub is the
+    documented behaviour the leaf test pins; asserting the hub case there would
+    fail for the one reason that is not a bug.
     """
     from jstack_host import router, tunnel
-    if not tunnel.PEER_SCRIPT.is_file():
-        pytest.skip(f"no mesh tooling at {tunnel.PEER_SCRIPT}")
+    if not tunnel.HUB_CONF.is_file():
+        pytest.skip(f"not a configured hub — no wg0.conf at {tunnel.HUB_CONF}")
     assert router._probe("tunnel_pairing") is True
 
 

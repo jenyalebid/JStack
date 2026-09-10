@@ -38,12 +38,19 @@ from . import hostenv
 #: gets the one beside it, and a machine whose tunnel predates the package
 #: keeps the copy its own daemons already drive.
 PEER_SCRIPT = hostenv.peer_script()
-#: The hub's tunnel state, resolved the same way `wg_peer.py` resolves it —
-#: including `WG_PEER_DIR`, so a host that relocates it does not end up with
-#: the tool writing one directory and this module reading another.
+#: The hub's tunnel state, resolved the *same way* `wg_peer.py` resolves it, so
+#: the tool never writes one directory while this module reads another:
+#: `WG_PEER_DIR` if set, else `<package>/Credentials/wireguard`. That last is
+#: not `credentials_dir()` on purpose — `install_hub.sh` runs under `sudo`,
+#: where `$HOME` is root's, so it lands the keys beside the code it derives from
+#: `$0` rather than under the invoking user's home; `wg_peer.py` mirrors that by
+#: resolving `Credentials/wireguard` from its own location, and this is the third
+#: reader of the one location. (The APNs key still lives under
+#: `credentials_dir()`: it is written in the user's own install context, where
+#: that path is right.)
 WG_DIR = (Path(os.environ["WG_PEER_DIR"]).expanduser()
           if os.environ.get("WG_PEER_DIR")
-          else hostenv.credentials_dir() / "wireguard")
+          else hostenv.package_root() / "Credentials" / "wireguard")
 CLIENTS_DIR = WG_DIR / "clients"
 HUB_CONF = WG_DIR / "wg0.conf"
 

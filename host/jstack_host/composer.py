@@ -21,6 +21,12 @@ the file back when that editor exits 0. Managed sessions are spawned with
 `VISUAL=bin/jremote-compose-editor`, a shim that parks the path here and waits
 (`open_managed` sets `JREMOTE_COMPOSE_DIR` and `JREMOTE_SID` beside it).
 
+Not all of that file is the user's, though. Above the buffer the CLI writes
+its own last response commented out, and strips it back off when the file
+returns — invisible through a real editor, and ours to repeat here, because
+compose is the one reader that hands the contents somewhere other than back
+to the CLI (`_without_reference_block`).
+
 So a lift is: press ctrl+G, read the parked file, write back what the box
 should hold now, release the shim. Sub-second, and the box is only out of the
 user's hands for that moment — this is deliberately not a checkout that holds
@@ -32,6 +38,7 @@ reports that it did not happen and *nothing is deleted*. The caller falls back
 to leaving the text in the CLI, which is the outcome that loses nothing.
 """
 
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -53,9 +60,46 @@ RELEASE_TIMEOUT = 4.0
 
 POLL = 0.05
 
+# The handoff file is not only the buffer. Above it the CLI writes its own last
+# response, every line commented out, so that an editor has the thing being
+# replied to in view (`chat:externalEditor`); on the way back it strips that
+# block off again. Round-tripped through a real editor the block is invisible,
+# which is why nobody pressing ctrl+G at a desk has ever seen one.
+#
+# We are the only reader that hands the file to something *other* than the CLI,
+# so the strip is ours to repeat. Skipped, it is not a cosmetic wart: compose
+# renders the block as the input box's contents, and Send posts the whole thing
+# back as a real prompt — a commented copy of the last answer, resubmitted, on
+# every message (Boss, 2026-09-09).
+_REFERENCE_TOP = re.compile(r"#[^\n]*Claude's last response \(for reference")
+_REFERENCE_END = re.compile(
+    r"^#[^\n]*Write your reply below this line[^\n]*(?:\r?\n(?:\r?\n)?|\Z)", re.M)
+
 
 def compose_dir() -> Path:
     return COMPOSE_DIR
+
+
+def _without_reference_block(text: str) -> str:
+    """What the user actually typed, with the CLI's reference block removed.
+
+    The blank line after the marker is the CLI's, not the user's — it writes
+    the block, a blank, then the buffer, and takes both back off on save. Two
+    newlines at most, so a reply that genuinely opens on an empty line keeps
+    the rest of them.
+
+    Anchored at both ends deliberately. The CLI builds the file as block +
+    buffer, so the header is at position 0 or it is not a header — found
+    anywhere else it is the user's own words quoting a previous one, and those
+    stay. And a file missing either end comes back untouched: a first message
+    has no last response and so no block at all, and a CLI whose wording has
+    moved on should cost a stale block on screen — never a prompt eaten by a
+    pattern that matched too much.
+    """
+    if not _REFERENCE_TOP.match(text):
+        return text
+    end = _REFERENCE_END.search(text)
+    return text[end.end():] if end else text
 
 
 def _park(sid: str) -> Path:
@@ -157,7 +201,7 @@ def lift(sid: str, replacement: str = "") -> dict:
 
     try:
         prompt = Path(_park(sid).read_text().strip())
-        text = prompt.read_text()
+        text = _without_reference_block(prompt.read_text())
     except OSError as e:
         # Release anyway — a shim left parked holds the session on a blank
         # alternate screen. Exiting with the file unread restores the buffer.

@@ -2,6 +2,15 @@
 
 Cross-machine Claude Code skills for agent workflows. Built around the `{agent_root}/{Name}/` workspace convention, where `agent_root` is **configured per machine** (no hardcoded paths). Adapters ship inside the plugin and self-detect the environment, so the same plugin behaves richly everywhere with zero per-machine scripting.
 
+**This repo ships two halves, and they are installed separately:**
+
+| | What it is | Start at |
+|---|---|---|
+| **The plugin** | The skills, rules, hooks and systems above — what a Claude Code session gets. | [Setup](#setup), below |
+| **The host** | A small API that makes this Mac reachable from a phone, an iPad or another Mac: your terminal sessions, what each one said, and a live PTY you can type into from anywhere. | **[host/README.md](host/README.md)** |
+
+Neither needs the other. A machine can run the plugin and never install the host, or install the host on a Mac that has no agent workspaces at all.
+
 ## What this gives you
 
 Slash commands, namespaced as `/jstack:*`:
@@ -15,6 +24,7 @@ Slash commands, namespaced as `/jstack:*`:
 | `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
 | `/report` | Close out a task: settle every finding as its own commit or a filed GitHub issue, then report |
 | `/issue` | Work a GitHub issue end to end — read it, board it, build the fix in a worktree, open the PR, answer on the issue |
+| `/task` | Hand a unit of work to an agent — files a task issue, spawns the executor on it, keeps the conversation in this CLI. The issue is the task, its PR is the delivery |
 | `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
 | `/recall` | Replay what was done on a day or period, scoped to an agent or the whole op |
 | `/tag` † | File this session under a timeline subject — list, attach, mint, detach |
@@ -171,6 +181,42 @@ claude
 Run `/jstack:work <any topic>`. If it reports you're not inside an agent tree,
 check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists —
 `jstack-doctor`'s `agents` line tells you which of the two it is.
+
+---
+
+## The host — reaching this Mac from somewhere else
+
+The second half of the repo, installed on its own and useful without the plugin.
+`host/` is a small token-authed HTTP/SSE API that serves your terminal sessions:
+what is running, what each one said, and a live PTY you can type into from a
+phone, an iPad or another Mac.
+
+```bash
+cd host
+./install.sh              # from a clone of this repo
+./install.sh --dry-run    # print the plan, change nothing
+./install.sh --update     # pull, reinstall, restart
+```
+
+It builds a virtualenv beside the package, registers a **user** LaunchAgent so
+the host survives a logout and a reboot, and prints a pairing code for the app.
+No `sudo`, and nothing written outside your home directory — an install that
+needs an admin password is one you have to trust rather than read, and this is a
+program that watches your terminal sessions. Every step is idempotent, so running
+it twice is an upgrade.
+
+`jstack-host` is the CLI it installs — `pair`, `status`, `doctor`, `where`,
+`serve`, `uninstall`. A menu bar item (`host/menubar/`) is built from source on
+your machine unless you pass `--no-menubar`; the host installs fine without it.
+
+The client app is closed source, and `app/install.sh` is not — it verifies the
+download's SHA-256 against the published manifest, checks the code signature,
+asks Gatekeeper the same question macOS asks on first launch, and pins the
+signing team, before anything lands in `/Applications`. There is no
+`--skip-verify`.
+
+**Full contract — profiles, the state-dir seam, what a host without this tree
+still answers, and the security model: [host/README.md](host/README.md).**
 
 ---
 
@@ -352,6 +398,7 @@ Set `agent_root` to wherever your workspaces live and JStack works out of the bo
 - `plugins/jstack/docs/systems/session-end-engine.md` — the review engine: gating table, full config key reference, log-line contract, safety switches.
 - `plugins/jstack/docs/systems/timeline-log.md` — the timeline writer: CLI contract, consolidation semantics, host-parity rule.
 - `plugins/jstack/docs/systems/path-rule-injection.md` — the PreToolUse hook internals.
+- `host/README.md` — the host: install, the `jstack-host` CLI, the two profiles, the state-dir seam, what a host with no agent tree still answers, and the security model.
 - `docs/agents-dashboard.md` — pattern spec for building a local dashboard that surfaces every agent + session (pattern-only — implement against your environment). A host dashboard can federate `plugins/jstack/systems.json` to surface and test the bundled systems alongside its own.
 
 ---
@@ -363,7 +410,7 @@ JStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
 │   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
-│   ├── skills/                            # the 15 slash commands
+│   ├── skills/                            # the 16 slash commands
 │   │   ├── work/SKILL.md
 │   │   ├── handoff/SKILL.md
 │   │   ├── splitoff/SKILL.md
@@ -375,6 +422,7 @@ JStack/
 │   │   ├── pict/SKILL.md
 │   │   ├── tag/SKILL.md
 │   │   ├── issue/SKILL.md
+│   │   ├── task/SKILL.md
 │   │   ├── push/SKILL.md
 │   │   ├── report/SKILL.md
 │   │   ├── install-rules/SKILL.md
@@ -392,7 +440,7 @@ JStack/
 │   │   ├── stop-inbox-guard.py            # an open inbox message cannot be walked past
 │   │   ├── stop-timeline-remind.py        # timeline write reminder
 │   │   └── session-end-review.sh          # spawns the review engine, detached
-│   ├── bin/                               # bundled adapters (auto-added to PATH)
+│   ├── bin/                               # the 18 bundled adapters (auto-added to PATH)
 │   │   ├── open-terminal-here             # /handoff, /audit, /splitoff
 │   │   ├── dub-session                    # /splitoff
 │   │   ├── open-artifact                  # /showme, /pict
@@ -400,9 +448,16 @@ JStack/
 │   │   ├── session-files                  # /push stage list
 │   │   ├── file-issue                     # /report issue filing + board placement
 │   │   ├── place-issue                    # /issue board placement
+│   │   ├── task-create                    # /task issue filing
 │   │   ├── file-followup                  # review follow-ups
 │   │   ├── log_event                      # timeline writer
 │   │   ├── msg                            # agent inbox
+│   │   ├── schedule-self                  # one-time wake for this seat
+│   │   ├── jstack-scheduler               # RRULE daemon control
+│   │   ├── jstack-doctor                  # install verification (step 6)
+│   │   ├── repo-seat                      # repo → owning seat resolution
+│   │   ├── ide-bridge                     # editor integration
+│   │   ├── acp-agent                      # agent client protocol
 │   │   └── session-review-spawn           # review engine
 │   ├── scheduler/                         # RRULE daemon (one-time + recurring runs)
 │   ├── rules-stage/                       # rules installed via /install-rules
@@ -410,6 +465,13 @@ JStack/
 │   ├── systems.json                       # registry: every bundled system + its test
 │   ├── tests/                             # runnable system tests (*.sh, exit 0 = pass)
 │   └── docs/systems/                      # per-system deep docs
+├── host/                                  # the host — its own install, no plugin needed
+│   ├── install.sh                         # venv + user LaunchAgent + pairing code
+│   ├── jstack_host/                       # the package (API, CLI, profiles, devices)
+│   ├── menubar/                           # status item, compiled on your machine
+│   ├── tests/                             # host suite (pytest)
+│   └── README.md                          # host contract, profiles, security
+├── app/install.sh                         # install the Mac client from a signed release
 ├── docs/                                  # architecture specs (not installed)
 └── README.md                              # this file
 ```

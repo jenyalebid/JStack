@@ -646,6 +646,13 @@ class EnrolmentRedeemRequest(BaseModel):
     #: the CODE that decides whether this matters; a device leaves it empty.
     host_key: str = ""
     port: int = 9090
+    #: The credential this device already holds here, when it is pairing again
+    #: rather than for the first time — the host re-keys that row instead of
+    #: leaving a second one behind (enrolment.py, RE-PAIRING). In the body and
+    #: not an `Authorization` header on purpose: this route is unauthenticated
+    #: and must stay that way to a reader, and a bearer header on it would read
+    #: like auth that had been added.
+    device_token: str = ""
 
 
 class EnrolmentRevokeRequest(BaseModel):
@@ -712,7 +719,7 @@ def redeem_enrolment_code(body: EnrolmentRedeemRequest, request: Request):
     client_ip = request.client.host if request.client else ""
     try:
         return enrolment.redeem(body.code, client_ip,
-                                body.host_key, body.port)
+                                body.host_key, body.port, body.device_token)
     except enrolment.HostKeyRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except enrolment.EnrolmentLockedOut as exc:

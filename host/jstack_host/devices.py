@@ -25,6 +25,13 @@ rotating the file does nothing, revoking `legacy` is the new rotation. A fresh
 install still mints the file (install_host.py) and the first request folds it
 in, so provisioning a new host is unchanged until enrolment codes land (P3).
 
+**Re-pairing re-keys; it does not accumulate.** A device that already holds a
+row here presents that credential when it redeems an enrolment code, and
+`rekey()` gives the row it proves a new secret in place. Without it every run of
+the installer minted beside the last one — eleven pairings of one Mac left
+eleven live credentials nobody would ever think to revoke, on exactly the path
+we tell people to re-run.
+
 **Revocation is immediate.** `revoke()` stamps the row and then wakes every
 `wait_revoked()` watcher for that device — the PTY WebSocket holds one, so a
 revoked phone's terminal drops mid-keystroke instead of typing until it next
@@ -58,6 +65,14 @@ from . import hostenv
 TOKEN_PREFIX = "jr1"
 LEGACY_ID = "legacy"
 INTERNAL_ID = "host-internal"
+
+# Rows a re-pairing must never re-key, however good the token proving them.
+# Both are shared: `legacy` is the token file, which the command line and every
+# device installed before enrolment may all be carrying at once, and
+# `host-internal` is the host's own plumbing. Re-keying either because one app
+# paired again would lock out every other holder, silently, from a request that
+# carried no authority over them.
+SHARED_IDS = (LEGACY_ID, INTERNAL_ID)
 
 # What the shared token file is called in the registry when this install is the
 # one that minted it. The id stays `legacy` — `parse()` returns it for any
@@ -256,6 +271,47 @@ def mint(name: str) -> tuple[dict, str]:
             return (_store().device(device_id),
                     f"{TOKEN_PREFIX}.{device_id}.{secret}")
     raise RuntimeError("could not mint a device id")  # 3 uuid collisions
+
+
+def rekey(presented: str) -> tuple[dict, str] | None:
+    """A device presenting the credential it already holds → that row, re-keyed.
+
+    Returns (row, new token) in the shape `mint` does, so a caller can use one
+    or the other without knowing which happened; None when the token proves
+    nothing this host will re-key, and then the caller mints instead.
+
+    **Possession is the authority.** A device id in the request would let
+    anyone re-key anyone's row — and the point of the re-key is that the old
+    secret dies, so that is a revocation handed to whoever can type an id.
+    Holding the token grants nothing new: everything the re-key opens was
+    already open to whoever presented it.
+
+    **Deliberately not `authenticate()`.** That call carries the empty-table
+    grandfather, which mints row `legacy` out of the token file on first sight.
+    The one caller here is enrolment, which is unauthenticated by definition —
+    routing it through the grandfather would let an unauthenticated request
+    that presented junk write a device row, which is the exact accumulation
+    this function exists to stop. It also never touches `last_seen_at`: this is
+    a pairing, and dating the row from it would say the old credential was in
+    use at the moment it stopped existing.
+
+    Never resurrects: `set_device_hash` refuses a revoked row, so a revoked
+    device that still has its token gets None and a plain mint — a new row the
+    user can see and revoke, not the old one quietly walking back in.
+    """
+    device_id, secret = parse(presented)
+    if not device_id or device_id in SHARED_IDS:
+        return None
+    row = _store().device(device_id)
+    if row is None or row["revoked_at"] is not None:
+        return None
+    if not hmac.compare_digest(row["token_hash"], _hash(secret)):
+        return None
+    new_secret = secrets.token_urlsafe(32)
+    if not _store().set_device_hash(device_id, _hash(new_secret)):
+        return None      # revoked between the compare and the write
+    return (_store().device(device_id),
+            f"{TOKEN_PREFIX}.{device_id}.{new_secret}")
 
 
 def mint_allowed_from(client_ip: str) -> bool:

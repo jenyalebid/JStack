@@ -36,6 +36,18 @@ credential that authorized it, and a code whose creator has since been revoked
 is refused at redemption — so revoking a lost phone also kills the codes it left
 outstanding, rather than leaving them live for their whole TTL.
 
+RE-PAIRING IS NOT A SECOND DEVICE. Redeeming a code used to mint unconditionally,
+so every re-run of the installer left another live credential behind on the one
+path we tell people to re-run — eleven pairings of one Mac, eight device rows,
+measured on a clean VM. A device that already holds a row here presents that
+credential alongside the code, and `devices.rekey` gives that row a new secret
+instead of minting beside it: one row per device, and the superseded token is
+dead the moment the new one is handed over. The credential is the anchor
+because nothing else in the request can be one — the host cannot read a device
+out of a code, and an id it merely believed would let any code-holder re-key
+somebody else's row. Absent, stale, revoked or mistyped all fall through to a
+plain mint, because by the time it is looked at the code is already spent.
+
 The codes table never syncs, for the same reason `devices` never does. See the
 schema comment in store.py.
 """
@@ -285,8 +297,13 @@ def _check_host_claim(host_key: str, port: int) -> int:
 
 
 def redeem(raw_code: str, client_ip: str, host_key: str = "",
-           port: int = DEFAULT_PORT) -> dict:
+           port: int = DEFAULT_PORT, device_token: str = "") -> dict:
     """Spend a code: a device token, and a peer config where one applies.
+
+    `device_token` is the credential the redeemer already holds on this host,
+    when it has one. It re-keys that row rather than adding a second — see
+    RE-PAIRING above — and it is read only after the consume, with everything
+    else in this function unchanged whether it was sent or not.
 
     Order is deliberate. A declared host key is checked first, before this host
     has looked at the code at all — that is what lets its refusal be specific.
@@ -326,7 +343,13 @@ def redeem(raw_code: str, client_ip: str, host_key: str = "",
         auth.note_failure(client_ip, scope)   # used, or expired: still a miss
         raise EnrolmentError(REFUSED)
 
-    device_row, token = devices.mint(row["name"])
+    # The row this device already had here, re-keyed — or a new one. The code's
+    # name is spent on the mint and NOT on the re-key: a row that exists has a
+    # name the user may have chosen in the registry, and a re-pairing is not a
+    # rename. It is also the truer answer — the device redeeming is the device
+    # it always was, whoever the code was minted for.
+    rekeyed = devices.rekey(device_token) if device_token else None
+    device_row, token = rekeyed or devices.mint(row["name"])
     device_row["revoked"] = False
     store.note_enrolment_device(code_hash, f"{device_row['id']} from {client_ip}")
 
@@ -339,10 +362,15 @@ def redeem(raw_code: str, client_ip: str, host_key: str = "",
         # record of an enrolment whose code is already spent.
         host_row = _register_host(row["name"], host_key,
                                   mesh_address(peer), port)
-    _announce(row, device_row, client_ip, kind)
+    _announce(row, device_row, client_ip, kind, rekeyed is not None)
     return {"device": device_row, "token": token,
             "tunnel": peer, "tunnel_note": note,
-            "kind": kind, "host": host_row}
+            "kind": kind, "host": host_row,
+            # Which of the two happened, said out loud. The app can tell from
+            # the id, but only if it kept one; a caller pairing by hand cannot
+            # tell a fresh credential from a replaced one at all, and "your old
+            # token just stopped working" is not something to leave implicit.
+            "superseded": rekeyed is not None}
 
 
 def _register_host(name: str, key: str, address: str, port: int) -> dict:
@@ -352,19 +380,27 @@ def _register_host(name: str, key: str, address: str, port: int) -> dict:
 
 
 def _announce(code_row: dict, device_row: dict, client_ip: str,
-              kind: str = KIND_DEVICE) -> None:
-    """Say out loud that a device just joined this host.
+              kind: str = KIND_DEVICE, superseded: bool = False) -> None:
+    """Say out loud that a device just joined this host, or re-keyed on it.
 
     A new credential minted from off the LAN is the exact event the address
     gate used to make impossible, so it must not be silent. Threaded for the
     same reason the limiter's alerts are: a Telegram send must never stall the
     request that earned it.
+
+    The two outcomes read differently because they mean different things: a
+    device that was not here before is the alarming one, and an alert that
+    called a re-key by the same words would spend the alarm on the routine
+    event until nobody read either.
     """
     what = "machine" if kind == KIND_HOST else "device"
+    did = "re-paired with" if superseded else "joined"
     body = (f"jRemote enrolment: {what} {device_row['name']} "
-            f"({device_row['id']}) joined {hostenv.host_name()} from "
+            f"({device_row['id']}) {did} {hostenv.host_name()} from "
             f"{client_ip or 'local'}, on a code minted by "
-            f"{code_row.get('created_by') or 'the host'}.")
+            f"{code_row.get('created_by') or 'the host'}."
+            + (" The token it held before this no longer works."
+               if superseded else ""))
     threading.Thread(target=hostenv.security_alert, args=(body,),
                      daemon=True).start()
 

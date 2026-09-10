@@ -238,14 +238,29 @@ struct HostIdentity: Decodable {
     var profile: String?
     var features: [String: Bool]?
 
+    /// local / open / managed — the host's own verdict on how a device off
+    /// this network reaches it, computed by `jstack_host.mode`. Nil where an
+    /// older host predates the field; the headline falls back to the coarser
+    /// hub/leaf read below rather than drawing nothing.
+    var mode: HostMode?
+
     /// Hub or leaf, taken from the host's own answer rather than inferred.
     ///
     /// `tunnel_pairing` is true only where `wg0.conf` is — and that file *is*
     /// the mesh, the peer list the interface honours. A hub holds it; a leaf
     /// dialled out to one and has no peers of its own to mint. Nil where the
     /// host did not say, which is not the same as leaf and must not be drawn
-    /// as one.
+    /// as one. Superseded by `mode` on a current host; kept for the fallback.
     var isHub: Bool? { features?["tunnel_pairing"] }
+}
+
+/// The `mode` block `/host` carries: the word, the one-line explanation, and
+/// whether the mode is live right now (a managed host's tunnel can be down
+/// while the attachment itself stands).
+struct HostMode: Decodable {
+    var mode: String?
+    var note: String?
+    var live: Bool?
 }
 
 /// One snapshot of the machine, as the menu will render it.
@@ -294,7 +309,15 @@ struct HostState {
         // rather than claiming reach this app never measured.
         if let bind, bind == "127.0.0.1" || bind == "localhost" {
             parts.append("this Mac only")
+        } else if let m = identity?.mode?.mode {
+            // The host's own verdict — local / open / managed — in its own word.
+            // A managed host whose tunnel is down still says "managed", and adds
+            // that it is not reachable through its parent right now, because the
+            // attachment stands while the path is out.
+            parts.append(m)
+            if identity?.mode?.live == false { parts.append("offline") }
         } else {
+            // Older host with no mode field: the coarser hub/leaf read.
             switch identity?.isHub {
             case true:  parts.append("hub")
             case false: parts.append("leaf")

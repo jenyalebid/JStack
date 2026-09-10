@@ -160,7 +160,7 @@ def get_host(request: Request):
     screen in turn learns the same thing four round trips later, and has to
     render four spinners to find out one of them was never coming.
     """
-    from . import addresses
+    from . import addresses, mode
     # The port the caller actually reached, not a constant: a host moved off
     # 9090 would otherwise hand out an address list that is wrong in the one
     # detail nobody checks, on the screen whose whole job is that address.
@@ -171,6 +171,10 @@ def get_host(request: Request):
         "profile": hostenv.profile().name,
         # Where a SECOND machine should try. Never loopback — see addresses.py.
         "addresses": addresses.reachable(port),
+        # local / open / managed — the same verdict `jstack-host mode` prints,
+        # hoisted here so the menu bar draws the mode from the one call it
+        # already makes rather than a route of its own.
+        "mode": mode.current(),
         "features": {**{k: _optional(m) is not None for k, m in _FEATURES.items()},
                      **{k: _probe(k) for k in _PROBED_FEATURES}},
     }

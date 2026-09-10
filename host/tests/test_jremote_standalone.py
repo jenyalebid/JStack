@@ -517,6 +517,14 @@ assert d["profile"] == "default", d
 # is installed — both are probed off the filesystem, so they are asserted
 # present in the map and consistent with their routes below, never as a
 # fixed value the machine running this test would make a lie.
+# Mode rides here too — one of the three, with a note and a liveness flag.
+# Asserted by shape, not value: `mode.current()` reads the real machine's
+# interfaces, so the running host's own network would make any fixed value a
+# lie. The value rules are pinned in test_jremote_mode.py against fixed facts.
+assert d["mode"]["mode"] in {"local", "open", "managed"}, d["mode"]
+assert d["mode"]["note"], d["mode"]
+assert isinstance(d["mode"]["live"], bool), d["mode"]
+
 feats = d["features"]
 assert feats["context"] is False and feats["control"] is False, feats
 assert feats["feed"] is True and feats["usage_spend"] is True, feats

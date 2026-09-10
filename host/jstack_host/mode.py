@@ -1,0 +1,137 @@
+"""Which of the three shapes this host is — the whole of the mode question.
+
+A host is one of three things, and the entire difference between them is how a
+device that is *not* on this network reaches it:
+
+  · **local**   — nothing off the LAN can reach it. It dials out on no tunnel
+    and publishes no way in. The shape a fresh install lands in, and an honest
+    one: a machine that has done nothing to be reachable from outside is not.
+  · **open**    — independently reachable from outside, because this Mac itself
+    holds a public way in. Today that is a hub that publishes a WireGuard
+    endpoint the outside can dial; open mode's guided HTTP port-forward
+    (issue #29) is the second signal that joins this one when it lands.
+  · **managed** — attached to a parent hub. This Mac dials OUT to a hub and
+    rides its mesh, so every device paired to that parent reaches here with no
+    per-device setup of its own. A leaf, in the tunnel's own word — "a managed
+    hub" in the product's.
+
+The verdict is read from what the machine actually *is*, never from a setting
+it was told to believe about itself:
+
+  · it is **managed** when a leaf tunnel is installed on it (the LaunchDaemon
+    that dials out is present), or — failing that record — when it sits on the
+    mesh without owning it. Owning-the-mesh is what separates a leaf from the
+    hub it dials into.
+  · it is **open** when it owns the mesh AND publishes an endpoint to dial.
+  · it is **local** otherwise.
+
+**Configured shape, not proven reachability.** Two honest limits are baked in
+here, both of them the difference between a check and a claim:
+
+  · A leaf whose tunnel is momentarily down is still *managed* — its
+    attachment is a fact on disk, not a fact about whether wifi is up this
+    second. The mode reports the attachment; a separate `live` flag reports
+    whether the mesh address is actually present right now. Flipping a leaf to
+    "local" every time a cafe's wifi hiccups would be the check lying about
+    what the machine is.
+  · An open host *publishes* an endpoint — a fact this Mac can see. Whether a
+    packet from outside actually lands on it is a fact about the router in
+    between, which this module cannot observe and therefore does not assert.
+    Proving that end-to-end is open mode's own job (issue #29); until it runs,
+    the note says plainly that reachability is declared, not verified.
+
+Pure core, I/O at the edges: `classify` decides the taxonomy from four booleans
+so the tests pin the rules against fixed facts, and `current` is the one place
+that reads this machine's own — through `addresses`, `tunnel` and the same two
+endpoint locations `wg_peer.py` itself honours, so a host that moved `WG_DIR`
+or set the env is judged by what the tunnel tool would do, not by a guess.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import os
+from pathlib import Path
+
+from . import addresses, tunnel
+
+#: The LaunchDaemon `install_leaf.sh` drops on a machine it turns into a leaf
+#: (`/Library/LaunchDaemons/com.jremote.leaf.plist`). Presence is the durable
+#: "this Mac is attached to a parent" record — it outlives the interface being
+#: up, which is exactly the property the mode needs and the mesh address lacks.
+#: A constant so a test can point it at a tmp file instead of the real root.
+LEAF_PLIST = Path("/Library/LaunchDaemons/com.jremote.leaf.plist")
+
+
+def _leaf_installed() -> bool:
+    """Whether a leaf tunnel is installed on this machine — the durable record,
+    read without caring whether the daemon is loaded this second."""
+    return LEAF_PLIST.is_file()
+
+
+def _on_mesh(inets: list[str]) -> bool:
+    """Whether one of this machine's own interfaces holds a mesh address right
+    now — the liveness half of the leaf story, and what tells a hub from a
+    machine that merely has the tooling."""
+    for raw in inets:
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if ip in addresses.MESH_SUBNET:
+            return True
+    return False
+
+
+def _endpoint_declared() -> bool:
+    """Whether this host publishes a dial-in endpoint, read the same two places
+    `wg_peer.py._endpoint()` reads — the env first, then `<WG_DIR>/endpoint`.
+
+    Mirrored rather than imported for the reason the rest of this package
+    mirrors that file: importing it runs a tool that edits the live tunnel, and
+    a mode readout is no reason to do that."""
+    if os.environ.get("WG_ENDPOINT"):
+        return True
+    return (tunnel.WG_DIR / "endpoint").is_file()
+
+
+def classify(*, leaf_installed: bool, on_mesh: bool,
+             is_hub: bool, endpoint: bool) -> dict:
+    """The taxonomy, from four facts and nothing else. Pure on purpose."""
+    if leaf_installed and not is_hub:
+        return {
+            "mode": "managed",
+            "live": on_mesh,
+            "note": ("attached to a parent hub; the mesh tunnel is up"
+                     if on_mesh else
+                     "attached to a parent hub, but the mesh tunnel is DOWN — "
+                     "not reachable through the parent right now"),
+        }
+    if on_mesh and not is_hub:
+        return {
+            "mode": "managed",
+            "live": True,
+            "note": "on a parent hub's mesh (no local leaf install record)",
+        }
+    if is_hub and endpoint:
+        return {
+            "mode": "open",
+            "live": True,
+            "note": ("publishes a WireGuard endpoint for off-network access — "
+                     "reachability is declared here, not verified"),
+        }
+    return {
+        "mode": "local",
+        "live": True,
+        "note": "reachable only on this network",
+    }
+
+
+def current() -> dict:
+    """This machine's mode, read off its own interfaces and tunnel state."""
+    return classify(
+        leaf_installed=_leaf_installed(),
+        on_mesh=_on_mesh(addresses._inet_addrs()),
+        is_hub=tunnel.can_pair(),
+        endpoint=_endpoint_declared(),
+    )

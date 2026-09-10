@@ -303,6 +303,24 @@ def _cmd_where(args) -> int:
     return 0
 
 
+def _cmd_mode(args) -> int:
+    """Which of local / open / managed this host is — the question a person
+    asks before they know whether a device off this network can reach it.
+
+    The same verdict the menu bar shows, on a terminal: the mode, whether it is
+    live right now, and the one line that says what that mode does and does not
+    prove. `_adopt` first, for the same reason `where` does — a host installed
+    with `--state-dir` keeps its tunnel state somewhere this shell would
+    otherwise not look."""
+    _adopt(args)
+    from . import mode
+    m = mode.current()
+    live = "" if m["live"] else "  (not live)"
+    print(f"mode  {m['mode']}{live}")
+    print(f"      {m['note']}")
+    return 0
+
+
 def _cmd_version(args) -> int:
     from importlib.metadata import PackageNotFoundError, version
     try:
@@ -392,6 +410,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("where", help="every path this host resolves")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_where)
+
+    p = sub.add_parser("mode", help="is this host local, open or managed")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_mode)
 
     p = sub.add_parser("version", help="the installed package version")
     p.set_defaults(fn=_cmd_version)

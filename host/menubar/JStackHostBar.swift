@@ -229,6 +229,38 @@ struct Session: Decodable {
 
 struct ActiveSessions: Decodable { var sessions: [Session]? }
 
+/// One row of `GET /devices` — the host's roster of paired devices. The token
+/// itself is never here: the host keeps only its hash, so a row is an identity
+/// and a status, not a credential. `revoked` and `current` are stamped onto the
+/// raw row by the host; the timestamps are unix seconds, absent on an older
+/// host and never a reason to fail the decode.
+struct Device: Decodable {
+    var id: String
+    var name: String
+    var createdAt: Int?
+    var lastSeenAt: Int?
+    var revoked: Bool
+    /// True for the row whose token this menu authenticated with. Removing it
+    /// cuts this Mac's own access to the hub, so the confirmation says so.
+    var current: Bool
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        createdAt = try c.decodeIfPresent(Int.self, forKey: .createdAt)
+        lastSeenAt = try c.decodeIfPresent(Int.self, forKey: .lastSeenAt)
+        revoked = try c.decodeIfPresent(Bool.self, forKey: .revoked) ?? false
+        current = try c.decodeIfPresent(Bool.self, forKey: .current) ?? false
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, revoked, current, createdAt, lastSeenAt
+    }
+}
+
+struct DeviceList: Decodable { var devices: [Device] }
+
 /// `/host` — the route that proves which machine this is. Behind the token by
 /// design, and that is the point: a host answering on loopback that rejects
 /// our token is not our host, whatever it would have claimed.
@@ -268,6 +300,9 @@ struct HostState {
     var installed = false
     var health: Health?
     var sessions: [Session] = []
+    /// The host's roster of paired devices, revoked ones included — the same
+    /// list the client app shows, because #27 is the menu bar owning it too.
+    var devices: [Device] = []
     /// The token exists but the board refused it — worth its own state, because
     /// it is the one failure that looks identical to "nothing is running".
     var unauthorized = false
@@ -382,7 +417,18 @@ final class HostProbe {
                        let active = try? Self.decoder.decode(ActiveSessions.self, from: data) {
                         state.sessions = active.sessions ?? []
                     }
-                    finish()
+                    // The roster, on the same token and last. A device-list
+                    // failure must not throw away the sessions already gathered,
+                    // and a token the sessions call already found unauthorized
+                    // has recorded that above — so this leg only adds, and its
+                    // own 401 would land the same way rather than undo anything.
+                    self.get("\(base)\(Self.apiPrefix)/devices", token: token) { data, _ in
+                        if let data,
+                           let list = try? Self.decoder.decode(DeviceList.self, from: data) {
+                            state.devices = list.devices
+                        }
+                        finish()
+                    }
                 }
             }
 
@@ -452,6 +498,33 @@ final class HostProbe {
         // The teardown waits on `claude` to exit, up to ten seconds — well past
         // the three the polls are configured for.
         req.timeoutInterval = 20
+        session.dataTask(with: req) { data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let detail: String
+            if let error { detail = error.localizedDescription }
+            else if let data, let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                detail = text
+            } else { detail = "the hub answered \(status)" }
+            DispatchQueue.main.async { done(status == 200, detail) }
+        }.resume()
+    }
+
+    /// Revoke a device through the host's own `/devices/{id}/revoke` — the same
+    /// route the client app uses, so the roster stays one list with one meaning
+    /// of "removed", not two implementations that can disagree. From the 200 the
+    /// token opens nothing and any live connection it held is already cut.
+    func revoke(deviceId: String, token: String,
+                _ done: @escaping (Bool, String) -> Void) {
+        let port = HostAgent.port()
+        let id = deviceId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            ?? deviceId
+        guard let url = URL(string:
+            "http://127.0.0.1:\(port)\(Self.apiPrefix)/devices/\(id)/revoke")
+        else { return done(false, "could not build the request") }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 10
         session.dataTask(with: req) { data, response, error in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let detail: String
@@ -936,6 +1009,11 @@ final class StatusController: NSObject {
         menu.addItem(machine)
 
         menu.addItem(processesItem())
+        // The roster sits beside the process list, not inside the controls
+        // submenu: "who is paired" is a fact you read at a glance, the same
+        // shape as "what is running", and pairing a new one already lives on
+        // the machine's controls where the rest of the do-something rows are.
+        if let devices = devicesItem() { menu.addItem(devices) }
 
         // ── The app ─────────────────────────────────────────────────────────
         menu.addItem(.separator())
@@ -1149,6 +1227,85 @@ final class StatusController: NSObject {
         return item
     }
 
+    /// The host's own self-credential — minted as a device row so the registry
+    /// can audit it, but not a device anyone paired, and revoking it would cut
+    /// the host off from itself. Kept off the roster the menu offers to remove.
+    /// Mirrors `jstack_host.devices.INTERNAL_ID`.
+    private static let internalDeviceID = "host-internal"
+
+    /// The paired-devices row: a count read at the top level, the roster opened
+    /// off it. Only where the host answered a token, since the list lives behind
+    /// it — and only when something is actually paired, because a row that can
+    /// only ever say "nobody" is furniture, and pairing a first one already
+    /// lives on the machine's controls.
+    private func devicesItem() -> NSMenuItem? {
+        guard state.isUp, state.isProvisioned, !state.unauthorized else { return nil }
+        let roster = state.devices.filter { $0.id != Self.internalDeviceID }
+        let active = roster.filter { !$0.revoked }.sorted { $0.name < $1.name }
+        let revoked = roster.filter { $0.revoked }.sorted { $0.name < $1.name }
+        guard !active.isEmpty || !revoked.isEmpty else { return nil }
+
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        for device in active {
+            let row = NSMenuItem(title: device.name, action: nil, keyEquivalent: "")
+            // Filled for the device this menu is signed in as, hollow for the
+            // rest — the same dot the process list uses for live/idle, so one
+            // glyph vocabulary covers the whole menu.
+            row.image = Self.dot(live: device.current, idle: true)
+            let detail = device.current ? "this device" : Self.seen(device.lastSeenAt)
+            row.attributedTitle = Self.twoLine(device.name, detail)
+
+            // Remove hangs off the device rather than beside its name, for the
+            // reason Kill does: a one-click revoke in a list the pointer travels
+            // is access cut by a mouse passing over it.
+            let actions = NSMenu()
+            actions.autoenablesItems = false
+            let remove = Self.action("Remove", #selector(doRemoveDevice), self,
+                                     symbol: "minus.circle")
+            remove.representedObject = device
+            actions.addItem(remove)
+            row.submenu = actions
+            sub.addItem(row)
+        }
+
+        // Removed devices stay on the list — the registry is the audit surface,
+        // and a device that vanishes the instant it is revoked is one you cannot
+        // confirm you removed. No action on them: revoking a revoked device is a
+        // 404, and a Remove that answers "already gone" is a button that lies.
+        if !revoked.isEmpty {
+            sub.addItem(.separator())
+            sub.addItem(Self.caption("Removed"))
+            for device in revoked {
+                sub.addItem(Self.caption("    \(device.name)"))
+            }
+        }
+
+        let title = "\(active.count) " + (active.count == 1 ? "Device" : "Devices")
+        let subtitle: String
+        switch (active.count, revoked.count) {
+        case (_, 0): subtitle = "\(active.count) paired"
+        case (0, _): subtitle = "\(revoked.count) removed"
+        default:     subtitle = "\(active.count) paired, \(revoked.count) removed"
+        }
+        let item = Self.opener(title, symbol: "laptopcomputer.and.iphone", submenu: sub)
+        item.attributedTitle = Self.twoLine(title, subtitle)
+        item.image = Self.glyph("laptopcomputer.and.iphone", size: 26)
+        return item
+    }
+
+    /// "last seen 3h ago", or that it has never connected. Unix seconds in —
+    /// what the host sends — and a device that has authenticated once always
+    /// carries a stamp.
+    private static func seen(_ ts: Int?) -> String {
+        guard let ts, ts > 0 else { return "never connected" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        let when = Date(timeIntervalSince1970: TimeInterval(ts))
+        return "last seen " + formatter.localizedString(for: when, relativeTo: Date())
+    }
+
     /// The header row's two lines: what the machine is, and what it is doing.
     ///
     /// An attributed title rather than a custom view. A menu item with a view
@@ -1328,6 +1485,40 @@ final class StatusController: NSObject {
                 failed.alertStyle = .warning
                 failed.messageText = "\(failures.count) of \(sids.count) did not stop"
                 failed.informativeText = failures.joined(separator: "\n")
+                failed.runModal()
+            }
+            self?.refresh()
+        }
+    }
+
+    /// Remove a device, after asking. It revokes the token, which is not
+    /// undoable — the device has to be paired again to come back — so the same
+    /// confirmation Kill gets applies here. The warning sharpens for the row
+    /// this menu is signed in as: removing it cuts this Mac's own access.
+    @objc private func doRemoveDevice(_ sender: NSMenuItem) {
+        guard let device = sender.representedObject as? Device,
+              !device.id.isEmpty, let token = HostAgent.token() else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = device.current ? .critical : .warning
+        alert.messageText = "Remove \(device.name)?"
+        alert.informativeText = device.current
+            ? "This is the device this menu is signed in as. Removing it cuts "
+            + "this Mac's own access to the hub until it is paired again. The "
+            + "token stops working immediately and any live connection is dropped."
+            : "The token stops working immediately and any live connection from "
+            + "it is dropped. Pair the device again to restore access."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        probe.revoke(deviceId: device.id, token: token) { [weak self] ok, detail in
+            if !ok {
+                let failed = NSAlert()
+                failed.alertStyle = .warning
+                failed.messageText = "Could not remove \(device.name)"
+                failed.informativeText = detail
                 failed.runModal()
             }
             self?.refresh()

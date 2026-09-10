@@ -11,6 +11,8 @@ Cross-machine Claude Code skills for agent workflows. Built around the `{agent_r
 
 Neither needs the other. A machine can run the plugin and never install the host, or install the host on a Mac that has no agent workspaces at all.
 
+**On a fresh machine, run `./install.sh` at the repo root** — it does both halves and the client app in one pass, and ends on `jstack-doctor` rather than an assumption. The per-half installers below are for leaving a piece out.
+
 ## What this gives you
 
 Slash commands, namespaced as `/jstack:*`:
@@ -190,6 +192,32 @@ The second half of the repo, installed on its own and useful without the plugin.
 `host/` is a small token-authed HTTP/SSE API that serves your terminal sessions:
 what is running, what each one said, and a live PTY you can type into from a
 phone, an iPad or another Mac.
+
+### Which installer to run
+
+There are three, and picking the wrong one is the easy mistake — `host/install.sh`
+installs **the host only**. It does not install the client app. Its last step
+pairs an app that is *already on the machine*; where there is none it prints a
+code and says so.
+
+| Run | When |
+|---|---|
+| **`./install.sh`** (repo root) | **The usual one.** Plugin + host + menu bar + the Mac app, then `jstack-doctor` for a verdict. `--no-app`, `--no-host`, `--no-menubar` to leave a piece out. |
+| `host/install.sh` | You want the host and nothing else — a headless Mac, or a machine whose app you install another way. |
+| `app/install.sh` | You want the Mac app only, against a host that already exists elsewhere. |
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jenyalebid/JStack/main/install.sh | bash
+./install.sh --dry-run           # print the plan, touch nothing
+./install.sh --yes --agent Ada   # unattended, everything
+```
+
+It refuses to run as root, never overwrites a file it did not write, and touches
+nothing outside the checkout, `~/.claude`, `~/Agents`, `~/Applications` and one
+appended shell-profile line. Every step is idempotent, so running it twice is an
+upgrade — which is what makes it usable as the updater.
+
+### The host on its own
 
 ```bash
 cd host
@@ -465,6 +493,7 @@ JStack/
 │   ├── systems.json                       # registry: every bundled system + its test
 │   ├── tests/                             # runnable system tests (*.sh, exit 0 = pass)
 │   └── docs/systems/                      # per-system deep docs
+├── install.sh                             # THE front door — plugin + host + app, then doctor
 ├── host/                                  # the host — its own install, no plugin needed
 │   ├── install.sh                         # venv + user LaunchAgent + pairing code
 │   ├── jstack_host/                       # the package (API, CLI, profiles, devices)

@@ -3,6 +3,7 @@
     jstack-host install          turn this Mac into a host, and keep it one
     jstack-host pair "iPhone"    a code to type into the app
     jstack-host pair --open      pair the app on this Mac, no code typed
+    jstack-host attach CODE --parent URL   join a parent hub as a managed hub
     jstack-host welcome          open the app on a session that checks this Mac
     jstack-host status           is it up, and what does it know
     jstack-host doctor           what is missing, and how to fix each thing
@@ -271,6 +272,52 @@ def _cmd_welcome(args) -> int:
     return 0
 
 
+def _cmd_attach(args) -> int:
+    """Join a parent hub's mesh with a code minted on that parent.
+
+    The one deliberate step that turns this Mac into a managed hub: redeem the
+    host code, install the leaf tunnel it hands back, and report the mode the
+    machine ended up in. `_adopt` first, like every command that reads or writes
+    this host's state — the token this earns and the parent record it writes
+    belong to the installed host, not to whatever a bare shell would resolve.
+
+    Not gated behind a confirmation: attaching is already the explicit act — a
+    person typed `attach`, an address and a one-time code. What it must not do is
+    claim success it did not check, so it reads `mode` off the machine afterwards
+    and prints that, rather than asserting "managed" because the installer
+    returned zero.
+    """
+    _adopt(args)
+    from . import attach_parent, hostenv, mode
+    try:
+        result = attach_parent.attach(
+            args.code, args.parent, host_key=hostenv.host_id(), port=args.port)
+    except attach_parent.AttachError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    m = mode.current()
+    if getattr(args, "json", False):
+        import json
+        print(json.dumps({**result, "mode": m}))
+        return 0
+
+    host = result.get("host") or {}
+    name = host.get("name") or hostenv.host_name()
+    verb = "re-attached" if result["superseded"] else "attached"
+    print(f"{verb} {name} to {result['parent_url']} — this Mac is a managed "
+          "hub now.")
+    print(f"\nmode  {m['mode']}{'' if m['live'] else '  (not live)'}")
+    print(f"      {m['note']}")
+    if m["mode"] != "managed":
+        # The installer returned success but the machine does not read as
+        # managed — say so instead of letting the mode line be the only tell.
+        print("\n  The leaf installed but this machine is not reading as a "
+              "managed hub yet — check `jstack-host doctor` and the leaf "
+              "daemon logs.", file=sys.stderr)
+    return 0
+
+
 def _cmd_token(args) -> int:
     _adopt(args)
     path = hostenv.token_path()
@@ -394,6 +441,20 @@ def build_parser() -> argparse.ArgumentParser:
                         "what the menu bar dialog draws its QR from")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_pair)
+
+    p = sub.add_parser("attach",
+                       help="join a parent hub's mesh — make this Mac a managed hub")
+    p.add_argument("code", help="the host code minted on the parent "
+                                "(kind=host)")
+    p.add_argument("--parent", required=True,
+                   help="the parent host's address, e.g. http://studio.local:9090")
+    p.add_argument("--port", type=int, default=install_host.DEFAULT_PORT,
+                   help="the port THIS Mac serves on, recorded on the parent "
+                        f"(default {install_host.DEFAULT_PORT})")
+    p.add_argument("--json", action="store_true",
+                   help="print the outcome and resulting mode as JSON")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_attach)
 
     p = sub.add_parser("welcome",
                        help="open the app on a session that checks this install")

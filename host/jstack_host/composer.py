@@ -70,7 +70,7 @@ POLL = 0.05
 # so the strip is ours to repeat. Skipped, it is not a cosmetic wart: compose
 # renders the block as the input box's contents, and Send posts the whole thing
 # back as a real prompt — a commented copy of the last answer, resubmitted, on
-# every message (Boss, 2026-09-09).
+# every message (reported 2026-09-09).
 _REFERENCE_TOP = re.compile(r"#[^\n]*Claude's last response \(for reference")
 _REFERENCE_END = re.compile(
     r"^#[^\n]*Write your reply below this line[^\n]*(?:\r?\n(?:\r?\n)?|\Z)", re.M)

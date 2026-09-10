@@ -94,8 +94,8 @@ def reference_block(*lines: str) -> str:
 
 
 def test_the_clis_commented_last_response_is_not_part_of_the_buffer():
-    """What Boss saw: compose opening onto a wall of `#` lines it never asked
-    for, and Send posting them back as a prompt (2026-09-09)."""
+    """What was reported: compose opening onto a wall of `#` lines nobody
+    typed, and Send posting them back as a prompt (2026-09-09)."""
     typed = "and the carousel renderer is still wrong"
     text = composer._without_reference_block(
         reference_block("Right on both counts.", "", "No hub on the laptop.") + typed)

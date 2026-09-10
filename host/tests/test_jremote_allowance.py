@@ -24,9 +24,9 @@ def state(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _cache(path, five=6, week=1, age_s=10):
+def _cache(path, five=6, week=1, age_s=10, reset=None):
     fetched = int((time.time() - age_s) * 1000)
-    reset = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+    reset = reset or (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
     path.write_text(json.dumps({
         "hasVisitedExtraUsage": True,
         "cachedUsageUtilization": {
@@ -117,6 +117,45 @@ def test_the_scheduler_journal_is_a_headless_probe(state, tmp_path):
 def test_an_unknown_source_is_refused(state):
     with pytest.raises(ValueError):
         allowance.record("claude", [], source="guess")
+
+
+def test_a_clock_no_window_could_have_is_dropped_not_drawn(state, monkeypatch):
+    """2026-09-09: both Claude bars read "resets in 1208d 21h".
+
+    The reading itself was fine — the percentages were real. One far-future
+    instant rode in on both windows and the app drew it verbatim, because
+    neither end had an opinion about what a five-hour window's clock can say.
+    The percentage must survive that; only the clock is refused.
+    """
+    monkeypatch.setattr(allowance, "_BAD_RESETS", set())
+    monkeypatch.setattr(allowance.hostenv, "state_dir", lambda: state)
+    far = datetime(2030, 1, 1, tzinfo=timezone.utc).isoformat()
+    _cache(state / "claude.json", five=37, week=58, reset=far)
+    p = allowance.read()["providers"]["claude"]
+    assert [(w["pct"], w["resets_at"]) for w in p["windows"]] == [
+        (37.0, None), (58.0, None)], "the reading stays, the clock goes"
+    logged = [json.loads(ln) for ln in
+              (state / "allowance_rejects.jsonl").read_text().splitlines()]
+    assert [(e["source"], e["window"], e["resets_at"]) for e in logged] == [
+        ("cli-cache", "five_hour", far), ("cli-cache", "seven_day", far)]
+    allowance.read()
+    assert len((state / "allowance_rejects.jsonl").read_text().splitlines()) == 2, \
+        "a cache that stays wrong is reported once, not once per poll"
+
+
+def test_an_epoch_clock_becomes_an_instant_the_app_can_read(state):
+    """Claude Code hands the status line `resets_at` as epoch SECONDS, and a
+    number is not a thing the app's `String?` can decode. Milliseconds too —
+    whichever unit arrives, one ISO shape leaves."""
+    secs = int(time.time()) + 3600
+    allowance.record("claude", [
+        {"id": "five_hour", "label": "Session (5h)", "pct": 8, "resets_at": secs},
+        {"id": "seven_day", "label": "Week", "pct": 5, "resets_at": secs * 1000},
+        {"id": "third", "label": "Third", "pct": 1, "resets_at": "not a clock"},
+    ], source="statusline")
+    want = datetime.fromtimestamp(secs, tz=timezone.utc).isoformat()
+    assert [w["resets_at"] for w in
+            allowance.read()["providers"]["claude"]["windows"]] == [want, want, None]
 
 
 def test_a_cache_without_a_reading_is_absence(state):

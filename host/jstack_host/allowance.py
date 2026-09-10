@@ -72,6 +72,11 @@ PROVIDERS = {
 STALE_AFTER = 900
 #: A refusal with no parseable reset clock still blocks for a while.
 REFUSAL_ASSUMED_SECONDS = 2700
+#: The furthest out a window rollover can honestly be. Claude quotes five
+#: hours and seven days, Codex a week; nothing any provider calls an allowance
+#: window is a month long, so a clock past this is a bad reading rather than a
+#: patient one, and it is dropped instead of drawn.
+MAX_RESET_HORIZON = 35 * 86_400
 WARN_PCT = 80
 CRITICAL_PCT = 95
 SOURCES = ("statusline", "poll", "refusal", "rollout", "cli-cache")
@@ -83,6 +88,10 @@ _CLI_WINDOWS = (("five_hour", "Session (5h)"), ("seven_day", "Week"))
 #: Severity ladder. `capped` is a window MEASURED at 100; `refused` is the
 #: provider actually turning a request away.
 _BAND_ORDER = {None: 0, "warn": 1, "critical": 2, "capped": 3, "refused": 4}
+
+#: Reset clocks already refused this process, so a cache that stays wrong is
+#: reported once rather than on every poll.
+_BAD_RESETS: set = set()
 
 
 # ---------------------------------------------------------------- state io
@@ -134,7 +143,64 @@ def _provider_slot(d: dict, provider: str) -> dict:
 
 # ---------------------------------------------------------------- recording
 
-def _norm_window(w: dict) -> dict:
+def _norm_reset(raw, source: str = "?", wid: str = "?") -> str | None:
+    """A reset clock this host is prepared to defend, or None.
+
+    **Neither tier's clock is ours.** The CLI cache is a read of a file another
+    program owns, and a recorded sample is whatever a hook forwarded out of
+    `rate_limits`. So the value is checked here rather than at the bar, because
+    the app renders `resets_at` verbatim and a countdown is the one field where
+    a wrong number still looks exactly like a right one — "resets in 1208d 21h"
+    under a five-hour window, which is what the bars drew on 2026-09-09.
+
+    Three shapes go in: an ISO instant (kept as written, so the payload does
+    not churn), an epoch number in seconds or milliseconds (Claude Code hands
+    the status line seconds), and junk. Two things come back out: a string, or
+    None — and **None is the honest answer**, the same one a provider that
+    quoted no clock gives. The bar then draws no line, which is what the app
+    already does for a reset it cannot read.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):  # a bool is an int; a clock is not either
+        return _note_bad_reset(raw, source, wid)
+    if isinstance(raw, (int, float)):
+        secs = float(raw) / 1000.0 if abs(float(raw)) > 1e11 else float(raw)
+        try:
+            iso = datetime.fromtimestamp(secs, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return _note_bad_reset(raw, source, wid)
+    else:
+        iso, secs = str(raw), _parse_iso(raw)
+        if secs is None:
+            return _note_bad_reset(raw, source, wid)
+    if secs - _now() > MAX_RESET_HORIZON:
+        return _note_bad_reset(raw, source, wid)
+    return iso
+
+
+def _note_bad_reset(raw, source: str, wid: str) -> None:
+    """Drop a clock, and leave the raw value where the next person can read it.
+
+    Deduped in memory rather than by file: a cache that stays wrong is read on
+    every poll, and a line per poll would be a log that buries its own finding.
+    Best-effort — a reader that cannot write must still answer.
+    """
+    key = (source, wid, repr(raw))
+    if key in _BAD_RESETS:
+        return None
+    _BAD_RESETS.add(key)
+    try:
+        line = json.dumps({"at": datetime.now(timezone.utc).isoformat(),
+                           "source": source, "window": wid, "resets_at": raw})
+        with open(hostenv.state_dir() / "allowance_rejects.jsonl", "a") as fh:
+            fh.write(line + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _norm_window(w: dict, source: str = "?") -> dict:
     pct = w.get("pct")
     if pct is not None:
         pct = max(0.0, min(100.0, float(pct)))
@@ -142,7 +208,7 @@ def _norm_window(w: dict) -> dict:
         "id": str(w["id"]),
         "label": str(w.get("label") or w["id"]),
         "pct": pct,
-        "resets_at": w.get("resets_at"),
+        "resets_at": _norm_reset(w.get("resets_at"), source, str(w.get("id"))),
     }
 
 
@@ -159,7 +225,7 @@ def record(provider: str, windows: list[dict], source: str = "statusline",
     if source not in SOURCES:
         raise ValueError(f"unknown source {source!r} (expected one of {SOURCES})")
     ts = sampled_at if sampled_at is not None else _now()
-    norm = [_norm_window(w) for w in windows]
+    norm = [_norm_window(w, source) for w in windows]
     with _Lock():
         d = _read_raw()
         slot = _provider_slot(d, provider)
@@ -242,7 +308,8 @@ def cli_cache_sample(path: Path | None = None) -> dict | None:
         sampled_at = 0.0
     return {"label": PROVIDERS["claude"], "source": "cli-cache",
             "sampled_at": sampled_at,
-            "windows": [_norm_window(w) for w in windows], "refusal": None}
+            "windows": [_norm_window(w, "cli-cache") for w in windows],
+            "refusal": None}
 
 
 # ---------------------------------------------------------------- reading
@@ -324,7 +391,13 @@ def read() -> dict:
             out["providers"][pid] = None
             continue
         age = now - float(p.get("sampled_at") or 0)
-        windows = [dict(w, band=_window_band(w)) for w in p.get("windows") or []]
+        # Normalised again on the way out, not just on the way in: a sample
+        # recorded before this host learned to check clocks is still sitting in
+        # the file, and a horizon is a judgment about NOW — the same stored
+        # value is fine today and nonsense once its window has been and gone.
+        windows = [dict(w, band=_window_band(w))
+                   for w in (_norm_window(w, p.get("source") or "?")
+                             for w in p.get("windows") or [])]
         refusal = p.get("refusal")
         active = _refusal_active(refusal)
         bands = [w.get("band") for w in windows]

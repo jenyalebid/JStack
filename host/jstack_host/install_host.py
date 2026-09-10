@@ -185,6 +185,16 @@ def render_plist(*, label: str = LABEL, port: int = DEFAULT_PORT,
     env["JREMOTE_STATE_DIR"] = str(state_dir if state_dir is not None
                                    else hostenv.state_dir())
 
+    # Pinned for the same reason the state dir is: launchd builds the job from
+    # the user record, not the shell that installed it, so a daemon that read
+    # the agents root on its own would fall through `$HOME/Agents` to nothing
+    # on any install whose agents live under `$JSTACK_ROOT`. Left unpinned,
+    # `active_agents()` came up reading the whole home directory as agents and
+    # `welcome` opened its first session in a CI checkout — the blank thread.
+    # Resolved now, while the installing shell still has `$JSTACK_ROOT`, and
+    # only when it does not already carry an explicit override.
+    env.setdefault("JREMOTE_INSTANCE_ROOT", str(hostenv.instance_root()))
+
     job = {
         "Label": label,
         "ProgramArguments": [

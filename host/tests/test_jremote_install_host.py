@@ -190,6 +190,29 @@ def test_the_state_dir_is_pinned_even_when_nobody_asked_for_one(monkeypatch, tmp
     assert env["JREMOTE_STATE_DIR"] == str(hostenv.state_dir())
 
 
+def test_the_agents_root_is_pinned_so_the_daemon_does_not_scan_home(monkeypatch, tmp_path):
+    """The blank-thread bug, at its source. launchd hands the daemon none of
+    the installing shell's `$JSTACK_ROOT`, so an unpinned agents root fell
+    through to `$HOME/Agents` — absent on a `--root` install — and the daemon
+    read the whole home directory as agents. The plist must carry the root the
+    installer resolved, so the daemon sees the same tree doctor just did."""
+    monkeypatch.delenv("JREMOTE_INSTANCE_ROOT", raising=False)
+    monkeypatch.setenv("JSTACK_ROOT", str(tmp_path / "jstack-root"))
+    hostenv.reset_profile()
+    env = plistlib.loads(install_host.render_plist(
+        logs=tmp_path))["EnvironmentVariables"]
+    assert env["JREMOTE_INSTANCE_ROOT"] == str(tmp_path / "jstack-root" / "Agents")
+
+
+def test_an_explicit_instance_root_wins_over_the_derived_one(monkeypatch, tmp_path):
+    monkeypatch.setenv("JSTACK_ROOT", str(tmp_path / "jstack-root"))
+    monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(tmp_path / "asked" / "Agents"))
+    hostenv.reset_profile()
+    env = plistlib.loads(install_host.render_plist(
+        logs=tmp_path))["EnvironmentVariables"]
+    assert env["JREMOTE_INSTANCE_ROOT"] == str(tmp_path / "asked" / "Agents")
+
+
 # ── the token ──
 
 def test_the_token_is_readable_only_by_its_owner(tmp_path):

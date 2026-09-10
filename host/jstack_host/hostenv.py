@@ -523,12 +523,33 @@ _profile = None
 
 
 def instance_root() -> Path:
-    """Where the default profile looks for agents."""
+    """Where the default profile looks for agents.
+
+    Order matters, and the last step is a safety rule, not a convenience:
+
+    · `JREMOTE_INSTANCE_ROOT` wins — the installer pins it into the daemon's
+      plist (launchd inherits no shell, so the daemon has this and nothing
+      else), and a test points it at a fixture.
+    · else `$JSTACK_ROOT/Agents` — the one tree the installer, the plugin and
+      `jstack-doctor` all resolve agents against. Honouring it here is what
+      makes the host agree with the doctor a person just watched pass.
+    · else `$HOME/Agents`, **even when that directory does not exist.**
+
+    The old last resort was a bare `$HOME`, and it was the blank-thread bug:
+    on an install whose agents live under `$JSTACK_ROOT` (not `~/Agents`),
+    `instance_root()` fell through to the home directory, `active_agents()`
+    read every folder in it — Desktop, Documents, a CI runner's checkout — as
+    an agent, and `welcome` opened its first session in the alphabetically
+    first one. An absent agents tree must read as *zero* agents, which
+    `_agent_dirs()` returns for a path that isn't there; a home full of
+    invented ones is the single answer this must never give."""
     env = os.environ.get("JREMOTE_INSTANCE_ROOT")
     if env:
         return Path(env).expanduser()
-    agents = HOME / "Agents"
-    return agents if agents.is_dir() else HOME
+    jstack_root = os.environ.get("JSTACK_ROOT")
+    if jstack_root:
+        return Path(jstack_root).expanduser() / "Agents"
+    return HOME / "Agents"
 
 
 def profile_module_name() -> str:

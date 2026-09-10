@@ -113,6 +113,44 @@ def test_auto_falls_back_to_default_without_lib(monkeypatch, tmp_path):
     assert hostenv.profile().name == "default"
 
 
+# ── instance_root resolution: the blank-thread bug ──
+
+def test_instance_root_derives_agents_from_jstack_root(monkeypatch, tmp_path):
+    """With no explicit override, the agents tree is `$JSTACK_ROOT/Agents` —
+    the one place the installer, the plugin and doctor all resolve against."""
+    monkeypatch.delenv("JREMOTE_INSTANCE_ROOT", raising=False)
+    monkeypatch.setenv("JSTACK_ROOT", str(tmp_path / "jstack-root"))
+    assert hostenv.instance_root() == tmp_path / "jstack-root" / "Agents"
+
+
+def test_instance_root_override_beats_jstack_root(monkeypatch, tmp_path):
+    """An explicit `JREMOTE_INSTANCE_ROOT` wins — it is what the plist pins."""
+    monkeypatch.setenv("JSTACK_ROOT", str(tmp_path / "jstack-root"))
+    monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(tmp_path / "explicit"))
+    assert hostenv.instance_root() == tmp_path / "explicit"
+
+
+def test_instance_root_never_falls_back_to_a_bare_home(monkeypatch, tmp_path):
+    """The blank-thread bug: with no override and no `$JSTACK_ROOT`, the last
+    resort must be `$HOME/Agents` — even absent — never the home directory
+    itself. A missing agents tree is zero agents; a bare `$HOME` made every
+    folder in it an agent, and `welcome` opened its first session in one."""
+    monkeypatch.delenv("JREMOTE_INSTANCE_ROOT", raising=False)
+    monkeypatch.delenv("JSTACK_ROOT", raising=False)
+    fake_home = tmp_path / "home"
+    (fake_home / "Desktop").mkdir(parents=True)
+    (fake_home / "actions-runner").mkdir()
+    monkeypatch.setattr(hostenv, "HOME", fake_home)
+    root = hostenv.instance_root()
+    assert root == fake_home / "Agents"
+    assert not root.exists()
+    # And the roster read off that absent tree is empty, not the home folders.
+    monkeypatch.setenv("JREMOTE_INSTANCE_ROOT", str(root))
+    monkeypatch.setenv("JREMOTE_HOST_PROFILE", "default")
+    hostenv.reset_profile()
+    assert hostenv.active_agents() == {}
+
+
 # ── the default profile: the filesystem is the roster ──
 
 def test_roster_is_the_directories(instance):

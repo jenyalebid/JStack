@@ -3,8 +3,8 @@
 #
 # Contract:
 #   place-issue --repo <owner/name> --issue <N> --status <column>
-#               [--board <title>] [--dry-run]
-#   place-issue --repo <owner/name> --list-boards
+#               [--board <title>] [--owner <login>] [--project-id <id>] [--dry-run]
+#   place-issue --repo <owner/name> [--owner <login>] --list-boards
 #
 # The companion to file-issue. file-issue answers "where does a NEW finding
 # go" — an intake column on the board its repo is linked to. This answers
@@ -12,10 +12,30 @@
 # different act: the issue already exists, nobody is triaging it, and the
 # column is a status the working session sets as it moves.
 #
-# Board and column are READ LIVE FROM GITHUB, by title, from the org that owns
-# the repo. Same reason as file-issue: a local board->id table is a second copy
-# of a fact GitHub owns, and second copies rot silently. Nothing is configured
-# per machine, so this works unchanged on any machine with `gh`.
+# WHICH BOARD IS A PROPERTY OF THE OPERATION, NOT OF THE REPO. One work board
+# tracks work across every repo the operation touches, and a Projects v2 board
+# accepts items from any repo — so the board is named by configuration, and the
+# repo's owner is only the last-resort default. Deriving it from the repo made
+# every out-of-org repo unplaceable: a personal account has no board of its own
+# to find, so the lookup matched nothing and the card never moved.
+#
+#   --project-id <id>   that board, whatever it is titled and whoever owns it
+#   --owner <login>     search THIS login's boards for --board's title
+#   config              board.project_id, else board.org, from the issue-work
+#                       config: $JSTACK_ISSUE_WORK_CONFIG, else
+#                       {config_dir}/issue_work.json
+#   --repo's owner      what it did before there was a config
+#
+# The config is the same file the host's card engine reads, so there is one
+# statement of which board this operation works on rather than two that can
+# disagree. A configured board id is used only when the caller has not asked to
+# look elsewhere: --owner, or a --board naming something other than the
+# configured board, both send the lookup back to searching by title.
+#
+# TITLE AND COLUMNS ARE STILL READ LIVE FROM GITHUB, by node id or by title.
+# Same reason as file-issue: a local board->column table is a second copy of a
+# fact GitHub owns, and second copies rot silently. Only the board's identity
+# is configured — a node id that never changes, not a set of option ids that do.
 #
 # Adding is idempotent — GitHub returns the existing item for an issue already
 # on the board — so a session that re-runs this after a resume does not
@@ -25,13 +45,15 @@
 #   no gh / not authed   -> exit 3, nothing placed
 #   board title unknown  -> exit 4, nothing placed, known titles listed
 #   ambiguous title      -> exit 4, nothing placed, matches listed
+#   configured id gone   -> exit 4, nothing placed, id and its source named
 #   unknown column       -> item IS on the board, column unset, exit 5 + options
 #
 # Last stdout line is machine-parseable:
 #   PLACED board=<title> status=<column|unset> item=<node-id>
 set -euo pipefail
 
-REPO="" ISSUE="" STATUS="" BOARD="Auto-Work" DRY=0 LIST=0
+REPO="" ISSUE="" STATUS="" BOARD="Auto-Work" BOARD_SET=0
+OWNER_ARG="" PROJECT_ARG="" DRY=0 LIST=0
 
 die() { echo "place-issue: $*" >&2; exit 64; }
 
@@ -40,7 +62,9 @@ while [[ $# -gt 0 ]]; do
     --repo)        REPO="${2:-}"; shift 2 ;;
     --issue)       ISSUE="${2:-}"; shift 2 ;;
     --status)      STATUS="${2:-}"; shift 2 ;;
-    --board)       BOARD="${2:-}"; shift 2 ;;
+    --board)       BOARD="${2:-}"; BOARD_SET=1; shift 2 ;;
+    --owner)       OWNER_ARG="${2:-}"; shift 2 ;;
+    --project-id)  PROJECT_ARG="${2:-}"; shift 2 ;;
     --list-boards) LIST=1; shift ;;
     --dry-run)     DRY=1; shift ;;
     -h|--help)     sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
@@ -50,35 +74,109 @@ done
 
 [[ -n "$REPO" ]] || die "--repo <owner/name> is required"
 [[ "$REPO" == */* ]] || die "--repo must be owner/name, got '$REPO'"
-OWNER="${REPO%%/*}"
-NAME="${REPO##*/}"
+REPO_OWNER="${REPO%%/*}"
+
+# Both name the board, and they can name different ones. Picking a winner would
+# make the losing flag a silent no-op on the one call whose whole job is to be
+# explicit about where the card goes.
+[[ -n "$PROJECT_ARG" && "$BOARD_SET" == "1" ]] \
+  && die "--project-id and --board both name a board — pass one"
+[[ -n "$PROJECT_ARG" && -n "$OWNER_ARG" ]] \
+  && die "--project-id already names the board; --owner has nothing left to search"
 
 command -v gh >/dev/null 2>&1 || { echo "place-issue: gh not on PATH — nothing placed" >&2; exit 3; }
 gh auth status >/dev/null 2>&1 || { echo "place-issue: gh not authenticated — nothing placed" >&2; exit 3; }
+
+# ── which board, and on whose account ───────────────────────────────────────
+eval "$(python3 - "$0" "$REPO_OWNER" "$OWNER_ARG" "$PROJECT_ARG" "$BOARD" "$BOARD_SET" <<'PY'
+import json, os, shlex, sys
+from pathlib import Path
+
+argv0, repo_owner, owner_arg, project_arg, board, board_set = sys.argv[1:7]
+
+# config_dir() carries the root derivation and its refusal to resolve inside
+# the shipping checkout. An install too old to have root.py, or one whose root
+# is declared somewhere that guard rejects, still gets an answer here — the
+# config is optional, and an unreadable one must not stop a placement that
+# --owner or the repo owner can still resolve.
+sys.path.insert(0, str(Path(argv0).resolve().parent.parent))
+try:
+    import root as _root
+    cfg_dir = _root.config_dir()
+except Exception:
+    cfg_dir = Path(os.environ.get("JSTACK_CONFIG_DIR") or (Path.home() / "Config"))
+
+path = Path(os.environ.get("JSTACK_ISSUE_WORK_CONFIG")
+            or (cfg_dir / "issue_work.json")).expanduser()
+try:
+    doc = json.loads(path.read_text())
+    board_cfg = doc.get("board") if isinstance(doc, dict) else None
+    board_cfg = board_cfg if isinstance(board_cfg, dict) else {}
+    found = True
+except (OSError, ValueError):
+    board_cfg, found = {}, False
+
+cfg_org = str(board_cfg.get("org") or "")
+cfg_pid = str(board_cfg.get("project_id") or "")
+cfg_title = str(board_cfg.get("title") or "")
+
+if owner_arg:
+    owner, owner_src = owner_arg, "--owner"
+elif cfg_org:
+    owner, owner_src = cfg_org, f"board.org in {path}"
+else:
+    owner, owner_src = repo_owner, "the --repo owner"
+
+pid, pid_src = "", ""
+if project_arg:
+    pid, pid_src = project_arg, "--project-id"
+elif cfg_pid and not owner_arg and (
+        board_set != "1" or board.strip().lower() == cfg_title.strip().lower()):
+    pid, pid_src = cfg_pid, f"board.project_id in {path}"
+
+def emit(k, v):
+    print(f"{k}={shlex.quote(str(v))}")
+
+emit("OWNER", owner)
+emit("OWNER_SRC", owner_src)
+emit("PROJECT_ID_DIRECT", pid)
+emit("PID_SRC", pid_src)
+emit("CFG_PATH", path)
+emit("CFG_FOUND", "1" if found else "0")
+PY
+)"
+
+[[ -n "${OWNER:-}" ]] || { echo "place-issue: could not resolve a board owner — nothing placed" >&2; exit 4; }
 
 # The owner may be an org or a user, and only ONE of the two selections can
 # resolve — the other always returns null plus a NOT_FOUND error, which makes
 # `gh` exit non-zero on a call that succeeded. So the exit code is deliberately
 # ignored and the *data* is what decides: asking for both in one document beats
 # probing with two round trips, and a personal-account repo is not a special case.
-BOARDS="$(gh api graphql -f query='
+owner_boards() {
+  gh api graphql -f query='
 query($owner:String!){
   organization(login:$owner){ projectsV2(first:50){ nodes{ id number title closed
     field(name:"Status"){ ... on ProjectV2SingleSelectField { id options { id name } } } } } }
   user(login:$owner){ projectsV2(first:50){ nodes{ id number title closed
     field(name:"Status"){ ... on ProjectV2SingleSelectField { id options { id name } } } } } }
-}' -F owner="$OWNER" 2>/dev/null || true)"
+}' -F owner="$OWNER" 2>/dev/null || true
+}
 
-printf '%s' "$BOARDS" | python3 -c '
+readable_or_die() {
+  printf '%s' "$1" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin).get("data") or {}
 except Exception:
     raise SystemExit(1)
 raise SystemExit(0 if (d.get("organization") or d.get("user")) else 1)
-' || { echo "place-issue: cannot read projects for $OWNER — nothing placed" >&2; exit 4; }
+' || { echo "place-issue: cannot read projects for $OWNER ($OWNER_SRC) — nothing placed" >&2; exit 4; }
+}
 
 if [[ "$LIST" == "1" ]]; then
+  BOARDS="$(owner_boards)"
+  readable_or_die "$BOARDS"
   printf '%s' "$BOARDS" | python3 -c '
 import json, sys
 d = json.load(sys.stdin).get("data") or {}
@@ -99,7 +197,49 @@ fi
 [[ -n "$ISSUE"  ]] || die "--issue <N> is required"
 [[ -n "$STATUS" ]] || die "--status <column> is required — placing without one leaves the card in an undefined state"
 
-eval "$(printf '%s' "$BOARDS" | python3 -c '
+if [[ -n "${PROJECT_ID_DIRECT:-}" ]]; then
+  # A board named by id is the board — no title match, so renaming it on
+  # GitHub does not quietly stop the cards from moving.
+  eval "$(gh api graphql -f query='
+query($id:ID!){ node(id:$id){ ... on ProjectV2 { id number title closed
+  field(name:"Status"){ ... on ProjectV2SingleSelectField { id options { id name } } } } } }' \
+    -F id="$PROJECT_ID_DIRECT" 2>/dev/null | python3 -c '
+import json, shlex, sys
+try:
+    p = (json.load(sys.stdin).get("data") or {}).get("node") or {}
+except Exception:
+    p = {}
+
+def emit(k, v):
+    print(f"{k}={shlex.quote(str(v))}")
+
+if not p.get("id"):
+    emit("HIT", 0); emit("WHY", "does not resolve to a project board"); raise SystemExit
+if p.get("closed"):
+    emit("HIT", 0); emit("WHY", "names a closed board (%s)" % p.get("title", "?")); raise SystemExit
+
+status = sys.argv[1].strip().lower()
+f = p.get("field") or {}
+opt = next((o for o in (f.get("options") or [])
+            if o["name"].strip().lower() == status), None)
+emit("HIT", 1)
+emit("PROJECT_ID", p["id"])
+emit("BOARD_TITLE", p["title"])
+emit("FIELD_ID", f.get("id") or "")
+emit("OPT_ID", opt["id"] if opt else "")
+emit("OPT_NAME", opt["name"] if opt else "")
+emit("ALL_OPTS", ", ".join(o["name"] for o in (f.get("options") or [])))
+' "$STATUS")"
+
+  if [[ "${HIT:-0}" != "1" ]]; then
+    echo "place-issue: board id $PROJECT_ID_DIRECT ($PID_SRC) ${WHY:-could not be read} — nothing placed" >&2
+    exit 4
+  fi
+else
+  BOARDS="$(owner_boards)"
+  readable_or_die "$BOARDS"
+
+  eval "$(printf '%s' "$BOARDS" | python3 -c '
 import json, shlex, sys
 d = json.load(sys.stdin).get("data") or {}
 nodes = []
@@ -137,10 +277,17 @@ emit("OPT_NAME", opt["name"] if opt else "")
 emit("ALL_OPTS", ", ".join(o["name"] for o in (f.get("options") or [])))
 ' "$BOARD" "$STATUS")"
 
-if [[ "${HIT:-0}" != "1" ]]; then
-  echo "place-issue: '$BOARD' matched ${HIT:-0} boards on $OWNER — nothing placed. Known:" >&2
-  printf '%s\n' "${TITLES:-<none>}" >&2
-  exit 4
+  if [[ "${HIT:-0}" != "1" ]]; then
+    echo "place-issue: '$BOARD' matched ${HIT:-0} boards on $OWNER (from $OWNER_SRC) — nothing placed. Known:" >&2
+    printf '%s\n' "${TITLES:-<none>}" >&2
+    # The exact shape of the out-of-org failure: no board configured, so the
+    # search fell back to a repo owner who has none. Name the fix, not just the
+    # miss — this is the message the next caller has to act on.
+    if [[ "${CFG_FOUND:-0}" != "1" && "$OWNER" == "$REPO_OWNER" && -z "$OWNER_ARG" ]]; then
+      echo "place-issue: no board config at ${CFG_PATH:-<unset>} — set JSTACK_ISSUE_WORK_CONFIG, or pass --owner/--project-id, to place from a repo whose owner has no board" >&2
+    fi
+    exit 4
+  fi
 fi
 
 if [[ "$DRY" == "1" ]]; then

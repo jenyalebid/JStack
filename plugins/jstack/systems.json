@@ -439,19 +439,21 @@
           "id": "place-issue",
           "kind": "subsystem",
           "name": "Board Placement",
-          "description": "Puts an existing issue on a work board and sets its status column, resolving board and column live from GitHub by title.",
+          "description": "Puts an existing issue on a work board and sets its status column. The board is named by configuration (board.project_id, else board.org) or by --project-id/--owner; its title and columns are read live from GitHub.",
           "code": [
             "bin/place-issue"
           ],
-          "config": [],
+          "config": [
+            "$JSTACK_ISSUE_WORK_CONFIG, else {config_dir}/issue_work.json - board.org, board.project_id, board.title"
+          ],
           "docs": [],
           "test": {
             "type": "script",
             "path": "tests/place-issue.sh",
-            "description": "Drives the real binary against a stub gh: the card is added AND its column set, and a column that could not be set is reported as unset with exit 5 rather than claimed; an exact board title beats a substring that also matches, an ambiguous or unknown title exits 4 without placing, and a closed board is not a placement target; a user-owned account resolves like an org one even though gh exits non-zero on that call; the dry run mutates nothing and exits 5 on a column that does not exist."
+            "description": "Drives the real binary against a stub gh: the card is added AND its column set, and a column that could not be set is reported as unset with exit 5 rather than claimed; an exact board title beats a substring that also matches, an ambiguous or unknown title exits 4 without placing, and a closed board is not a placement target; a user-owned account resolves like an org one even though gh exits non-zero on that call; the dry run mutates nothing and exits 5 on a column that does not exist. The config half asserts which account was searched and which board id was used rather than the receipt, because the stub answers the same boards to every owner: an out-of-org repo searches board.org and never the repo owner, board.project_id skips the owner search and survives a rename, --owner and a --board naming another board both send it back to a title search, and a stale or closed configured id exits 4 naming the id and the file it came from."
           },
           "subsystems": [],
-          "notes": "Companion to file-issue, and a different act: file-issue answers where a NEW finding goes (an intake column, by repo linkage); this answers where work-in-progress is visible (a work board, by title). Adding is idempotent, so a re-fired event does not duplicate the card. Sessions never place their own cards - a host card engine shells to this binary on GitHub events. Board titles are read live for the same reason file-issue reads linkage live - a local board->id table is a second copy of a fact GitHub owns."
+          "notes": "Companion to file-issue, and a different act: file-issue answers where a NEW finding goes (an intake column, by repo linkage); this answers where work-in-progress is visible (a work board, named by config). Adding is idempotent, so a re-fired event does not duplicate the card. Sessions never place their own cards - a host card engine shells to this binary on GitHub events. Which board is a property of the operation, not of the repo: one board tracks work across every repo, a Projects v2 board accepts items from any repo, and resolving it from the repo owner instead made every out-of-org repo unplaceable because a personal account has no board of its own. Only the board's identity is configured - a node id that does not change; its title and its columns are still read live for the same reason file-issue reads linkage live, because a local board->column table is a second copy of a fact GitHub owns."
         }
       ]
     },

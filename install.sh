@@ -681,10 +681,18 @@ else
     run_long "downloading and verifying the app" bash "$APP_INSTALLER"
     case $? in
         0) ok "app installed in ${LAST_ELAPSED}s"; APP_INSTALLED=1 ;;
-        # 3 is "no release published yet" — a fact about the repository that no
-        # reader of this output can act on. It gets a note; a warn here would
-        # end a clean install on a line that looks like something to fix.
-        3) note "no signed release published yet — the app is not part of this install" ;;
+        # 3 is "no release published yet". This used to be a note, on the
+        # reasoning that a reader cannot act on a fact about the repository and
+        # a warn would end a clean install on a line that looks like something
+        # to fix. Both halves of that were wrong. The app IS something to fix —
+        # it is the only thing on the machine that can reach the host this
+        # install just built — and the line the reader could not act on was the
+        # one that never mentioned the consequence: pairing is gated on the app
+        # being here, so a note here silently took step 10 out too. An install
+        # that ends with a host, no client and no code, under a green summary,
+        # is the failure this whole script exists to stop.
+        3) warn "no signed release published yet — no app, and nothing paired.
+     Install it later with: $APP_INSTALLER" ;;
         *) warn "app install reported a problem — re-run $APP_INSTALLER to see it: $LAST_LOG" ;;
     esac
 fi
@@ -707,6 +715,18 @@ fi
 # the address before the machine has a resolvable name, and the only one
 # authorized to mint a credential. Which is the point: adding a machine is
 # something the hub does, never something an app talks its way into.
+
+# A host with no app still mints a code. The old gate required BOTH halves, so
+# a machine that got the host and missed the app skipped this step in silence —
+# and the code is exactly what that machine needs, because the app is going to
+# arrive later by hand and will have nothing to enrol with when it does.
+if [ "$HOST_INSTALLED" = "1" ] && [ "$APP_INSTALLED" = "0" ] && [ "$DRY_RUN" = "0" ] \
+   && [ -x "$HOME/.local/bin/jstack-host" ]; then
+    step "Pairing"
+    note "no app on this Mac yet — here is a code for whichever device gets one first"
+    "$HOME/.local/bin/jstack-host" pair "$(scutil --get ComputerName 2>/dev/null || hostname -s)" \
+        || warn "could not mint a pairing code — run \`jstack-host pair\` once the app is installed"
+fi
 
 if [ "$HOST_INSTALLED" = "1" ] && [ "$APP_INSTALLED" = "1" ] && [ "$DRY_RUN" = "0" ]; then
     step "Pairing the app to this Mac"

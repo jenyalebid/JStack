@@ -108,6 +108,16 @@ def _tunnel_pairing_available() -> bool:
     return tunnel.can_pair()
 
 
+def _usage_caps_available() -> bool:
+    # The same two conditions `/usage/caps` itself answers with. Importability
+    # alone said True on any machine with the package installed — while the
+    # route, which also asks `allowance.available()`, said False wherever no
+    # provider sample and no CLI cache exist to draw. A capability map that
+    # disagrees with its own screen is the thing `/host` exists to prevent.
+    mod = _optional(_FEATURES["usage_caps"])
+    return mod is not None and _has_allowance(mod)
+
+
 #: Features backed by something other than an importable module, probed the way
 #: they are actually used. Tags come from JStack's `log_event` binary, so
 #: `_optional()` — which asks the import system — could only ever answer for the
@@ -117,7 +127,8 @@ def _tunnel_pairing_available() -> bool:
 #: imports — what it needs is the hub's `wg_peer.py` beside it, which only the
 #: machine that owns the mesh has.
 _PROBED_FEATURES = {"tags": _tags_available,
-                    "tunnel_pairing": _tunnel_pairing_available}
+                    "tunnel_pairing": _tunnel_pairing_available,
+                    "usage_caps": _usage_caps_available}
 
 
 def _probe(name: str) -> bool:

@@ -69,8 +69,30 @@ def _cmd_pair(args) -> int:
     mins = row["expires_in"] // 60
     print(f"\n    {row['code']}\n")
     print(f"for {row['name']} — good for {mins} minute{'' if mins == 1 else 's'}.")
-    print("In the app on that device: Instances › Add a Mac — this Mac's "
-          "address, and this code.")
+
+    # The address, printed — not named.
+    #
+    # This line used to read "this Mac's address, and this code", which tells
+    # somebody standing at another device to type a thing it never tells them.
+    # The host is the only party that knows what to put there (the app on the
+    # new device cannot ask a machine it has not reached yet), `addresses` has
+    # answered it since the `/host` work, and nothing was printing it. A code
+    # beside a blank is half a pairing, and the half that was missing is the
+    # half people got stuck on.
+    from . import addresses
+    port = getattr(args, "port", None) or addresses.DEFAULT_PORT
+    found = addresses.reachable(port)
+    print("\nIn the app on that device: Instances › Add a Mac.")
+    if found:
+        print("\nAddress — use the first one that fits:\n")
+        for a in found:
+            print(f"    {a['url']:<34}  {a['note']}")
+    else:
+        # Never silence. A host that cannot name an address is a host somebody
+        # has to go find one for, and saying so beats printing nothing.
+        print("\n  This Mac could not work out its own address — check "
+              "`jstack-host where` and your network.")
+    print(f"\nThen the code above: {row['code']}")
     return 0
 
 

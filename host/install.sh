@@ -5,6 +5,7 @@
 #   ./install.sh --dry-run                 # print the plan, touch nothing
 #   ./install.sh --update                  # pull, reinstall, restart
 #   ./install.sh --uninstall               # take it back off
+#   ./install.sh --purge                   # and delete everything it wrote
 #
 # What it does, and nothing else: clone (or update) the JStack checkout, build a
 # private virtualenv beside the package, install the host into it, and register
@@ -35,6 +36,7 @@ ASSUME_YES=0
 DRY_RUN=0
 DO_UPDATE=0
 DO_UNINSTALL=0
+DO_PURGE=0
 FORCE=0
 WANT_MENUBAR=1
 WANT_PAIR=1
@@ -50,6 +52,8 @@ usage: install.sh [options]
   --dry-run          print what would happen and change nothing
   --update           git pull the checkout, reinstall, restart the host
   --uninstall        remove the LaunchAgent (your state and token stay)
+  --purge            uninstall AND delete state, token and credentials —
+                     permanent, and every paired device must pair again
   --port N           port to serve on (default 9090)
   --bind ADDR        bind address (default 0.0.0.0 — see below)
   --state-dir DIR    where this host keeps its state
@@ -77,6 +81,7 @@ while [ $# -gt 0 ]; do
         --dry-run)    DRY_RUN=1 ;;
         --update)     DO_UPDATE=1 ;;
         --uninstall)  DO_UNINSTALL=1 ;;
+        --purge)      DO_UNINSTALL=1; DO_PURGE=1 ;;
         --force)      FORCE=1 ;;
         --no-menubar) WANT_MENUBAR=0 ;;
         --no-pair)    WANT_PAIR=0 ;;
@@ -266,9 +271,66 @@ if [ "$DO_UNINSTALL" = "1" ]; then
     # indicates is gone is the one state worse than no icon at all.
     [ -x "$HOST_DIR/menubar/install.sh" ] && \
         run "$HOST_DIR/menubar/install.sh" --uninstall >/dev/null 2>&1
+    # The paths come from the host, never from literals here. It is the only
+    # thing that knows which state dir it was actually installed with, and a
+    # purge that deletes a guessed path is a purge that leaves the real one and
+    # takes something else. Read BEFORE the uninstall, while it can still answer.
+    if [ "$DO_PURGE" = "1" ] && [ -x "$HOSTBIN" ]; then
+        PURGE_PATHS="$("$HOSTBIN" where 2>/dev/null \
+            | awk '$1 == "state" || $1 == "credentials" { print $2 }')"
+    fi
+
     run "$HOSTBIN" uninstall
-    printf '\n%sThe host is off this Mac.%s Your state and token were left in place,\n' "$B" "$Z"
-    printf 'so reinstalling brings the same instance back rather than a new one.\n'
+
+    if [ "$DO_PURGE" != "1" ]; then
+        printf '\n%sThe host is off this Mac.%s Your state and token were left in place,\n' "$B" "$Z"
+        printf 'so reinstalling brings the same instance back rather than a new one.\n'
+        printf 'To remove those too: %s--purge%s\n' "$B" "$Z"
+        exit 0
+    fi
+
+    # ── purge ───────────────────────────────────────────────────────────────
+    #
+    # This is the irreversible one, and it is the only thing in this installer
+    # that destroys anything. State holds the token every paired device is
+    # carrying, the device list, and the board — deleting it does not just
+    # remove the host, it makes every phone and laptop that trusted this Mac a
+    # stranger. So it is named out loud and confirmed, never a silent extra.
+    step "Removing state"
+    if [ -z "${PURGE_PATHS:-}" ]; then
+        warn "could not ask the host where its state is — nothing removed"
+        note "find it with \`jstack-host where\` and remove those paths by hand"
+        exit 1
+    fi
+
+    printf '\nThis deletes, permanently:\n\n'
+    printf '%s\n' "$PURGE_PATHS" | sed 's/^/    /'
+    printf '\nEvery paired device has to be paired again afterwards.\n'
+
+    if [ "$ASSUME_YES" != "1" ] && [ "$DRY_RUN" != "1" ]; then
+        printf '\nType the word purge to confirm: '
+        read -r reply </dev/tty || reply=""
+        [ "$reply" = "purge" ] || { note "not confirmed — nothing was removed"; exit 1; }
+    fi
+
+    printf '%s\n' "$PURGE_PATHS" | while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        # Never let an empty or root-ish value through to rm -rf. A `where`
+        # that answered blank would otherwise expand to `rm -rf ` or `rm -rf /`.
+        case "$p" in
+            ""|"/"|"$HOME"|"$HOME/") warn "refusing to remove $p"; continue ;;
+        esac
+        run rm -rf "$p" && ok "removed $p"
+    done
+
+    # The convenience symlink last: while it exists, `jstack-host` still runs
+    # and reports paths that are now gone, which reads as a broken install
+    # rather than a removed one.
+    [ -L "$BIN_DIR/jstack-host" ] && run rm -f "$BIN_DIR/jstack-host" \
+        && ok "removed $BIN_DIR/jstack-host"
+
+    printf '\n%sThe host and everything it wrote are gone.%s\n' "$B" "$Z"
+    printf 'The checkout at %s is untouched — remove it yourself if you want it gone.\n' "$CHECKOUT"
     exit 0
 fi
 

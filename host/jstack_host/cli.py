@@ -66,6 +66,28 @@ def _cmd_pair(args) -> int:
     row = enrolment.mint_code(args.name, created_by="", ttl=args.ttl)
     if getattr(args, "open", False):
         return _hand_to_app(row)
+
+    from . import addresses
+    port = getattr(args, "port", None) or addresses.DEFAULT_PORT
+    found = addresses.reachable(port)
+
+    if getattr(args, "json", False):
+        # One parseable answer for the surfaces that draw this themselves.
+        # The menu bar dialog renders it as a QR — the one thing stdout prose
+        # cannot carry — so it asks for the parts, not the paragraph.
+        import json
+        from urllib.parse import urlencode
+        payload = {"name": row["name"], "code": row["code"],
+                   "expires_in": row["expires_in"], "port": port,
+                   "addresses": found}
+        if found:
+            query = {"code": row["code"], "url": found[0]["url"]}
+            if row["name"]:
+                query["name"] = row["name"]
+            payload["link"] = "jremote://pair?" + urlencode(query)
+        print(json.dumps(payload))
+        return 0
+
     mins = row["expires_in"] // 60
     print(f"\n    {row['code']}\n")
     print(f"for {row['name']} — good for {mins} minute{'' if mins == 1 else 's'}.")
@@ -79,9 +101,6 @@ def _cmd_pair(args) -> int:
     # answered it since the `/host` work, and nothing was printing it. A code
     # beside a blank is half a pairing, and the half that was missing is the
     # half people got stuck on.
-    from . import addresses
-    port = getattr(args, "port", None) or addresses.DEFAULT_PORT
-    found = addresses.reachable(port)
     print("\nIn the app on that device: Instances › Add a Mac.")
     if found:
         print("\nAddress — use the first one that fits:\n")
@@ -352,6 +371,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--open", action="store_true",
                    help="hand the code to the app on this Mac instead of "
                         "printing it — it pairs itself and opens")
+    p.add_argument("--json", action="store_true",
+                   help="print the code, addresses and pair link as JSON — "
+                        "what the menu bar dialog draws its QR from")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_pair)
 

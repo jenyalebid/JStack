@@ -599,3 +599,29 @@ def test_pair_open_does_not_wait_on_a_link_nothing_took(open_pair, store):
     started = time.monotonic()
     assert cli._hand_to_app(out) == 1
     assert time.monotonic() - started < 0.3
+
+
+def test_pair_json_puts_the_first_address_and_the_code_in_the_link(
+        store, monkeypatch, capsys):
+    """What the menu bar's QR is made of. A link carrying any address other
+    than the one the list says to try first — above all the mesh one a
+    still-pairing device cannot reach — scans cleanly and then times out,
+    which the person reads as the pairing failing."""
+    import json
+    from types import SimpleNamespace
+    from jstack_host import addresses, cli, devices
+
+    monkeypatch.setattr(cli, "_adopt", lambda a: None)
+    monkeypatch.setattr(devices, "provisioned", lambda: True)
+    monkeypatch.setattr(addresses, "_inet_addrs",
+                        lambda: ["10.66.0.1", "192.168.0.106"])
+    monkeypatch.setattr(addresses, "_hostname", lambda: "work-mac")
+
+    args = SimpleNamespace(name="Friend phone", ttl=600, open=False,
+                           json=True, state_dir=None, port=None)
+    assert cli._cmd_pair(args) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [a["kind"] for a in out["addresses"]] == ["lan", "local", "mesh"]
+    assert out["link"].startswith("jremote://pair?")
+    assert "url=http%3A%2F%2F192.168.0.106%3A9090" in out["link"]
+    assert out["code"] in out["link"]

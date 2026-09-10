@@ -26,6 +26,7 @@
 //
 
 import AppKit
+import CoreImage
 import Foundation
 import Network
 
@@ -647,6 +648,39 @@ enum JRemoteGlyph {
         // that reads as pasted on.
         image.isTemplate = true
         return image
+    }
+}
+
+/// What `jstack-host pair --json` answers with — the parts the pairing dialog
+/// draws, instead of the paragraph it used to echo. `link` is the same
+/// `jremote://pair` URL the installer fires at a local app; here it goes into
+/// a QR so a *remote* device's camera can be the thing that fires it.
+struct MintedPairing {
+    let name: String
+    let code: String
+    let expiresIn: Int
+    let firstAddress: String?
+    let link: String?
+
+    init?(json: String) {
+        guard let data = json.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data),
+              let top = raw as? [String: Any],
+              let code = top["code"] as? String, !code.isEmpty
+        else { return nil }
+        self.code = code
+        name = (top["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "a device"
+        expiresIn = top["expires_in"] as? Int ?? 600
+        let addresses = top["addresses"] as? [[String: Any]] ?? []
+        firstAddress = addresses.first?["url"] as? String
+        link = top["link"] as? String
+    }
+
+    /// "10 minutes", from seconds — the dialog says how long the code lives,
+    /// and a number nobody rounds for them is homework.
+    var validFor: String {
+        let mins = max(1, expiresIn / 60)
+        return mins == 1 ? "1 minute" : "\(mins) minutes"
     }
 }
 
@@ -1316,23 +1350,87 @@ final class StatusController: NSObject {
         guard ask.runModal() == .alertFirstButtonReturn else { return }
 
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
-        let result = HostControl.run(binary, ["pair", name.isEmpty ? "My device" : name])
+        let result = HostControl.run(binary,
+                                     ["pair", name.isEmpty ? "My device" : name, "--json"])
 
+        guard result.code == 0, let minted = MintedPairing(json: result.out) else {
+            // Nothing to draw — say what the host said, verbatim. This is also
+            // the path for a host binary too old to answer `--json`.
+            let failed = NSAlert()
+            failed.alertStyle = .warning
+            failed.messageText = "Could not mint a code"
+            failed.informativeText = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
+            failed.runModal()
+            return
+        }
+
+        // One action, not a menu of addresses. The QR carries the address and
+        // the code together — the exact link the app already answers — so the
+        // person points a camera instead of choosing which of three URLs
+        // "fits". The typed path stays underneath as the fallback, with ONE
+        // address in it: the first one, which the host orders reachable-first.
         let shown = NSAlert()
-        shown.messageText = result.code == 0 ? "Enrolment code" : "Could not mint a code"
-        shown.informativeText = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
-        shown.addButton(withTitle: "Copy")
+        shown.messageText = "Pair \(minted.name)"
+        shown.informativeText = minted.link != nil
+            ? "Point that device's camera at the code — it opens the app and "
+            + "connects on its own.\n\nBy hand instead: in the app, "
+            + "Instances › Add a Mac — address \(minted.firstAddress ?? "?"), "
+            + "then the code. Good for \(minted.validFor)."
+            : "This Mac could not work out an address a second device can "
+            + "reach — connect both machines to the same network and mint a "
+            + "new code. This one is good for \(minted.validFor)."
+        shown.accessoryView = pairAccessory(minted)
         shown.addButton(withTitle: "Done")
-        if shown.runModal() == .alertFirstButtonReturn {
+        shown.addButton(withTitle: "Copy Code")
+        if shown.runModal() == .alertSecondButtonReturn {
             // The code alone, not the whole message — what gets pasted into the
             // app is the code, and a paste that carries the explanation with it
             // is a paste that fails.
-            let code = result.out.split(whereSeparator: \.isNewline)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .first { $0.count >= 6 && !$0.contains(" ") } ?? result.out
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(code, forType: .string)
+            NSPasteboard.general.setString(minted.code, forType: .string)
         }
+    }
+
+    /// The QR above the code it encodes. The code is drawn even though it is
+    /// inside the QR: the fallback for a device with no camera to point is
+    /// typing, and typing needs something legible to type.
+    private func pairAccessory(_ minted: MintedPairing) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+
+        if let link = minted.link, let qr = Self.qrImage(link, side: 180) {
+            let image = NSImageView(image: qr)
+            image.imageScaling = .scaleNone
+            stack.addArrangedSubview(image)
+        }
+
+        let code = NSTextField(labelWithString: minted.code)
+        code.font = .monospacedSystemFont(ofSize: 22, weight: .semibold)
+        code.isSelectable = true
+        stack.addArrangedSubview(code)
+
+        stack.frame = NSRect(x: 0, y: 0, width: 260,
+                             height: stack.fittingSize.height)
+        return stack
+    }
+
+    /// `string` as a QR the size a dialog wants. Nearest-neighbour scaling by
+    /// transform, not by resize — a QR with soft edges is a QR a phone camera
+    /// hunts on.
+    static func qrImage(_ string: String, side: CGFloat) -> NSImage? {
+        guard let data = string.data(using: .ascii),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let scale = (side / output.extent.width).rounded(.down)
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let rep = NSCIImageRep(ciImage: scaled)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
     }
 
     // MARK: Settings

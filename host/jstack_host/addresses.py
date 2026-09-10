@@ -11,14 +11,18 @@ the receiving one, which is the worst shape a setup step can have.
 So the host answers for itself, off its own interfaces, in the order a reader
 should try them:
 
-  · **mesh** — `10.66.0.x`. True from anywhere once the tunnel is up, and the
-    only one that survives leaving the building. First because it is the
-    answer a person should end up using.
-  · **lan** — this network's private IPv4. True while both machines are on the
-    same network, which is where most pairing actually happens.
+  · **lan** — this network's private IPv4. True while both machines are on
+    the same network, which is where pairing happens: the device being
+    enrolled is, by definition, not on the mesh yet. First because it is the
+    one address a new device can act on *now*.
   · **local** — the Bonjour name. Survives a DHCP move, which the numeric LAN
-    address does not; last because `.local` resolution is the flakiest of the
-    three on a guest network.
+    address does not; second because `.local` resolution is flakier than a
+    number on a guest network.
+  · **mesh** — `10.66.0.x`. The address a device ends up *using* once its
+    tunnel is up — and the one a device that is still pairing can never
+    reach. Last, and only present on a host that has a tunnel at all: a
+    pairing screen that led with it handed every new device its own
+    unreachable first try, which is exactly what this module exists to stop.
 
 **Loopback is deliberately absent.** It is never useful to a second machine,
 and an address list whose first entry cannot work teaches the reader to
@@ -86,10 +90,6 @@ def classify(inets: list[str], hostname: str, port: int) -> list[dict]:
             continue
         (mesh if ip in MESH_SUBNET else lan).append(str(ip))
 
-    for addr in mesh:
-        out.append({"kind": "mesh", "host": addr,
-                    "url": f"http://{addr}:{port}",
-                    "note": "works from anywhere once the tunnel is on"})
     for addr in lan:
         out.append({"kind": "lan", "host": addr,
                     "url": f"http://{addr}:{port}",
@@ -102,6 +102,12 @@ def classify(inets: list[str], hostname: str, port: int) -> list[dict]:
         out.append({"kind": "local", "host": name,
                     "url": f"http://{name}:{port}",
                     "note": "survives this Mac changing address"})
+
+    for addr in mesh:
+        out.append({"kind": "mesh", "host": addr,
+                    "url": f"http://{addr}:{port}",
+                    "note": "for a device already paired onto this Mac's "
+                            "tunnel"})
     return out
 
 

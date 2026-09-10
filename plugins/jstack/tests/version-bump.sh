@@ -21,6 +21,17 @@
 
 set -u
 
+# Main is what installs consume — the cache-stranding failure this gate exists
+# for can only happen there. The pre-push hook reads the refs being pushed and
+# sets JSTACK_PUSH_TO_MAIN; a push that never touches refs/heads/main cannot
+# strand anyone and passes free, which is what lets work land on branches
+# without minting a release per commit. Standalone runs (variable unset) keep
+# the full check: asking "is main consistent?" by hand should always answer.
+if [ "${JSTACK_PUSH_TO_MAIN:-1}" = "0" ]; then
+  echo "  ok   version-bump gate — not a push to main, bump not required"
+  exit 0
+fi
+
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 

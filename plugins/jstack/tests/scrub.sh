@@ -71,6 +71,10 @@ ALLOW = {
         "fixtures proving routing and tie-breaks against the shipped default board",
     ("plugins/jstack/tests/file-issue.sh", "auto-work"):
         "fixture board title matching the shipped default place-issue routes to",
+    ("PRODUCT.md", "jremote"):
+        "the product definition names the product's own client app — the "
+        "same self-naming right host/ and app/ carry, scoped to the one "
+        "file whose job is to say what the product is",
     ("install.sh", "jarvis"):
         "the shipped default name for the first agent workspace — a product "
         "default the owner chose, printed in --help and used when the prompt "

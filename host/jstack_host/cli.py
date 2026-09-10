@@ -4,6 +4,7 @@
     jstack-host pair "iPhone"    a code to type into the app
     jstack-host pair --open      pair the app on this Mac, no code typed
     jstack-host attach CODE --parent URL   join a parent hub as a managed hub
+    jstack-host open             guide this Mac into open mode, and prove it
     jstack-host welcome          open the app on a session that checks this Mac
     jstack-host status           is it up, and what does it know
     jstack-host doctor           what is missing, and how to fix each thing
@@ -368,6 +369,88 @@ def _cmd_mode(args) -> int:
     return 0
 
 
+def _cmd_open(args) -> int:
+    """Guide this Mac into open mode, and prove the forward before claiming it.
+
+    Open mode is a host holding its OWN way in from outside — a UDP port forward
+    on the router to this Mac's WireGuard endpoint. This walks that: it names the
+    exact one-line forward to enter, asks the router to make it automatically
+    (NAT-PMP) where it can, and finishes with the honest verification — which is
+    not a scan but an observation, because a WireGuard endpoint is silent to any
+    packet without a valid key and cannot be probed from outside. So the last
+    line asks the one thing that DOES prove it: bring a paired device onto
+    cellular and open the app; the handshake that lands is the proof.
+
+    `--verify` skips the setup and reports only that observation — the command to
+    run after producing the evidence. `_adopt` first, like every command that
+    reads this host's tunnel state.
+
+    Setting the endpoint stays advisory on purpose: this prints the
+    `install_hub.sh --endpoint` line to run rather than editing the live tunnel
+    behind a `mode`-shaped command. Turning a declaration into a persisted config
+    is a deliberate step, not a side effect of asking about reachability.
+    """
+    _adopt(args)
+    from . import open_mode
+    if getattr(args, "verify", False):
+        v = open_mode.verify()
+        if getattr(args, "json", False):
+            import json
+            print(json.dumps(v))
+            return 0
+        mark = "verified" if v["verified"] else "not yet verified"
+        print(f"off-network reachability: {mark}")
+        print(f"  {v['note']}")
+        return 0
+
+    try:
+        g = open_mode.guide()
+    except open_mode.OpenModeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        import json
+        print(json.dumps(g))
+        return 0
+
+    fwd = g["forward"]
+    print("To make this Mac reachable off-network, forward one UDP port on your "
+          "router:\n")
+    print(f"    {fwd['line']}\n")
+    print(f"    protocol       UDP")
+    print(f"    external port  {fwd['external_port']}")
+    print(f"    to this Mac    {fwd['internal_ip']}:{fwd['internal_port']}")
+
+    mapping = g["mapping"]
+    if mapping["ok"]:
+        print(f"\nThe router accepted this automatically — {mapping['detail']}.")
+    else:
+        print(f"\nDo it by hand in the router's admin page — {mapping['detail']}.")
+
+    if g["endpoint"]:
+        print(f"\nYour public endpoint is {g['endpoint']}. Record it so devices "
+              "off-network can dial in:\n")
+        print(f"    sudo bash install_hub.sh --endpoint {g['endpoint']}")
+    elif g["public_ip"]:
+        print(f"\nYour public endpoint is {g['public_ip']}:{g['wg_port']}.")
+    else:
+        print("\nThe router did not reveal its public address over NAT-PMP — "
+              "find it in the router's status page, then the endpoint is "
+              f"<that address>:{g['wg_port']}.")
+
+    v = g["verification"]
+    print("\nReachability is not something this Mac can prove by scanning — a "
+          "WireGuard endpoint stays silent to any packet without a key. The one "
+          "proof is a real connection from outside:\n")
+    if v["verified"]:
+        print(f"  ✓ {v['note']}")
+    else:
+        print(f"  {v['note']}")
+        print("\n  When you have, run `jstack-host open --verify`.")
+    return 0
+
+
 def _cmd_version(args) -> int:
     from importlib.metadata import PackageNotFoundError, version
     try:
@@ -475,6 +558,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("mode", help="is this host local, open or managed")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_mode)
+
+    p = sub.add_parser("open",
+                       help="guide this Mac into open mode and prove it's reachable")
+    p.add_argument("--verify", action="store_true",
+                   help="skip the setup; only report whether an off-network "
+                        "device has been observed reaching this Mac")
+    p.add_argument("--json", action="store_true",
+                   help="print the guide (or --verify result) as JSON")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_open)
 
     p = sub.add_parser("version", help="the installed package version")
     p.set_defaults(fn=_cmd_version)

@@ -28,7 +28,21 @@ def test_a_hub_that_publishes_an_endpoint_is_open():
     v = mode.classify(leaf_installed=False, on_mesh=True,
                       is_hub=True, endpoint=True)
     assert v["mode"] == "open"
-    assert "not verified" in v["note"]
+    # Publishing an endpoint is a declaration, not proof — until an off-network
+    # handshake is observed the note says so and `verified` is False.
+    assert v["verified"] is False
+    assert "not yet verified" in v["note"]
+
+
+def test_a_hub_with_an_observed_off_network_handshake_is_verified():
+    # off_net_verified is what open_mode.verify() proved: a public-source
+    # handshake reached this hub. The declaration becomes a claim.
+    v = mode.classify(leaf_installed=False, on_mesh=True,
+                      is_hub=True, endpoint=True, off_net_verified=True)
+    assert v["mode"] == "open"
+    assert v["verified"] is True
+    assert "verified" in v["note"]
+    assert "not yet verified" not in v["note"]
 
 
 def test_a_hub_with_no_endpoint_is_local_not_open():
@@ -103,5 +117,37 @@ def test_current_wires_the_seams(monkeypatch):
     monkeypatch.setattr(mode, "_leaf_installed", lambda: False)
     monkeypatch.setattr(mode.addresses, "_inet_addrs", lambda: ["192.168.1.9"])
     monkeypatch.setattr(mode.tunnel, "can_pair", lambda: False)
+    monkeypatch.setattr(mode, "_endpoint_declared", lambda: False)
+    assert mode.current()["mode"] == "local"
+
+
+def test_current_consults_open_mode_verify_only_for_a_hub_with_an_endpoint(monkeypatch):
+    # A hub with an endpoint is the one shape whose openness can be verified, so
+    # it is the one shape current() reads open_mode.verify() for — and it passes
+    # that verdict through to the note.
+    from jstack_host import open_mode
+    calls = []
+    monkeypatch.setattr(open_mode, "verify",
+                        lambda *a, **k: calls.append(1) or {"verified": True})
+    monkeypatch.setattr(mode, "_leaf_installed", lambda: False)
+    monkeypatch.setattr(mode.addresses, "_inet_addrs", lambda: ["10.66.0.1"])
+    monkeypatch.setattr(mode.tunnel, "can_pair", lambda: True)
+    monkeypatch.setattr(mode, "_endpoint_declared", lambda: True)
+    v = mode.current()
+    assert calls == [1]
+    assert v["mode"] == "open"
+    assert v["verified"] is True
+
+
+def test_current_does_not_shell_to_wg_for_a_local_host(monkeypatch):
+    # A host with no endpoint has no open claim to verify, so current() must not
+    # reach for open_mode.verify() — reading it shells out to `wg` for nothing.
+    from jstack_host import open_mode
+    monkeypatch.setattr(open_mode, "verify",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("verify() must not run for a non-hub")))
+    monkeypatch.setattr(mode, "_leaf_installed", lambda: False)
+    monkeypatch.setattr(mode.addresses, "_inet_addrs", lambda: ["192.168.1.9"])
+    monkeypatch.setattr(mode.tunnel, "can_pair", lambda: True)
     monkeypatch.setattr(mode, "_endpoint_declared", lambda: False)
     assert mode.current()["mode"] == "local"

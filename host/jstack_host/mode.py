@@ -96,8 +96,14 @@ def _endpoint_declared() -> bool:
 
 
 def classify(*, leaf_installed: bool, on_mesh: bool,
-             is_hub: bool, endpoint: bool) -> dict:
-    """The taxonomy, from four facts and nothing else. Pure on purpose."""
+             is_hub: bool, endpoint: bool, off_net_verified: bool = False) -> dict:
+    """The taxonomy, from a handful of facts and nothing else. Pure on purpose.
+
+    `off_net_verified` is the one that turns open mode's declaration into a
+    claim: it is True only when an off-network handshake has actually been
+    observed (open_mode.verify). An open host without it publishes an endpoint
+    but has not been shown to be reachable through it, and says exactly that.
+    """
     if leaf_installed and not is_hub:
         return {
             "mode": "managed",
@@ -117,8 +123,13 @@ def classify(*, leaf_installed: bool, on_mesh: bool,
         return {
             "mode": "open",
             "live": True,
-            "note": ("publishes a WireGuard endpoint for off-network access — "
-                     "reachability is declared here, not verified"),
+            "verified": off_net_verified,
+            "note": ("publishes a WireGuard endpoint and an off-network device "
+                     "has reached it — reachable off-network, verified"
+                     if off_net_verified else
+                     "publishes a WireGuard endpoint for off-network access — "
+                     "reachability is declared here, not yet verified (run "
+                     "`jstack-host open` to prove it)"),
         }
     return {
         "mode": "local",
@@ -128,10 +139,21 @@ def classify(*, leaf_installed: bool, on_mesh: bool,
 
 
 def current() -> dict:
-    """This machine's mode, read off its own interfaces and tunnel state."""
+    """This machine's mode, read off its own interfaces and tunnel state.
+
+    The off-network verification is only consulted for a host that could be open
+    — a hub with an endpoint — because reading it shells out to `wg`, and a
+    local or managed host has no open claim to verify."""
+    is_hub = tunnel.can_pair()
+    endpoint = _endpoint_declared()
+    verified = False
+    if is_hub and endpoint:
+        from . import open_mode
+        verified = open_mode.verify()["verified"]
     return classify(
         leaf_installed=_leaf_installed(),
         on_mesh=_on_mesh(addresses._inet_addrs()),
-        is_hub=tunnel.can_pair(),
-        endpoint=_endpoint_declared(),
+        is_hub=is_hub,
+        endpoint=endpoint,
+        off_net_verified=verified,
     )

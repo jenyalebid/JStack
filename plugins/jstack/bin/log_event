@@ -714,10 +714,22 @@ def normalize_tag(name: str) -> str:
 
 
 def list_tags(session_id: str = "") -> list[dict]:
-    """Every tag with its description and how many sessions carry it.
+    """Every tag with its description, the seats that carry it, and how many
+    sessions do.
 
-    This is the vocabulary a writer reads before picking one. Ordered by use
-    so the tags that already mean something are the ones seen first.
+    This is the vocabulary a writer reads before picking one, so the order IS
+    the decision: the tags that already mean something are the ones seen first.
+    "Mean something" is breadth, not depth — a tag is by definition a subject
+    several sessions share ACROSS seats, so the rank is the number of distinct
+    seats that have filed under it, session count only breaking a tie.
+
+    Depth alone would let one recurring job own the top of the list. A nightly
+    reuses its subject tag every run — by design, that IS the tag — so ranking
+    on raw session count grows that one tag without bound and buries the
+    cross-cutting subjects a picker most needs to see. Breadth is immune to
+    cadence: a job hammering one tag from its single seat counts once, however
+    many nights it runs. The session count is still carried and shown; it just
+    no longer decides the order (issue #3).
 
     With `session_id`, each row also says whether THAT session already carries
     the tag (`carried`). The vocabulary and the session's own membership are
@@ -725,9 +737,14 @@ def list_tags(session_id: str = "") -> list[dict]:
     without saying which is already on invites re-setting what is set."""
     con = connect()
     rows = con.execute(
-        "SELECT t.name, t.description, COUNT(st.session_id), t.created_at"
-        " FROM tags t LEFT JOIN session_tags st ON st.tag_id = t.id"
-        " GROUP BY t.id ORDER BY COUNT(st.session_id) DESC, t.name",
+        "SELECT t.name, t.description,"
+        " COUNT(DISTINCT e.agent || '/' || e.submode) AS seats,"
+        " COUNT(DISTINCT st.session_id) AS sessions, t.created_at"
+        " FROM tags t"
+        " LEFT JOIN session_tags st ON st.tag_id = t.id"
+        " LEFT JOIN entries e ON e.session_id = st.session_id"
+        " GROUP BY t.id"
+        " ORDER BY seats DESC, sessions DESC, t.name",
     ).fetchall()
     mine: set[str] = set()
     if session_id:
@@ -735,9 +752,9 @@ def list_tags(session_id: str = "") -> list[dict]:
             "SELECT t.name FROM session_tags st JOIN tags t ON t.id = st.tag_id"
             " WHERE st.session_id = ?", (session_id,)).fetchall()}
     con.close()
-    return [{"name": n, "description": d, "sessions": c, "created_at": ca,
-             "carried": n in mine}
-            for n, d, c, ca in rows]
+    return [{"name": n, "description": d, "seats": seats, "sessions": sess,
+             "created_at": ca, "carried": n in mine}
+            for n, d, seats, sess, ca in rows]
 
 
 def create_tag(name: str, description: str) -> str | None:
@@ -1189,7 +1206,8 @@ def _cmd_tag(rest: list[str]) -> int:
             w = max(len(t["name"]) for t in tags)
             for t in tags:
                 mark = ("● " if t["carried"] else "  ") if sid else ""
-                print(f"{mark}{t['name']:<{w}}  {t['sessions']:>4} sessions  {t['description']}")
+                print(f"{mark}{t['name']:<{w}}  {t['seats']:>2} seats  "
+                      f"{t['sessions']:>4} sessions  {t['description']}")
         return 0
 
     if verb == "new":

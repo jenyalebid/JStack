@@ -410,6 +410,43 @@ out=$("$LOG_EVENT" tail kim/chat -n 10 --tag payments)
 [[ "$out" == *"Kim on the remote"* && "$out" != *"Kim on the daemons"* ]] \
   && pass "tail --tag filters through session_id" || fail "tail --tag ($out)"
 
+# ---- the pick list ranks on breadth, not depth (issue #3) -------------------
+# A recurring job reuses ONE subject tag every run, all from its single seat.
+# Ranking on raw session count would float that tag to the top and bury a
+# subject genuinely shared across the fleet — so the vocabulary a writer picks
+# from ranks on distinct seats, session count only breaking a tie.
+"$LOG_EVENT" tag new nightly --description "a recurring job's own subject" >/dev/null 2>&1
+"$LOG_EVENT" tag new shared  --description "a subject several seats touch" >/dev/null 2>&1
+# nightly — three sessions, all one seat → depth 3, breadth 1
+"$LOG_EVENT" ann/chat --at 01:00 --date "$DAY" --session ni-1 "run one"   >/dev/null
+"$LOG_EVENT" ann/chat --at 01:01 --date "$DAY" --session ni-2 "run two"   >/dev/null
+"$LOG_EVENT" ann/chat --at 01:02 --date "$DAY" --session ni-3 "run three" >/dev/null
+for s in ni-1 ni-2 ni-3; do "$LOG_EVENT" tag set nightly --session "$s" >/dev/null; done
+# shared — two sessions, two seats → depth 2, breadth 2
+"$LOG_EVENT" bob/chat --at 02:00 --date "$DAY" --session sh-1 "bob's turn" >/dev/null
+"$LOG_EVENT" cyd/chat --at 02:05 --date "$DAY" --session sh-2 "cyd's turn" >/dev/null
+"$LOG_EVENT" tag set shared --session sh-1 >/dev/null
+"$LOG_EVENT" tag set shared --session sh-2 >/dev/null
+
+out=$("$LOG_EVENT" tag list)
+ps=$(printf '%s\n' "$out" | grep -n '^shared[[:space:]]'  | head -1 | cut -d: -f1)
+pn=$(printf '%s\n' "$out" | grep -n '^nightly[[:space:]]' | head -1 | cut -d: -f1)
+[[ -n "$ps" && -n "$pn" && "$ps" -lt "$pn" ]] \
+  && pass "breadth (2 seats) outranks depth (3 sessions) in the pick list" \
+  || fail "breadth ranking (shared@$ps nightly@$pn)"$'\n'"$out"
+"$LOG_EVENT" tag list --json > "$TMP/tags.json"
+python3 - "$TMP/tags.json" <<'PY' && pass "each tag carries its seats and its sessions" || fail "tag list --json seats/sessions"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+by = {t["name"]: t for t in rows}
+n, s = by["nightly"], by["shared"]
+assert n["seats"] == 1 and n["sessions"] == 3, n
+assert s["seats"] == 2 and s["sessions"] == 2, s
+# the JSON is already ranked: shared (breadth 2) precedes nightly (breadth 1)
+order = [t["name"] for t in rows]
+assert order.index("shared") < order.index("nightly"), order
+PY
+
 # ---- editing the vocabulary: describe, rename, delete ----------------------
 # A vocabulary worth sharing is one that can be corrected. Minting was the only
 # verb for a while, which made every typo permanent and every retired subject a

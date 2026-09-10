@@ -156,6 +156,118 @@ def test_an_enrolment_announces_itself(store, _no_live_tunnel_and_no_alerts):
                for b in _no_live_tunnel_and_no_alerts)
 
 
+# ── re-pairing: one row per device, not one per pairing ──────────────────────
+#
+# Redemption used to mint unconditionally, so re-running the installer — which
+# is supported and meant to be a no-op — left another live credential behind
+# every time: eleven pairings of one Mac, eight device rows, measured on a
+# clean VM. The device presents the credential it already holds, the host
+# re-keys that row, and the secret it replaced dies in the same write.
+
+def _wait_for_alerts(alerts):
+    for _ in range(50):                       # _announce is threaded
+        if alerts:
+            return alerts
+        time.sleep(0.02)
+    return alerts
+
+
+def test_re_pairing_re_keys_the_one_row_instead_of_adding_another(store):
+    first = enrolment.redeem(_mint(store, name="My Laptop")[0], "198.51.100.4")
+    second = enrolment.redeem(_mint(store, name="work-mac")[0], "198.51.100.4",
+                              device_token=first["token"])
+    assert second["device"]["id"] == first["device"]["id"]
+    assert len(store.list_devices()) == 1
+    assert (first["superseded"], second["superseded"]) == (False, True)
+    # The name is the row's, not the second code's: a device that exists has a
+    # name the user may have chosen, and pairing again is not renaming.
+    assert second["device"]["name"] == "My Laptop"
+
+
+def test_the_superseded_token_stops_working(store):
+    """Retired, not merely orphaned. A row that kept working under its old
+    secret would be a credential nobody was told about and nobody would revoke
+    — which is what eight leftover rows on a VM actually were."""
+    first = enrolment.redeem(_mint(store)[0], "198.51.100.4")
+    second = enrolment.redeem(_mint(store)[0], "198.51.100.4",
+                              device_token=first["token"])
+    assert second["token"] != first["token"]
+    assert devices.authenticate(first["token"]) is None
+    assert devices.authenticate(second["token"]) == second["device"]["id"]
+
+
+def test_a_prior_token_that_proves_nothing_costs_the_caller_nothing(store):
+    """Unknown, mistyped, malformed: the code is already spent by the time the
+    token is looked at, so every one of them falls through to a plain mint. A
+    redemption that refused over a token it merely offered would take a
+    credential the caller can never ask for again."""
+    for offered in ("", "nonsense", "jr1.", "jr1.nosuchdevice.secret"):
+        out = enrolment.redeem(_mint(store)[0], "198.51.100.4",
+                               device_token=offered)
+        assert devices.authenticate(out["token"]) == out["device"]["id"]
+        assert out["superseded"] is False
+    assert len(store.list_devices()) == 4
+
+
+def test_a_revoked_device_cannot_re_key_its_way_back_in(store):
+    """The re-key must not be a way around revocation. A revoked device still
+    holding its token gets a fresh row — one the user can see and revoke
+    again — and never its old one back."""
+    first = enrolment.redeem(_mint(store)[0], "198.51.100.4")
+    devices.revoke(first["device"]["id"])
+    second = enrolment.redeem(_mint(store)[0], "198.51.100.4",
+                              device_token=first["token"])
+    assert second["device"]["id"] != first["device"]["id"]
+    assert second["superseded"] is False
+    assert store.device(first["device"]["id"])["revoked_at"] is not None
+    assert devices.authenticate(first["token"]) is None
+
+
+def test_the_shared_rows_are_never_re_keyed_by_a_pairing(store):
+    """`legacy` is the token file and `host-internal` is the host's own
+    plumbing — both are held by parties that are not the device pairing. One
+    app re-pairing must not re-key the command line out of its credential."""
+    for shared, secret in ((devices.LEGACY_ID, "the-token-file"),
+                           (devices.INTERNAL_ID, "internal-secret")):
+        store.add_device(shared, shared, devices._hash(secret))
+        presented = (secret if shared == devices.LEGACY_ID
+                     else f"{devices.TOKEN_PREFIX}.{shared}.{secret}")
+        out = enrolment.redeem(_mint(store)[0], "198.51.100.4",
+                               device_token=presented)
+        assert out["device"]["id"] != shared
+        assert out["superseded"] is False
+        assert devices.authenticate(presented) == shared   # still theirs
+
+
+def test_a_prior_token_never_grandfathers_a_row_onto_an_empty_host(store,
+                                                                   monkeypatch):
+    """The re-key reads the table directly instead of calling `authenticate`,
+    which folds the token file into row `legacy` on first sight. Routed through
+    that, an unauthenticated redemption presenting junk would WRITE a device
+    row — the exact accumulation this whole path exists to stop."""
+    monkeypatch.setattr("jstack_host.auth._expected_token",
+                        lambda: "the-token-file")
+    out = enrolment.redeem(_mint(store)[0], "198.51.100.4",
+                           device_token="the-token-file")
+    rows = store.list_devices()
+    assert [r["id"] for r in rows] == [out["device"]["id"]]
+    assert devices.LEGACY_ID not in [r["id"] for r in rows]
+
+
+def test_a_re_pairing_says_so_instead_of_claiming_a_new_device(store,
+                                                              _no_live_tunnel_and_no_alerts):
+    """A device that was not here before is the alarming event. An alert that
+    described a routine re-pairing in the same words would spend the alarm
+    until nobody read either."""
+    first = enrolment.redeem(_mint(store, name="work-mac")[0], "198.51.100.4")
+    _wait_for_alerts(_no_live_tunnel_and_no_alerts).clear()
+    enrolment.redeem(_mint(store)[0], "198.51.100.4",
+                     device_token=first["token"])
+    said = " ".join(_wait_for_alerts(_no_live_tunnel_and_no_alerts))
+    assert "re-paired with" in said and "no longer works" in said
+    assert "joined" not in said
+
+
 # ── revoking the minter revokes its codes ────────────────────────────────────
 
 def test_a_code_minted_by_a_revoked_device_is_dead(store):
@@ -348,6 +460,30 @@ def test_redeeming_needs_no_bearer_token_at_all(client, store):
     r = anon.post("/api/jremote/v1/enrolment/redeem", json={"code": code})
     assert r.status_code == 200
     assert devices.authenticate(r.json()["token"]) == r.json()["device"]["id"]
+
+
+def test_the_api_carries_the_prior_token_through_to_the_re_key(client, store):
+    """The one wire field the app fills in. Without it the host cannot tell a
+    device pairing again from a device it has never seen — it cannot read one
+    out of a code, and the token is the only thing in the request that proves
+    anything."""
+    def a_code():
+        return client.post("/api/jremote/v1/enrolment/codes",
+                           json={"name": "work-mac"}).json()["code"]
+
+    anon = TestClient(app)                       # no Authorization header
+    before = len(client.get("/api/jremote/v1/devices").json()["devices"])
+    first = anon.post("/api/jremote/v1/enrolment/redeem",
+                      json={"code": a_code()}).json()
+    r = anon.post("/api/jremote/v1/enrolment/redeem",
+                  json={"code": a_code(), "device_token": first["token"]})
+    assert r.status_code == 200
+    assert r.json()["device"]["id"] == first["device"]["id"]
+    assert r.json()["superseded"] is True
+
+    rows = client.get("/api/jremote/v1/devices").json()["devices"]
+    assert len(rows) == before + 1               # two pairings, one new row
+    assert devices.authenticate(first["token"]) is None
 
 
 def test_minting_a_code_needs_a_token_but_not_the_lan(client, store):

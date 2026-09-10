@@ -12,6 +12,8 @@
 #     predates it
 #   - a broken resolver spec raises instead of silently running elsewhere
 #   - permission_mode defaults to bypassPermissions and resolves job>category>default
+#   - a run killed by an unrefreshable OAuth session scores `auth_expired`
+#     (spawned and adopted alike), defers a retry, and parks past the cap
 #   - VTIMEZONE is derived from the zone (DST, last-Sunday, and no-DST cases)
 #   - registry round-trip: add a job, read it back, remove it
 #   - the daemon actually boots and serves /health
@@ -291,6 +293,164 @@ c = {"tight": {"permission_mode": "acceptEdits"}}
 assert "permission_mode" in resolve.INHERITED_KEYS
 assert resolve.resolve_setting({"category": "tight"}, "permission_mode", d, c) == "acceptEdits"
 assert resolve.resolve_setting({"category": "tight", "permission_mode": "plan"}, "permission_mode", d, c) == "plan"
+'
+
+# ── auth-expiry classification and deferred retry ──
+#
+# The failure these cover: a run whose claude child died on
+# "Failed to authenticate: OAuth session expired and could not be refreshed"
+# used to score `error`, the hard-fault status — no retry, and a daily job
+# dropped its whole day silently (2026-09-07 and 09-08, same job, both times).
+
+check "auth expiry matches the family, not one literal, and not a dead login" '
+from scheduler import runner
+line = "Failed to authenticate: OAuth session expired and could not be refreshed"
+assert runner.is_auth_expired(line)
+assert runner.is_auth_expired("Skipping: OAuth token expired and refresh failed (re-login required)")
+assert runner.is_auth_expired("error: the oauth session has expired")
+# "Please run /login" is a login no retry can fix — it must stay a hard error.
+assert not runner.is_auth_expired("Please run /login")
+assert not runner.is_auth_expired("Failed to authenticate. Fetching token: bad request")
+# and the arm does not poach the neighbouring families
+assert not runner.is_auth_expired("API Error: 529 Overloaded")
+assert not runner.is_usage_limit(line)
+assert not runner.is_transient_api_error(line)
+'
+
+check "auth_expired is its own status, ordered ahead of api_error" '
+from datetime import datetime, timezone
+from scheduler import config, runner
+r = runner.Run(job={"id": "j", "payload": {"message": "x"}},
+               defaults=dict(config.BUILTIN_DEFAULTS),
+               scheduled_for=datetime.now(timezone.utc),
+               on_finish=lambda *a, **k: None)
+r.auth_expired = True
+r.transient_api_error = True
+assert r._status(1) == "auth_expired", r._status(1)
+r.rate_limited = True
+assert r._status(1) == "rate_limited", r._status(1)   # usage limit still wins
+r.kill_reason = "stall"
+assert r._status(1) == "stalled", r._status(1)        # a kill still wins over all
+'
+
+check "an ADOPTED run scores auth_expired in the same order" '
+from scheduler import config, runner
+config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+(config.LOGS_DIR / "adopted-auth.out").write_text(
+    "Failed to authenticate: OAuth session expired and could not be refreshed\n")
+a = runner.AdoptedRun("j", {"run_id": "adopted-auth"}, {"id": "j"},
+                      dict(config.BUILTIN_DEFAULTS), lambda *a, **k: None)
+# The auth line is non-empty stdout, which the evidence arm below reads as a
+# COMPLETED run — without its own arm an adopted auth failure scores ok.
+assert a._exited_status(None) == "auth_expired", a._exited_status(None)
+'
+
+check "an auth expiry defers a retry instead of hard-failing" '
+from datetime import datetime, timezone
+from scheduler import engine
+
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "auth-defer", "agent_id": "plain", "enabled": True}
+
+
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+
+
+e = engine.Engine(now_fn=lambda: NOW)
+e._on_run_finish(FakeRun(), status="auth_expired", exit_code=1,
+                 kill_reason=None, summary="")
+st = e.state["auth-defer"]
+assert st["last_status"] == "auth_expired", st
+# pinned a few minutes out, NOT fired again in the same breath
+assert st["next_run_at_ms"] == int(NOW.timestamp() * 1000) + engine._AUTH_RETRY_SECONDS * 1000, st
+assert st["auth_retries"] == 1, st
+# a retry is coming, so the streak that drives alerting must not move
+assert int(st.get("consecutive_errors") or 0) == 0, st
+'
+
+check "the auth retry cap parks the job as a hard failure" '
+from datetime import datetime, timezone
+from scheduler import engine
+
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "auth-cap", "agent_id": "plain", "enabled": True}
+
+
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+
+
+e = engine.Engine(now_fn=lambda: NOW)
+for _ in range(engine._MAX_AUTH_RETRIES):
+    e._on_run_finish(FakeRun(), status="auth_expired", exit_code=1,
+                     kill_reason=None, summary="")
+st = e.state["auth-cap"]
+assert st["auth_retries"] == engine._MAX_AUTH_RETRIES, st
+pinned = st["next_run_at_ms"]
+e._on_run_finish(FakeRun(), status="auth_expired", exit_code=1,
+                 kill_reason=None, summary="")
+assert st["next_run_at_ms"] == pinned, st          # no further defer booked
+assert st["auth_retries"] == engine._MAX_AUTH_RETRIES, st
+# a login that never comes back has to become visible
+assert st["consecutive_errors"] == 1, st
+assert "re-login" in st["last_error"], st
+'
+
+check "a later auth expiry starts a fresh retry budget" '
+from datetime import datetime, timedelta, timezone
+from scheduler import engine
+
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "auth-episode", "agent_id": "plain", "enabled": True}
+
+
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+
+
+now = NOW
+e = engine.Engine(now_fn=lambda: now)
+for _ in range(engine._MAX_AUTH_RETRIES + 1):
+    e._on_run_finish(FakeRun(), status="auth_expired", exit_code=1,
+                     kill_reason=None, summary="")
+st = e.state["auth-episode"]
+assert st["consecutive_errors"] == 1, st            # cap spent today
+now = NOW + timedelta(days=1)                       # tomorrow: a NEW fault
+e._on_run_finish(FakeRun(), status="auth_expired", exit_code=1,
+                 kill_reason=None, summary="")
+assert st["auth_retries"] == 1, st
+assert st["next_run_at_ms"] == int(now.timestamp() * 1000) + engine._AUTH_RETRY_SECONDS * 1000, st
+assert st["consecutive_errors"] == 1, st            # still 1 — the retry is live again
+'
+
+check "a successful run clears the auth retry budget" '
+from datetime import datetime, timezone
+from scheduler import engine
+
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "auth-clear", "agent_id": "plain", "enabled": True}
+
+
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+
+
+e = engine.Engine(now_fn=lambda: NOW)
+e._on_run_finish(FakeRun(), status="auth_expired", exit_code=1,
+                 kill_reason=None, summary="")
+e._on_run_finish(FakeRun(), status="ok", exit_code=0, kill_reason=None, summary="done")
+st = e.state["auth-clear"]
+assert st["auth_retries"] == 0, st
+assert "auth_last_fail_ms" not in st, st
 '
 
 # ── ics VTIMEZONE derivation ──

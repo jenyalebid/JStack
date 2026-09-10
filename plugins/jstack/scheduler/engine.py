@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import config, journal, occurrences, registry, runner
+from . import config, journal, occurrences, registry, runner, spawn
 
 
 def _log(msg: str) -> None:
@@ -328,15 +328,21 @@ class Engine:
         st = self.state.setdefault(jid, {})
         failed_run_id = f"spawnfail-{int(time.time() * 1000)}"
         now_ms = _ms(self._now())
+        st["last_status"] = "error"
+        st["last_error"] = f"spawn failure: {error}"
+        st["consecutive_errors"] = int(st.get("consecutive_errors") or 0) + 1
+        # A spawn failure that will be retried below is not terminal; one that
+        # will not (a retry that itself failed, or retry disabled) is the run
+        # dying for good, so it delivers on the same terms as a finished run.
+        will_retry = retry_of is None and eff.get("retry_on_stall", True)
+        delivery = ("not-requested" if will_retry
+                    else self._deliver_failure(job, eff, st, None))
         journal.append(jid, journal.finished_record(
             job_id=jid, agent_id=job.get("agent_id", ""), status="error",
             summary=f"spawn failure: {error}", session_id="", run_at_ms=_ms(scheduled_for),
             duration_ms=0, next_run_at_ms=st.get("next_run_at_ms"),
             model=eff.get("model") or "", run_id=failed_run_id, spawned_at_ms=now_ms,
-            exit_code=None, kill_reason=None, retry_of=retry_of))
-        st["last_status"] = "error"
-        st["last_error"] = f"spawn failure: {error}"
-        st["consecutive_errors"] = int(st.get("consecutive_errors") or 0) + 1
+            exit_code=None, kill_reason=None, retry_of=retry_of, delivery=delivery))
         journal.save_state(self.state)
         if retry_of is None and eff.get("retry_on_stall", True):
             _log(f"retrying {jid} after spawn failure")
@@ -358,22 +364,8 @@ class Engine:
             ]
             now_ms = _ms(self._now())
             duration_ms = max(0, now_ms - run.spawned_at_ms)
-            journal.append(jid, journal.finished_record(
-                job_id=jid,
-                agent_id=run.job.get("agent_id", ""),
-                status=status,
-                summary=summary,
-                session_id=run.session_id or "",
-                run_at_ms=run.scheduled_for_ms,
-                duration_ms=duration_ms,
-                next_run_at_ms=st.get("next_run_at_ms"),
-                model=run.model,
-                run_id=run.run_id,
-                spawned_at_ms=run.spawned_at_ms,
-                exit_code=exit_code,
-                kill_reason=kill_reason,
-                retry_of=run.retry_of,
-            ))
+            job = self._job_by_id(jid) or run.job
+            eff = registry.effective(job, self.defaults(), self.categories())
             st["last_run_at_ms"] = run.scheduled_for_ms
             st["last_status"] = status
             st["last_duration_ms"] = duration_ms
@@ -404,11 +396,42 @@ class Engine:
             else:
                 st["consecutive_errors"] = int(st.get("consecutive_errors") or 0) + 1
                 st["last_error"] = status + (f" ({kill_reason})" if kill_reason else "")
+
+            # A finish that will not recover in-band is a TERMINAL failure —
+            # deliver it if the job asked. rate_limited and an auth expiry with
+            # retries left are transient (a defer is booked below); a stall /
+            # ttft / api_error that WILL be retried this cycle is not terminal
+            # either. Everything else that is not ok has nothing coming, and is
+            # exactly the silent failure #17 exists to end. Computed here so the
+            # record written below carries the delivery outcome, not a guess.
+            transient = kill_reason in ("stall", "ttft") or status == "api_error"
+            will_retry = (status != "ok" and transient
+                          and eff.get("retry_on_stall", True)
+                          and run.retry_of is None and job.get("enabled", True))
+            terminal_failure = (status not in ("ok", "rate_limited")
+                                and not auth_retry_left and not will_retry)
+            delivery = (self._deliver_failure(job, eff, st, run.session_id)
+                        if terminal_failure else "not-requested")
+
+            journal.append(jid, journal.finished_record(
+                job_id=jid,
+                agent_id=run.job.get("agent_id", ""),
+                status=status,
+                summary=summary,
+                session_id=run.session_id or "",
+                run_at_ms=run.scheduled_for_ms,
+                duration_ms=duration_ms,
+                next_run_at_ms=st.get("next_run_at_ms"),
+                model=run.model,
+                run_id=run.run_id,
+                spawned_at_ms=run.spawned_at_ms,
+                exit_code=exit_code,
+                kill_reason=kill_reason,
+                retry_of=run.retry_of,
+                delivery=delivery,
+            ))
             journal.save_state(self.state)
             _log(f"finished {jid} run={run.run_id} status={status}")
-
-            job = self._job_by_id(jid) or run.job
-            eff = registry.effective(job, self.defaults(), self.categories())
 
             # Rate-limited: reschedule to just after the reset (once/recurring
             # alike — a rate-limited once job must be retried, never parked).
@@ -458,6 +481,40 @@ class Engine:
                 retried = True
             if (job.get("schedule") or {}).get("kind") == "once" and not retried:
                 self._finalize_once(job, status)
+
+    def _deliver_failure(self, job: dict, eff: dict, st: dict,
+                         session_id: "str|None") -> str:
+        """Push a terminal failure through the install's failure_notifier when
+        the job opted in, and return the deliveryStatus to stamp on the record:
+        'delivered', 'failed' (the notifier raised), 'no-notifier' (opted in but
+        the install ships none), or 'not-requested' (opt-out).
+
+        A notifier that raises is logged and swallowed. A delivery fault must
+        never become a scheduler fault — turning one job's failed alert into
+        every job's stalled daemon would be strictly worse than the silence
+        this exists to end."""
+        if not eff.get("notify_on_failure"):
+            return "not-requested"
+        spec = config.install().get("failure_notifier")
+        if not spec:
+            _log(f"notify: {job.get('id')} opted into failure delivery but the "
+                 f"install ships no failure_notifier")
+            return "no-notifier"
+        payload = {
+            "job_id": job.get("id"),
+            "agent_id": job.get("agent_id", ""),
+            "status": st.get("last_status"),
+            "error": st.get("last_error"),
+            "consecutive_errors": int(st.get("consecutive_errors") or 0),
+            "session_id": session_id,
+        }
+        try:
+            spawn._load_hook(spec)(payload)
+            return "delivered"
+        except Exception as e:
+            _log(f"notify: failure_notifier {spec!r} raised for "
+                 f"{job.get('id')}: {e!r}")
+            return "failed"
 
     def _defer_for_rate_limit(self, job: dict, st: dict, run) -> bool:
         """Pin next_run to just after the quoted reset so the job actually runs

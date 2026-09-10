@@ -466,6 +466,153 @@ assert st["auth_retries"] == 0, st
 assert "auth_last_fail_ms" not in st, st
 '
 
+# ── failure delivery: a terminal non-ok finish reaches a human (#17) ──
+#
+# The outage that filed it: a daily job died two mornings running, every record
+# stamped deliveryStatus not-requested, and the only reason anyone noticed was a
+# human asking. The seam is an install-owned failure_notifier; the opt-in is the
+# per-job notify_on_failure. These pin who is called, when, and what the record
+# then says — the last being the field that used to be a lie on every row.
+
+check "a terminal failure on an opted-in job is delivered and stamped on the record" '
+from datetime import datetime, timezone
+from scheduler import engine, config, spawn, journal
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "notify-hit", "agent_id": "plain", "enabled": True,
+       "notify_on_failure": True, "schedule": {"kind": "recurring"}}
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+config._install = dict(config.install()); config._install["failure_notifier"] = "x:y"
+seen = []
+spawn._load_hook = lambda spec: (lambda payload: seen.append((spec, payload)))
+e = engine.Engine(now_fn=lambda: NOW)
+e._on_run_finish(FakeRun(), status="error", exit_code=1, kill_reason=None, summary="boom")
+assert len(seen) == 1, seen
+spec, payload = seen[0]
+assert spec == "x:y", spec
+assert payload["job_id"] == "notify-hit" and payload["status"] == "error", payload
+assert payload["consecutive_errors"] == 1, payload
+rec = journal.read_history(job_id="notify-hit")[0]
+assert rec["deliveryStatus"] == "delivered" and rec["delivered"] is True, rec
+'
+
+check "a failure on a job that did not opt in stays silent and not-requested" '
+from datetime import datetime, timezone
+from scheduler import engine, config, spawn, journal
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "notify-miss", "agent_id": "plain", "enabled": True,
+       "schedule": {"kind": "recurring"}}
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+config._install = dict(config.install()); config._install["failure_notifier"] = "x:y"
+seen = []
+spawn._load_hook = lambda spec: (lambda payload: seen.append(payload))
+e = engine.Engine(now_fn=lambda: NOW)
+e._on_run_finish(FakeRun(), status="error", exit_code=1, kill_reason=None, summary="")
+assert seen == [], seen
+rec = journal.read_history(job_id="notify-miss")[0]
+assert rec["deliveryStatus"] == "not-requested" and rec["delivered"] is False, rec
+'
+
+check "opted in with no failure_notifier installed records no-notifier and does not raise" '
+from datetime import datetime, timezone
+from scheduler import engine, config, journal
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "notify-none", "agent_id": "plain", "enabled": True,
+       "notify_on_failure": True, "schedule": {"kind": "recurring"}}
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+config._install = dict(config.install())  # failure_notifier stays None
+e = engine.Engine(now_fn=lambda: NOW)
+e._on_run_finish(FakeRun(), status="error", exit_code=1, kill_reason=None, summary="")
+rec = journal.read_history(job_id="notify-none")[0]
+assert rec["deliveryStatus"] == "no-notifier", rec
+'
+
+check "a failure_notifier that raises is swallowed and recorded failed" '
+from datetime import datetime, timezone
+from scheduler import engine, config, spawn, journal
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "notify-boom", "agent_id": "plain", "enabled": True,
+       "notify_on_failure": True, "schedule": {"kind": "recurring"}}
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+config._install = dict(config.install()); config._install["failure_notifier"] = "x:y"
+def boom(spec):
+    def _raise(payload):
+        raise RuntimeError("delivery down")
+    return _raise
+spawn._load_hook = boom
+e = engine.Engine(now_fn=lambda: NOW)
+e._on_run_finish(FakeRun(), status="error", exit_code=1, kill_reason=None, summary="")
+rec = journal.read_history(job_id="notify-boom")[0]
+assert rec["deliveryStatus"] == "failed", rec
+'
+
+check "a transient stall that will be retried does not deliver" '
+from datetime import datetime, timezone
+from scheduler import engine, config, spawn, journal
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "notify-stall", "agent_id": "plain", "enabled": True,
+       "notify_on_failure": True, "schedule": {"kind": "recurring"}}
+class FakeRun:
+    run_id, session_id, model, retry_of = "r1", "s1", "opus", None
+    job, job_id = JOB, JOB["id"]
+    scheduled_for = NOW
+    scheduled_for_ms = spawned_at_ms = int(NOW.timestamp() * 1000)
+config._install = dict(config.install()); config._install["failure_notifier"] = "x:y"
+seen = []
+spawn._load_hook = lambda spec: (lambda payload: seen.append(payload))
+e = engine.Engine(now_fn=lambda: NOW)
+e._try_fire = lambda *a, **k: None   # a retry is attempted; do not spawn a real one
+e._on_run_finish(FakeRun(), status="error", exit_code=1, kill_reason="stall", summary="")
+assert seen == [], seen
+rec = journal.read_history(job_id="notify-stall")[0]
+assert rec["deliveryStatus"] == "not-requested", rec
+'
+
+check "a terminal spawn failure on an opted-in job delivers too" '
+from datetime import datetime, timezone
+from scheduler import engine, config, spawn, registry, journal
+NOW = datetime(2026, 9, 8, 6, 30, 5, tzinfo=timezone.utc)
+JOB = {"id": "spawn-notify", "agent_id": "plain", "enabled": True,
+       "notify_on_failure": True, "schedule": {"kind": "recurring"}}
+config._install = dict(config.install()); config._install["failure_notifier"] = "x:y"
+seen = []
+spawn._load_hook = lambda spec: (lambda payload: seen.append(payload))
+e = engine.Engine(now_fn=lambda: NOW)
+eff = registry.effective(JOB, dict(config.BUILTIN_DEFAULTS), {})
+# retry_of set: the spawn retry already failed, so this one is terminal.
+e._spawn_failure(JOB, eff, NOW, "no binary", "prev", dict(config.BUILTIN_DEFAULTS))
+assert len(seen) == 1, seen
+assert seen[0]["status"] == "error", seen[0]
+rec = journal.read_history(job_id="spawn-notify")[0]
+assert rec["deliveryStatus"] == "delivered", rec
+'
+
+check "notify_on_failure opts in at the job or category layer, off by default" '
+from scheduler import resolve, registry, config
+assert "notify_on_failure" in resolve.INHERITED_KEYS
+D = dict(config.BUILTIN_DEFAULTS)
+# a job opts itself in
+assert registry.effective({"notify_on_failure": True}, D).get("notify_on_failure") is True
+# a category opts a whole class in
+cats = {"loud": {"notify_on_failure": True}}
+assert registry.effective({"category": "loud"}, D, cats).get("notify_on_failure") is True
+# nobody set it → off (BUILTIN_DEFAULTS ships it False). Opt-in only: like every
+# value this resolver layers, a setting "provides" only when truthy, so absence
+# reads as off and there is no accidental on.
+assert not registry.effective({"agent_id": "x"}, D).get("notify_on_failure")
+'
+
 # ── the zone label names the instant, not now ──
 
 check "_tz_label names the instant it labels, across the DST boundary" '

@@ -176,7 +176,16 @@ BUILTIN_INSTALL = {
     # "module:function" called with the job dict to produce a workspace path.
     # Absent → the built-in agent_root / agent_registry resolution.
     "workspace_resolver": None,
-    # Extra sys.path entries so a workspace_resolver's module is importable.
+    # "module:function" called when a job that opted in (notify_on_failure)
+    # ends in a TERMINAL non-ok finish — one nothing in-band will recover.
+    # Receives a dict (job_id, agent_id, status, error, consecutive_errors,
+    # session_id) and delivers it however this machine reaches a human. JStack
+    # ships only the seam: absent → a failure is journaled but pushed nowhere,
+    # which is exactly the silence #17 is about. A notifier that raises is
+    # logged and swallowed, never allowed to fault the daemon.
+    "failure_notifier": None,
+    # Extra sys.path entries so a workspace_resolver's or failure_notifier's
+    # module is importable.
     "python_path": [],
     # Fallback workspace resolution: the agent's directory under the install's
     # agents dir (root.agents_dir), plus an optional registry mapping agent
@@ -204,6 +213,10 @@ BUILTIN_DEFAULTS = {
     # job → category → default chain as any other setting, so a single job or a
     # whole category can be narrowed without touching the daemon's default.
     "permission_mode": "bypassPermissions",
+    # A terminal non-ok finish calls the install's failure_notifier. Off by
+    # default — an install with no notifier, or a job whose failure nobody
+    # needs pushed, stays silent. Resolves job → category → default.
+    "notify_on_failure": False,
 }
 
 _install: "dict|None" = None

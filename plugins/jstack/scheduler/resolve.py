@@ -31,6 +31,7 @@ INHERITED_KEYS = (
     "claude_bin",
     "catch_up_grace_seconds",
     "permission_mode",
+    "notify_on_failure",
 )
 
 

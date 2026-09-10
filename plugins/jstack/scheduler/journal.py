@@ -45,15 +45,20 @@ def finished_record(*, job_id: str, agent_id: str, status: str, summary: str,
                     session_id: str, run_at_ms: int, duration_ms: int,
                     next_run_at_ms: "int|None", model: str, run_id: str,
                     spawned_at_ms: int, exit_code: "int|None",
-                    kill_reason: "str|None", retry_of: "str|None") -> dict:
+                    kill_reason: "str|None", retry_of: "str|None",
+                    delivery: str = "not-requested") -> dict:
+    # `delivery` is the failure-notifier outcome the engine computed for this
+    # finish: "not-requested" (the default — opt-out, or an ok run), else
+    # "delivered" / "failed" / "no-notifier". delivered mirrors it so a reader
+    # need not know the vocabulary to answer "did anyone hear about this".
     return {
         "ts": _now_ms(),
         "jobId": job_id,
         "action": "finished",
         "status": status,
         "summary": summary,
-        "delivered": False,
-        "deliveryStatus": "not-requested",
+        "delivered": delivery == "delivered",
+        "deliveryStatus": delivery,
         "sessionId": session_id,
         "sessionKey": f"agent:{agent_id}:cron:{job_id}:run:{session_id}",
         "runAtMs": run_at_ms,

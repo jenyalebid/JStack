@@ -128,7 +128,7 @@ def _probe(name: str) -> bool:
 
 
 @router.get("/host")
-def get_host():
+def get_host(request: Request):
     """Which machine this is, and what it can do — one call, before any screen.
 
     **Identity, because a URL is not one.** The same Mac is a `.local` name on
@@ -149,10 +149,17 @@ def get_host():
     screen in turn learns the same thing four round trips later, and has to
     render four spinners to find out one of them was never coming.
     """
+    from . import addresses
+    # The port the caller actually reached, not a constant: a host moved off
+    # 9090 would otherwise hand out an address list that is wrong in the one
+    # detail nobody checks, on the screen whose whole job is that address.
+    port = request.url.port or addresses.DEFAULT_PORT
     return {
         "host_id": hostenv.host_id(),
         "name": hostenv.host_name(),
         "profile": hostenv.profile().name,
+        # Where a SECOND machine should try. Never loopback — see addresses.py.
+        "addresses": addresses.reachable(port),
         "features": {**{k: _optional(m) is not None for k, m in _FEATURES.items()},
                      **{k: _probe(k) for k in _PROBED_FEATURES}},
     }

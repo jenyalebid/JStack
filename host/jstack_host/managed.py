@@ -734,6 +734,14 @@ def open_managed(sid: str, cwd: str, resume: bool = True, displace=None,
             "the claude on the Mac wouldn't exit — close that window there")
     inner = _inner_command(sid, resume, extra, prelude, engine, model,
                            resume_id)
+    # Claude's one-time "trust this folder?" dialog would otherwise park a
+    # managed session — opened for a phone that cannot answer it — on a gate
+    # before it reads its first prompt (the welcome nudge, a resume, anything).
+    # `_auto_accept_bypass` watches for a different prompt and never clears it.
+    # Pre-accept it for the workspace, the way the desk answers it once by hand.
+    # Codex trust rides its own CLI flags in `_inner_command`, not this file.
+    if engine != "codex":
+        _trust_workspace(cwd)
     # Run in the pane's shell with a known PATH; drop the nested-session markers
     # (CLAUDECODE, CLAUDE_CODE_CHILD_SESSION) — a pane spawned by a daemon that
     # was itself restarted from inside a Claude session inherits them, and
@@ -859,6 +867,62 @@ def _auto_skip_codex_update(name: str) -> None:
         f'  fi; sleep 0.5; done'
     )
     subprocess.Popen(["bash", "-c", script], start_new_session=True)
+
+
+def _trust_workspace(cwd: str) -> None:
+    """Record `cwd` as a trusted directory in Claude's own config, so an
+    interactive managed session opens on its work instead of the one-time
+    "trust this folder?" gate.
+
+    Claude keeps folder trust in ~/.claude.json under
+    projects[<dir>].hasTrustDialogAccepted; an interactive session in an
+    untrusted directory stops on the dialog before it reads a first prompt, and
+    a phone has no way to answer it. On the user's own machine the dialog was
+    accepted by hand once — this is that same acceptance, made ahead of a
+    launch the daemon owns.
+
+    Scoped to the daemon's own instance root: the host auto-trusts only the
+    agent-workspace tree it resolves sessions into, never an arbitrary path a
+    client might open — that path is exactly what the dialog is there to guard.
+    Idempotent: a directory already trusted is left untouched, so this never
+    rewrites the CLI's shared file when it has nothing to add (and never races
+    a concurrent claude's write for no reason)."""
+    try:
+        root = hostenv.instance_root().resolve()
+        target = Path(cwd).expanduser().resolve()
+        if target != root and root not in target.parents:
+            return
+    except Exception:
+        return
+    cfg = Path.home() / ".claude.json"
+    try:
+        data = json.loads(cfg.read_text()) if cfg.exists() else {}
+    except (OSError, ValueError):
+        return  # a config we cannot parse is one we will not clobber
+    if not isinstance(data, dict):
+        return
+    key = str(target)
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+    entry = projects.get(key)
+    if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted") is True:
+        return  # already trusted — no write
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["hasTrustDialogAccepted"] = True
+    entry.setdefault("allowedTools", [])
+    projects[key] = entry
+    data["projects"] = projects
+    tmp = cfg.with_name(cfg.name + f".jstack-{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(data, indent=1))
+        os.replace(tmp, cfg)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _auto_accept_bypass(name: str) -> None:

@@ -146,7 +146,10 @@ if systems is not None:
     else:
         ok("declared tests resolve", f"{len(declared)} distinct scripts")
 
-    scripts = {os.path.basename(p) for p in tracked("tests") if p.endswith(".sh")}
+    # Top level only: tests/lib/ holds sourced helpers, not test scripts, and
+    # the gate's own loop globs "$TEST_DIR"/*.sh the same way.
+    scripts = {os.path.basename(p) for p in tracked("tests")
+               if p.endswith(".sh") and p.count("/") == 1}
     # this script proves the registry; it needs no registry entry of its own
     orphans = sorted(scripts - declared - {"manifest.sh"})
     if orphans:
@@ -216,6 +219,68 @@ if readme is not None:
             f"README says {sorted(rule_claims)}, disk has {len(rules)}")
     else:
         ok("rule count", str(len(rules)))
+
+# ── 4. the suite answers about THIS tree ─────────────────────────────────────
+# The gate hands the suite JSTACK_PYTHON — the host's venv — and that venv
+# carries a .pth fronting the main checkout, which outranks PYTHONPATH. Every
+# green below this line was, from a worktree, a statement about main's copy of
+# root.py, repo_seat.py and scheduler/*. The pin lives in tests/lib; these two
+# checks are what stop it rotting back out.
+print("suite tree pin")
+
+pin_lib = os.path.join(plugin_root, "tests", "lib")
+probe_env = dict(os.environ)
+probe_env["PYTHONPATH"] = os.pathsep.join([pin_lib, plugin_root])
+probe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+# The ambient cwd rides along on purpose: the interpreter prepends it to
+# sys.path[0] after site has run, and that is the second of the two ways this
+# resolution goes wrong.
+probe = subprocess.run(
+    [os.environ.get("JSTACK_PYTHON") or "python3", "-c",
+     "import os, root; print(os.path.realpath(root.__file__))"],
+    capture_output=True, text=True, env=probe_env)
+want_root = os.path.realpath(os.path.join(plugin_root, "root.py"))
+got_root = probe.stdout.strip()
+if probe.returncode != 0:
+    bad("import root", f"cannot import at all: {(probe.stderr or '').strip()[-200:]}")
+elif got_root != want_root:
+    bad("import root resolves elsewhere",
+        f"{got_root} — this suite would be answering about another checkout, "
+        f"not {want_root}")
+else:
+    ok("import root resolves under the tree being pushed")
+
+# Every test that starts an interpreter which touches plugin python has to
+# source the pin, or it is back to trusting the interpreter's path.
+REACHES_PLUGIN = re.compile(
+    r"^[^#\n]*\b(?:import|from)\s+(?:root|repo_seat|scheduler)\b", re.M)
+PUTS_ROOT_ON_PATH = re.compile(r"PYTHONPATH=[\"']?[^\"'\n]*\$\{?PLUGIN_ROOT")
+# The source line itself, not a mention of it: every one of these files names
+# the helper in a comment explaining why it is there.
+SOURCES_PIN = re.compile(
+    r"^\s*(?:\.|source)\s+\"?\$\{?PLUGIN_ROOT\}?/tests/lib/pin-plugin-root\.sh", re.M)
+unpinned = []
+for rel in sorted(tracked("tests")):
+    if not rel.endswith(".sh") or rel.count("/") != 1:
+        continue
+    # This file is the checker; its own labels quote what it looks for.
+    if os.path.basename(rel) == "manifest.sh":
+        continue
+    try:
+        body = open(os.path.join(plugin_root, rel)).read()
+    except Exception as exc:
+        bad("test script", f"{rel} unreadable: {exc}")
+        continue
+    if not (REACHES_PLUGIN.search(body) or PUTS_ROOT_ON_PATH.search(body)):
+        continue
+    if not SOURCES_PIN.search(body):
+        unpinned.append(os.path.basename(rel))
+if unpinned:
+    bad("unpinned tests",
+        f"import plugin python without sourcing tests/lib/pin-plugin-root.sh: "
+        f"{', '.join(unpinned)} — from a worktree they report on the main checkout")
+else:
+    ok("every test that imports plugin python pins its tree")
 
 print()
 if fails:

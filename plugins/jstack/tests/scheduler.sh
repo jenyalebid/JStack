@@ -48,7 +48,10 @@ mkdir -p "$TMP/config" "$TMP/agents/demo-social/chat" "$TMP/agents/plain"
 # these two check it stays that low.
 
 export SCHEDULER_HOME="$TMP"
-export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# `from scheduler import …` below must be THIS tree's package: the gate's
+# interpreter carries a .pth fronting the main checkout, and it outranks
+# PYTHONPATH. See tests/lib/pin-plugin-root.sh.
+. "$PLUGIN_ROOT/tests/lib/pin-plugin-root.sh"
 
 cat > "$TMP/config/scheduler.json" <<EOF
 {

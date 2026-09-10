@@ -555,6 +555,26 @@
       "notes": "Imports nothing from the package and reads no config file — callers pass their own parsed cfg, so there is one opinion about which file is authoritative. scheduler/config.py carries its own copy of the shipping-tree guard deliberately: it must keep working on an older install where root.py is absent, and importing the other way would be a cycle. Only Config/State/Logs/Credentials are guarded; Agents/ and Systems/ may legitimately live inside a repo. Resolution is never cached at import — a constant captured at import answers with the environment of a process start nobody remembers."
     },
     {
+      "id": "suite-tree-pin",
+      "kind": "system",
+      "name": "Suite tree pin",
+      "status": "live",
+      "description": "Makes JStack's own suite answer about the checkout it ships in. The pre-push gate runs the tests with JSTACK_PYTHON pointed at the host's venv (the scheduler suite needs dateutil), and that venv carries a .pth doing sys.path.insert(0, ~/JStack/plugins/jstack) so the host's daemon can find the plugin. Position 0 outranks PYTHONPATH, and every issue is worked in a worktree by mandate — so `import root` in a test resolved to the MAIN checkout: a false red on root.sh's shipping-tree guard, and a false green for any change to root.py, repo_seat.py or scheduler/* pushed from a worktree. tests/lib/pin-plugin-root.sh is sourced by every test that starts an interpreter touching plugin python; it fronts tests/lib on PYTHONPATH, where a sitecustomize imports jstack_pin — sitecustomize being the one hook imported after the last .pth — and then asserts the pin took, exiting the test if it did not.",
+      "code": [
+        "tests/lib/jstack_pin.py",
+        "tests/lib/sitecustomize.py",
+        "tests/lib/pin-plugin-root.sh"
+      ],
+      "config": [],
+      "test": {
+        "type": "script",
+        "path": "tests/plugin-pin.sh",
+        "description": "Stages the defect in a tmpdir — a decoy plugin copy, a throwaway venv carrying the host venv's .pth line verbatim, and a stand-in tree being pushed — then proves: the hijack reproduces without the pin (a control, so a green below cannot mean the fixture never staged); the pinned tree wins the import; root.py's shipping-tree guard fires on the tree under test and names it (the false green, as behaviour); a module present only in the rival copy does not import; a pin that cannot take exits the test loudly instead of answering about another checkout; tests/root.sh passes end to end under the hijacking interpreter; and the .pth is left byte-identical and still wins for any interpreter outside the suite."
+      },
+      "subsystems": [],
+      "notes": "Two layers, because each alone loses to something. sys.path is reordered (this tree first, rival checkouts of the same plugin dropped by top-level signature) — that beats the .pth, since sitecustomize is imported after every .pth while PYTHONPATH is read before site runs. And a meta_path finder sits directly in front of PathFinder, because sys.path order is not final either: CPython prepends the script dir (or cwd, for -c) to sys.path[0] AFTER site has run, so a test invoked from inside another checkout gets it handed back at position 0. The finder declines submodules and loader-less directory hits, so tests/ and bin/ are never claimed as namespace packages. jstack_pin is self-locating — the tree it pins is the tree it ships in — so there is no env var to lose across an `env -i`. The .pth is not the defect and is not touched: the gate handing that interpreter to a hermetic suite is. Only the FIRST sitecustomize on the path is imported, so scheduler-bare.sh and schedule-self.sh (each installing one to block dateutil) import jstack_pin from their own shim and re-assert. manifest.sh gates both halves: `import root` must resolve under the plugin root, and any top-level test script that imports plugin python must source the helper."
+    },
+    {
       "id": "doctor",
       "kind": "tool",
       "name": "Doctor",

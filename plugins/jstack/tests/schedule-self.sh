@@ -42,6 +42,8 @@ mkdir -p "$TMP/shim"
 cat > "$TMP/shim/sitecustomize.py" <<'EOF'
 import sys
 
+import jstack_pin  # noqa: F401 — this shim shadows lib/sitecustomize.py
+
 
 class _NoDateutil:
     """Refuse dateutil the way a machine without it does."""
@@ -63,7 +65,12 @@ EOF
 export JSTACK_ROOT="$BARE"
 export SCHEDULER_HOME="$TMP/sched"
 export HOME="$TMP/home"
-export PYTHONPATH="$TMP/shim:$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# Pin first, then front the dateutil blocker. Only the FIRST sitecustomize on
+# the path is imported, so the shim shadows lib/sitecustomize.py and carries
+# `import jstack_pin` itself; the re-assert is what proves it still does.
+. "$PLUGIN_ROOT/tests/lib/pin-plugin-root.sh"
+export PYTHONPATH="$TMP/shim:$PYTHONPATH"
+jstack_assert_pinned || exit 1
 # Hermetic host config: the machine's real review.json may aim mail at a live
 # interpreter and a live registry; an empty one keeps every booking in $TMP.
 export JSTACK_REVIEW_CONFIG="$TMP/review.json"

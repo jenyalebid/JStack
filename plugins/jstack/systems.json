@@ -762,6 +762,21 @@
         "path": "tests/scrub.sh",
         "description": "Runs the scan itself against the real tree: exit 0 with the scanned-file count when no org term appears outside the reasoned allowlist, exit 1 naming every file:line and term when one does."
       }
+    },
+    {
+      "id": "release-reachability",
+      "kind": "system",
+      "name": "Version-bump gate",
+      "status": "live",
+      "description": "A plugin is installed BY VERSION: the CLI caches the tree under <market>/<plugin>/<version>/ and `plugin update` compares numbers, never contents. So a runtime file changed on main without a bump is invisible — every installed machine keeps running the cached copy while `update` answers \"already at the latest version\", and nothing anywhere reports the drift. Five commits shipped that way behind an unbumped 0.59.0. This gate finds the commit that set the version now on disk (keyed on the version VALUE, so editing the manifest's description does not read as a release), then fails if anything under plugins/jstack outside tests/ moved since — naming each commit. tests/ is excluded because nothing an installed copy runs comes from there. It reads history, so where there is none to read — a shallow clone, an unpacked tarball — it says SKIP and stands down rather than reporting a green it cannot see.",
+      "code": [
+        "tests/version-bump.sh"
+      ],
+      "test": {
+        "type": "script",
+        "path": "tests/version-bump.sh",
+        "description": "Runs the gate itself against the real tree: exit 0 naming the bump commit when the version covers every shipped change (or when the bump is staged but not yet committed), exit 1 listing every shipped commit the current version does not cover, with the two manifests to bump."
+      }
     }
   ]
 }

@@ -31,6 +31,7 @@ WANT_HOST=1
 WANT_MENUBAR=1
 WANT_APP=1
 DECLARE_ROOT=0
+ROOT_FROM_FLAG=0
 LAST_LOG=""
 LAST_ELAPSED=""
 # Set by the two steps that can each half-fail without stopping the install.
@@ -74,7 +75,11 @@ while [ $# -gt 0 ]; do
         --agent)       AGENT_NAME="${2:-}"; shift ;;
         --agent-root)  AGENT_ROOT="${2:-}"; shift ;;
         --checkout)    CHECKOUT="${2:-}"; shift ;;
-        --root)        JSTACK_ROOT="${2:-}"; shift ;;
+        # ROOT_FROM_FLAG separates "someone asked for this root, now" from "this
+        # shell happens to export one". Both arrive as $JSTACK_ROOT and they
+        # need opposite handling: an exported root is already declared
+        # somewhere, an asked-for one is a request to change what is declared.
+        --root)        JSTACK_ROOT="${2:-}"; ROOT_FROM_FLAG=1; shift ;;
         --scheduler)   WANT_SCHEDULER=1 ;;   # back-compat: it is the default now
         --no-scheduler) WANT_SCHEDULER=0 ;;
         --no-claude)   WANT_CLAUDE=0 ;;
@@ -254,9 +259,21 @@ step "What this install needs to know"
 if [ -n "${JSTACK_ROOT:-}" ]; then
     JSTACK_ROOT="${JSTACK_ROOT/#\~/$HOME}"
     case "$JSTACK_ROOT" in
-        /*) ok "root declared in the environment — $JSTACK_ROOT" ;;
+        /*) : ;;
         *)  die "JSTACK_ROOT=$JSTACK_ROOT is not an absolute path — launchd refuses a relative one and the daemons will not start. Try $HOME/${JSTACK_ROOT#./}" ;;
     esac
+    if [ "$ROOT_FROM_FLAG" = "1" ]; then
+        # --root is a request to MOVE the root, so it has to outlive this run.
+        # It did not: the flag arrives as $JSTACK_ROOT, this branch read that as
+        # "already declared in the environment", and DECLARE_ROOT stayed 0 — so
+        # the profile was never written and the root reverted the moment the
+        # shell closed. The branch below even told people to "re-run with --root
+        # DIR to move it", which was the one thing that could not work.
+        DECLARE_ROOT=1
+        ok "root requested — $JSTACK_ROOT"
+    else
+        ok "root declared in the environment — $JSTACK_ROOT"
+    fi
 elif JSTACK_ROOT="$(declared_root)"; then
     # Already answered on this machine, on a previous install. Asking again
     # would put the tree one keystroke from being orphaned — see
@@ -550,8 +567,47 @@ export PATH="$BIN:$PATH"
 # installer and to nothing afterwards.
 if [ "$DECLARE_ROOT" = "1" ]; then
     ROOT_LINE="export JSTACK_ROOT=\"$JSTACK_ROOT\""
-    if [ -f "$PROFILE" ] && grep -qF "JSTACK_ROOT" "$PROFILE" 2>/dev/null; then
-        ok "$PROFILE already declares a root"
+    # What the profile says today, if anything. Read before deciding, because
+    # "a declaration exists" and "the declaration is the one we were asked for"
+    # are different questions and only the second one matters.
+    OLD_ROOT="$(declared_root 2>/dev/null || true)"
+
+    if [ -f "$PROFILE" ] && grep -qE '^[[:space:]]*export[[:space:]]+JSTACK_ROOT=' "$PROFILE" 2>/dev/null; then
+        if [ "$OLD_ROOT" = "$JSTACK_ROOT" ]; then
+            ok "$PROFILE already declares this root"
+        elif [ "$DRY_RUN" = "1" ]; then
+            would "rewrite the root in $PROFILE: $OLD_ROOT -> $JSTACK_ROOT"
+        else
+            # REWRITE, not append. This branch used to say "already declares a
+            # root" and change nothing, which made a wrong root permanent: the
+            # only documented way to move it was the very flag that was being
+            # ignored, so `--root /new/path` reported success and left the old
+            # one in place. A second `export` appended below the first would be
+            # no better — the last one wins, so the file would disagree with
+            # itself and which root you got would depend on line order.
+            #
+            # The old line is kept, commented, with the date. A root is where
+            # somebody's agents, logs and credentials live; leaving a trail
+            # back to the previous answer costs one line.
+            cp "$PROFILE" "$PROFILE.jstack-bak" 2>/dev/null || true
+            STAMP="$(date +%Y-%m-%d)"
+            awk -v new="$ROOT_LINE" -v stamp="$STAMP" '
+                /^[[:space:]]*export[[:space:]]+JSTACK_ROOT=/ && !done {
+                    print "# replaced by the JStack installer on " stamp ": " $0
+                    print new
+                    done = 1
+                    next
+                }
+                /^[[:space:]]*export[[:space:]]+JSTACK_ROOT=/ {
+                    print "# removed by the JStack installer on " stamp ": " $0
+                    next
+                }
+                { print }
+            ' "$PROFILE" > "$PROFILE.jstack-new" && mv "$PROFILE.jstack-new" "$PROFILE"
+            ok "root moved: ${OLD_ROOT:-?} -> $JSTACK_ROOT in $PROFILE"
+            note "the old line is kept commented; a copy is at $PROFILE.jstack-bak"
+            note "open a new shell, or: source $PROFILE"
+        fi
     elif [ "$DRY_RUN" = "1" ]; then
         would "append to $PROFILE: $ROOT_LINE"
     else

@@ -7,6 +7,7 @@ one-time migration source and never a back door, and failures lock an address
 out. Each test names the break it would catch.
 """
 
+import argparse
 import asyncio
 import time
 
@@ -506,3 +507,45 @@ def test_deny_reason_never_echoes_the_secret(store):
     secret = token.split(".", 2)[2]
     for presented in (token + "\n", f"jr1.{_row['id']}.{secret}x", secret, "jr1.x.y"):
         assert secret not in devices.deny_reason(presented)
+
+
+# ── "is this host set up" — one predicate, not a file check ──────────────────
+
+def test_provisioned_is_the_table_not_the_file(store, tmp_path, monkeypatch):
+    """The break this catches, live on the hub 2026-09-09: `jstack-host pair`
+    refused with "this host has no token yet" on the machine that owns the
+    mesh and had already minted nine device rows. It asked whether
+    `Credentials/jremote-api-token` existed — the spent migration source, long
+    since gone on a host whose table has decided — so the ONE Mac that mints
+    codes for every other device could not mint one.
+    """
+    monkeypatch.setattr("jstack_host.hostenv.token_path",
+                        lambda: tmp_path / "never-written")
+
+    assert devices.provisioned() is False       # no rows, no file
+    devices.mint("my-laptop")
+    assert devices.provisioned() is True        # the table decides
+
+
+def test_provisioned_still_true_on_a_pre_migration_host(legacy_file, store):
+    """The other half: a host whose devices table is empty and whose file is
+    the credential three phones are carrying is provisioned, and the first
+    request grandfathers it."""
+    assert store.count_devices() == 0
+    assert devices.provisioned() is True
+
+
+def test_pair_mints_on_a_host_that_has_only_device_rows(store, tmp_path,
+                                                        monkeypatch, capsys):
+    """End to end through the CLI gate, since that is where it bit."""
+    from jstack_host import cli
+
+    monkeypatch.setattr("jstack_host.hostenv.token_path",
+                        lambda: tmp_path / "never-written")
+    monkeypatch.setattr(cli, "_adopt", lambda args: None)
+    devices.mint("my-iphone")
+
+    args = argparse.Namespace(name="My laptop", ttl=600, open=False,
+                              state_dir=None, label=None)
+    assert cli._cmd_pair(args) == 0
+    assert "My laptop" in capsys.readouterr().out

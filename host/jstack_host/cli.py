@@ -58,8 +58,8 @@ def _cmd_pair(args) -> int:
     app spends it without anybody typing anything. See `pair_link`.
     """
     _adopt(args)
-    from . import enrolment
-    if not hostenv.token_path().exists():
+    from . import devices, enrolment
+    if not devices.provisioned():
         print("this host has no token yet — run `jstack-host install` first.",
               file=sys.stderr)
         return 1

@@ -93,6 +93,24 @@ def _store():
     return get_store()
 
 
+def provisioned() -> bool:
+    """Can anything authenticate against this host — a device row, or a token
+    file the first request will grandfather into one.
+
+    The question is never "is the token file present". On a host whose table
+    has already decided, that file is a spent migration source and may well be
+    gone (this module's own rule: rotating it does nothing, revoking `legacy`
+    is the rotation). Every gate that means "is this host set up" asks HERE,
+    so a hub carrying a dozen device rows is never told it has no token.
+    """
+    if hostenv.token_path().exists():
+        return True
+    try:
+        return _store().count_devices() > 0
+    except Exception:  # noqa: BLE001 — a broken store answers 401 anyway
+        return False
+
+
 def _hash(secret: str) -> str:
     return "sha256:" + hashlib.sha256(secret.encode()).hexdigest()
 

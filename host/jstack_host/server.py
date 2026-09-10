@@ -101,15 +101,10 @@ def acquire_lock():
 
 
 def _provisioned() -> bool:
-    """Can anything authenticate against this host — a device row, or a token
-    file the first request will grandfather into one."""
-    if hostenv.token_path().exists():
-        return True
-    try:
-        from .store import get_store
-        return get_store().count_devices() > 0
-    except Exception:  # noqa: BLE001 — a broken store answers 401 anyway
-        return False
+    """Whether anything can authenticate here — `devices.provisioned()` owns
+    the predicate; this stays as the name `/api/health` and startup read."""
+    from . import devices
+    return devices.provisioned()
 
 
 def _raise_fd_limit() -> str:

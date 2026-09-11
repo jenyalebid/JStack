@@ -60,6 +60,7 @@ import secrets
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from . import hostenv
 
@@ -413,6 +414,38 @@ async def wait_revoked(device_id: str) -> None:
 
 # ── the host's own credential ──
 
+def _credential_dir() -> Path:
+    """Where the host's own plaintext lives — *beside the table that validates
+    it*, not wherever `state_dir()` happens to point.
+
+    The two are the same directory on a real host (the store is written into
+    the state dir), so this changes nothing in production. It changes
+    everything under test. `_internal_token_locked()` is a read-compare-write
+    across both halves: it sets the row's hash through `_store()` and writes the
+    plaintext to a path. Resolve those independently and a caller that has
+    redirected one but not the other splits the credential in half — the hash
+    lands in one world, the token in another, and nothing afterwards can
+    reconcile them.
+
+    That is not hypothetical. Infrastructure's `_isolate_jremote_devices` is an
+    autouse fixture that patches `_store()` to a throwaway sqlite precisely so a
+    test token is never folded into the real registry — and it had no reason to
+    know this function also wrote a file. So every test run that reached
+    `internal_token()` (showdoc routing does, on any `_route` call) minted a
+    fresh secret, recorded its hash in a database deleted with `tmp_path`, and
+    overwrote *this Mac's live credential* with a token nothing would ever
+    accept again. The hub then answered 401 to its own health probe, its own
+    spawn routing and its own menu bar, until someone re-keyed it by hand.
+    Running the test suite took the hub down, silently, every time.
+
+    Deriving the path from the store makes that unrepresentable: redirect the
+    table and the plaintext follows it. The same lesson as #42 — two halves of
+    one credential must not have two ways of being found.
+    """
+    db = getattr(_store(), "db_path", None)
+    return Path(db).parent if db else hostenv.state_dir()
+
+
 def internal_token() -> str:
     """The token the host uses to call its own API (spawn routing, showdoc
     routing, the health probe). Minted on demand as device `host-internal`,
@@ -434,8 +467,11 @@ def internal_token() -> str:
     re-read inside it means a caller that arrives second takes the winner's
     token instead of minting a third.
     """
-    hostenv.ensure_state_dir()
-    lock = hostenv.state_dir() / ".internal-token.lock"
+    # The lock belongs with the pair it serializes: a lock taken in the live
+    # state dir would order writers that are editing two different stores.
+    folder = _credential_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    lock = folder / ".internal-token.lock"
     with open(lock, "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         try:

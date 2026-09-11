@@ -400,6 +400,16 @@ struct HostState {
     /// internet would be the more useful half of the truth left out.
     var headline: String {
         guard isUp else {
+            // A refused token is not a missing hub, and this is the line that
+            // decides which of those a person believes. "Not answering on port
+            // 9090" over a hub that answers on 9090 sends them to restart a
+            // service that is already running, and the one real repair — the
+            // host's own credential has gone stale — is not hinted at anywhere
+            // on the menu. Say which failure it is, and the port stays on the
+            // row because it is still the fact you need.
+            if unauthorized {
+                return "Port \(HostAgent.port()) · refused this Mac's token"
+            }
             return installed ? "Not answering on port \(HostAgent.port())"
                              : "No hub on this Mac"
         }
@@ -541,6 +551,15 @@ final class HostProbe {
             // would have claimed. A 200 here settles it.
             guard let token else { return finish() }
             self.get("\(base)\(Self.apiPrefix)/host", token: token) { data, status in
+                // A refusal here is the *only* signal on this path. The healthy
+                // route records 401 on its sessions call, but an embedded host
+                // never reaches that route: `/api/health` belongs to the larger
+                // app, so `isUp` is false and this call is the whole probe. Drop
+                // its status and a hub whose own credential has gone stale is
+                // indistinguishable from a hub that was never installed — which
+                // is what the menu said on this Mac, over a host that was up and
+                // answering, while `/hosts` held a live leaf.
+                if status == 401 || status == 403 { state.unauthorized = true }
                 guard status == 200, let data,
                       let identity = try? Self.decoder.decode(HostIdentity.self, from: data)
                 else { return finish() }
@@ -1238,7 +1257,15 @@ final class StatusController: NSObject {
         let sub = NSMenu()
         sub.autoenablesItems = false
         if state.installed {
-            if state.isUp {
+            // `unauthorized` counts as running, and it is the same rule as the
+            // one above read the other way round: a refusal is an *answer*, and
+            // only something serving the port can produce one. Offering Start
+            // for a hub that is already up is the lying button, and it is the
+            // worse direction of the two — Shut Down at least fails loudly,
+            // while Start quietly does nothing to a job launchd already has
+            // loaded, leaving the stale credential that caused the refusal
+            // untouched and unmentioned.
+            if state.isUp || state.unauthorized {
                 sub.addItem(Self.action("Restart Hub", #selector(doRestart), self,
                                         symbol: "arrow.clockwise"))
                 sub.addItem(Self.action("Shut Down Hub", #selector(doStop), self,
@@ -1351,6 +1378,20 @@ final class StatusController: NSObject {
         let sub = NSMenu()
         sub.autoenablesItems = false
 
+        // Refusal is tested *before* liveness, and the order is the whole point.
+        // `isUp` is false whenever the host would not answer us — including when
+        // it answered 401 — so an `isUp` guard placed first returns "Hub is not
+        // running" over a hub that is running and simply will not take our
+        // token, and the branch below that says so exactly can never be reached.
+        // That is what the menu did on this Mac: two rows, both claiming a dead
+        // hub, over a live one holding an adopted leaf.
+        if state.unauthorized {
+            sub.addItem(Self.caption("The token on disk was refused by the hub."))
+            sub.addItem(Self.caption("The hub is running — this Mac's own"))
+            sub.addItem(Self.caption("credential is stale, not the service."))
+            sub.addItem(Self.caption("Run: jstack-host status"))
+            return Self.opener("No Access", symbol: "lock", submenu: sub)
+        }
         guard state.isUp else {
             let item = NSMenuItem(title: "Hub is not running", action: nil, keyEquivalent: "")
             item.image = Self.glyph("bolt.horizontal.circle", size: 14)
@@ -1360,10 +1401,6 @@ final class StatusController: NSObject {
         if !state.isProvisioned {
             sub.addItem(Self.caption("No token, so every request is refused."))
             sub.addItem(Self.caption("Run: jstack-host status"))
-            return Self.opener("No Access", symbol: "lock", submenu: sub)
-        }
-        if state.unauthorized {
-            sub.addItem(Self.caption("The token on disk was refused by the hub."))
             return Self.opener("No Access", symbol: "lock", submenu: sub)
         }
 

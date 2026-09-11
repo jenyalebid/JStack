@@ -29,7 +29,7 @@ def bundle(tmp_path, monkeypatch):
     return folder
 
 
-def _run_join(bundle, tmp_path):
+def _run_join(bundle, tmp_path, capable=True):
     """Run join.sh for real against fakes, and return what it invoked, in order.
 
     Asserted by RUNNING it rather than by reading it. The first version of this
@@ -49,7 +49,13 @@ def _run_join(bundle, tmp_path):
     for name, body in (
         # `sudo <path>/install_leaf.sh` — the tunnel step, logged by what it ran.
         ("sudo", 'echo "install:$(basename "$1")" >> "$CALLS"'),
-        ("jstack-host", 'echo "jstack-host:$1" >> "$CALLS"'),
+        # An old build has no `capabilities` subcommand, so argparse exits
+        # non-zero on the unknown choice — the real signal, reproduced.
+        ("jstack-host",
+         'echo "jstack-host:$1" >> "$CALLS"\n'
+         'if [ "$1" = capabilities ]; then\n'
+         f'  {"echo delegated-minting" if capable else "exit 2"}\n'
+         'fi'),
         ("ping", 'echo "ping" >> "$CALLS"'),
         # Present only so the prereq gate passes; never invoked.
         ("wireguard-go", "true"),
@@ -80,6 +86,30 @@ def test_the_join_script_installs_the_tunnel_before_it_redeems(bundle, tmp_path)
     attach = next(i for i, c in enumerate(calls) if c.startswith("jstack-host:attach"))
     install = calls.index("install:install_leaf.sh")
     assert install < attach, f"redeemed before the tunnel was up: {calls}"
+
+
+def test_a_host_too_old_to_delegate_is_refused_before_it_attaches(bundle,
+                                                                  tmp_path):
+    """The live 2026-09-11 adoption, as a gate.
+
+    That Mac's `jstack-host` predated delegated minting. The joiner asked only
+    whether the binary existed, so `attach` ran, succeeded, and handed back no
+    grant — leaving a machine the hub could never mint onto again, with the
+    tunnel up and every step reporting success. It surfaced as `pair-by-hand`
+    in a menu days later.
+
+    Spending the code is the irreversible part, so the check belongs *before*
+    it: refusing costs an upgrade, attaching costs the code and produces the
+    half-adopted Mac anyway. `version` cannot gate this — it has printed the
+    same 0.1.0 on every build ever cut.
+    """
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    calls = _run_join(bundle, tmp_path, capable=False)
+
+    assert "install:install_leaf.sh" in calls, (
+        f"the tunnel must still go up — it is the half that survives: {calls}")
+    assert not any(c.startswith("jstack-host:attach") for c in calls), (
+        f"attached with a host that cannot hand back a grant: {calls}")
 
 
 def test_the_join_script_carries_the_code_and_the_mesh_parent(bundle):
@@ -158,7 +188,10 @@ def test_the_packed_file_is_one_executable_that_carries_everything(bundle, tmp_p
     calls = tmp_path / "packed-calls.log"
     for name, body in (
         ("sudo", 'echo "install:$(basename "$1")" >> "$CALLS"'),
-        ("jstack-host", 'echo "jstack-host:$1" >> "$CALLS"'),
+        # A current build — this test is about the payload, not the gate.
+        ("jstack-host",
+         'echo "jstack-host:$1" >> "$CALLS"\n'
+         'if [ "$1" = capabilities ]; then echo delegated-minting; fi'),
         ("ping", 'echo "ping" >> "$CALLS"'),
         ("wireguard-go", "true"),
         ("wg", "true"),

@@ -149,6 +149,29 @@ async def lifespan(app: FastAPI):
         _log(f"NO TOKEN at {hostenv.token_path()} and no device rows — "
              "every request will 401")
 
+    # The host's own credential, reconciled before anything can ask for it.
+    #
+    # `internal_token()` already repairs a plaintext file that has drifted from
+    # its row — but it is only ever reached lazily, from showdoc and spawn. A
+    # host whose file went stale therefore stayed stale until somebody happened
+    # to open a document, and the menu bar, which reads that file directly and
+    # has no way to trigger the repair, sat on "No Access" over a host that was
+    # up and one call from fixing itself. Reinstalling did not help: install.sh
+    # touches neither the row nor the file.
+    #
+    # Startup is the one moment that happens on every install and every reboot,
+    # so it is where the two halves get put back in agreement. A revoked row is
+    # left revoked — that is a person saying no, and honouring it is the whole
+    # reason `internal_token()` returns "" instead of minting.
+    try:
+        from . import devices
+        if devices.internal_token():
+            _log("internal credential reconciled")
+        else:
+            _log("internal credential is revoked — not re-minting")
+    except Exception as e:                                 # noqa: BLE001
+        _log(f"internal credential skipped ({type(e).__name__}: {e})")
+
     try:
         from . import managed
         for sid in managed.reconcile():

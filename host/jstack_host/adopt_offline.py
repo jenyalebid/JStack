@@ -129,6 +129,28 @@ NEEDHOST
     exit 1
 fi
 
+# ----------------------------------------------- 3b. can it finish the job?
+# Installed is not the same as new enough, and `version` cannot tell them
+# apart — it has printed 0.1.0 since the first commit. A host older than
+# delegated minting attaches cleanly and hands back no grant, leaving a Mac
+# the hub can never mint onto again, with every step reporting success. A
+# build too old to delegate is too old to have this subcommand, so it fails
+# the probe by exiting non-zero and needs no cooperation to be caught.
+if ! jstack-host capabilities 2>/dev/null | grep -qx delegated-minting; then
+    say "the jstack-host on this Mac is too old to finish adoption"
+    cat <<'TOOOLD'
+   The tunnel is up and permanent — that half is done and it survives this.
+
+   But this Mac's host cannot hand a grant back to the hub, so attaching now
+   would produce a machine your devices can never reach without someone
+   typing a second code on it. Upgrade the host here first:
+
+       curl -fsSL <your jStack install.sh> | bash
+TOOOLD
+    echo "   then run:  jstack-host attach $CODE --parent $PARENT"
+    exit 1
+fi
+
 # -------------------------------------------------------------- 4. attach
 say "Attaching to the hub as \\"{name}\\""
 if jstack-host attach "$CODE" --parent "$PARENT"; then

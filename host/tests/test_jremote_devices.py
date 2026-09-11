@@ -454,6 +454,31 @@ def test_spraying_many_device_ids_still_locks_the_address(store, monkeypatch):
     assert e.value.status_code == 429
 
 
+def test_startup_reconciles_a_credential_that_drifted_from_its_row(store):
+    """The live 2026-09-11 "No Access": the menu bar reads the plaintext file
+    directly, the file had drifted from its row, and only showdoc and spawn
+    ever call the repair — so the menu sat refused over a host that was up and
+    one call from fixing itself. Reinstalling did not help; install.sh touches
+    neither half.
+
+    The lifespan is the one moment that runs on every install and every reboot,
+    so the guard is on the wiring, not just on `internal_token()` — the repair
+    already worked before this bug, it was simply never reached.
+    """
+    from fastapi.testclient import TestClient
+    from jstack_host import server
+
+    devices.internal_token()                       # row + file agree
+    path = devices._credential_dir() / "internal-token"
+    path.write_text(f"{devices.TOKEN_PREFIX}.{devices.INTERNAL_ID}.drifted")
+    assert devices.authenticate(path.read_text().strip()) is None
+
+    with TestClient(server.create_app()):          # runs the lifespan
+        pass
+
+    assert devices.authenticate(path.read_text().strip()) == devices.INTERNAL_ID
+
+
 def test_a_revoked_device_presenting_its_own_token_never_locks_out(store):
     """The live 2026-09-11 failure: a Mac was re-adopted, its old device row
     stayed revoked, and the app on it went on presenting the token it already

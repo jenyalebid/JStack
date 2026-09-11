@@ -811,6 +811,38 @@ def _cmd_open(args) -> int:
     return 0
 
 
+#: What this build can do, one name per line. A capability is listed here the
+#: moment the code behind it lands, and never removed — a reader across the
+#: mesh uses the absence of a name to mean "too old for this", so dropping one
+#: would tell every newer hub that a current Mac had gone backwards.
+CAPABILITIES = (
+    # `attach` sends a grant back, so the hub it joins can mint devices onto
+    # this Mac without anybody typing a second code (grants.py, attach_parent).
+    "delegated-minting",
+)
+
+
+def _cmd_capabilities(args) -> int:
+    """Name what this build can do, for a caller deciding whether to proceed.
+
+    Exists because `version` cannot answer that question: it prints the
+    packaging version, which has been `0.1.0` since the first commit and is
+    identical on a build from today and one from three weeks ago. The offline
+    joiner asked only whether `jstack-host` was *installed*, so a Mac running a
+    host older than delegated minting attached cleanly, handed back no grant,
+    and became a machine the hub could never mint onto again — with every step
+    reporting success.
+
+    A build too old to delegate is also too old to have this subcommand, so it
+    fails the probe by exiting non-zero on an unknown choice. That is the whole
+    mechanism: absence is the answer, and it needs no cooperation from the old
+    build.
+    """
+    for name in CAPABILITIES:
+        print(name)
+    return 0
+
+
 def _cmd_version(args) -> int:
     from importlib.metadata import PackageNotFoundError, version
     try:
@@ -974,6 +1006,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print the guide (or --verify result) as JSON")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_open)
+
+    p = sub.add_parser("capabilities",
+                       help="what this build can do, one name per line")
+    p.set_defaults(fn=_cmd_capabilities)
 
     p = sub.add_parser("version", help="the installed package version")
     p.set_defaults(fn=_cmd_version)

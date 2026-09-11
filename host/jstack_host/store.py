@@ -1087,6 +1087,28 @@ class SessionStore:
                 (int(time.time()), device_id))
             return cur.rowcount > 0
 
+    def delete_device(self, device_id: str) -> bool:
+        """Remove the row outright. False = there was no such row.
+
+        Revoking stamps a row and keeps it forever, which is the right default
+        for a device somebody actually paired — the roster should be able to
+        say "this iPad was here and is not trusted now". It is the wrong and
+        only answer for a row that should never have existed: a test that
+        paired against the live registry, a name typed wrong, a daemon row from
+        a migration. Those accumulate at the top of the one screen a person
+        uses to check who can reach their Mac, and no amount of revoking clears
+        them.
+
+        The contract on every caller is that the row is ALREADY revoked, so
+        this can never be the thing that cuts a live session's trust out from
+        under it. Nothing calls it yet — it is the storage half of clearing
+        the permanent revoked rows, landed on its own so the route that
+        exposes it starts from a primitive that is already tested.
+        """
+        with self._write_lock, self._conn() as db:
+            cur = db.execute("DELETE FROM devices WHERE id=?", (device_id,))
+            return cur.rowcount > 0
+
     def touch_device(self, device_id: str) -> None:
         with self._write_lock, self._conn() as db:
             db.execute("UPDATE devices SET last_seen_at=? WHERE id=?",

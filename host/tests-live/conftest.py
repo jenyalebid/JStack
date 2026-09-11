@@ -178,6 +178,29 @@ def host_identity(api) -> dict:
     return api.ok("GET", "/host")
 
 
+@pytest.fixture(scope="session")
+def agent_id(api) -> str:
+    """An agent this host actually serves — the subject the roster, the tree,
+    the Files pane and every session route need.
+
+    Read off `/agents` rather than hardcoded: the suite runs against a guest
+    the runner seeded, but it must also be pointable at any host, and a fixed
+    id would make it a suite about one machine. A host with no agents skips
+    rather than fails — `~/Agents` absent is a correct answer for a fresh
+    install (`hostenv.instance_root`), not a defect, and the runner is what
+    guarantees the guest has one.
+    """
+    roster = api.ok("GET", "/agents")
+    agents = roster.get("agents", []) if isinstance(roster, dict) else roster
+    ids = [a.get("agent_id") or a.get("id") for a in agents]
+    ids = [i for i in ids if i]
+    if not ids:
+        pytest.skip("this host resolves no agents — scripts/live-vm-test.sh "
+                    "seeds one; a bare host has nothing for these routes to "
+                    "be about")
+    return ids[0]
+
+
 @pytest.fixture
 def scratch_name() -> str:
     """A name no previous run can collide with.

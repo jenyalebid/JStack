@@ -76,15 +76,48 @@ if [ -n "$GIT_REF" ]; then
     vssh "rm -rf ~/jStack && git clone --depth 1 -b '$GIT_REF' https://github.com/jenyalebid/jStack.git ~/jStack" || \
         die "clone failed"
 else
-    say "copying this working tree into the guest"
+    # Staged through a clean copy rather than sent straight from the tree. A
+    # `.venv` is symlinks into the interpreter that built it, so copying this
+    # Mac's into the guest lands a python3 that passes `-x` and aborts on
+    # exec — which is exactly how the first run of this harness failed, with
+    # the installer reporting `ok` on a virtualenv that could not run. The
+    # build artifacts go for the same reason: a stranger installing from a
+    # fresh clone has none of them, and the run is meant to look like that.
+    say "copying this working tree into the guest (without build artifacts)"
+    STAGE="$(mktemp -d)"
+    trap 'rm -rf "$STAGE"' EXIT
+    rsync -a --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
+          --exclude '.git' --exclude '*.egg-info' \
+          "$HOST_DIR/" "$STAGE/host/" || die "could not stage the tree"
     vssh 'rm -rf ~/jStack && mkdir -p ~/jStack'
-    "$VM_SH" cp "$VM_NAME" "$HOST_DIR" '~/jStack/host' || die "copy failed"
+    "$VM_SH" cp "$VM_NAME" "$STAGE/host" '~/jStack/host' || die "copy failed"
 fi
 
 # ── install the host ──
 say "running host/install.sh in the guest"
 vssh 'bash ~/jStack/host/install.sh --yes 2>&1 | tail -25' || \
     die "host install failed — see the output above"
+
+# ── give the guest an agent to be about ──
+#
+# A fresh host resolves agents from `~/Agents`, and a guest that has never had
+# one answers `{"agents": []}` — correctly, and deliberately: an absent agents
+# tree must read as zero agents rather than as every folder in the home
+# directory (hostenv.instance_root, the blank-thread bug). But zero agents
+# means the roster, the tree, the Files pane and every session route have no
+# subject, so the suite would skip the largest half of the surface and call it
+# covered.
+#
+# So the guest gets what a real install gets: a seat directory with a CLAUDE.md
+# in it. Made here rather than in a fixture because it is machine setup, not
+# behaviour under test — and the suite asserts the host *finds* it, which is
+# the part that can break.
+say "seeding an agent tree in the guest"
+vssh 'mkdir -p ~/Agents/testbench/chat/pad ~/Agents/testbench/pad
+printf "# Testbench\n\nA seat that exists so the live suite has a subject.\n" > ~/Agents/testbench/CLAUDE.md
+printf "# Testbench · chat\n\nThe seat the live suite opens sessions in.\n" > ~/Agents/testbench/chat/CLAUDE.md
+printf "seeded by live-vm-test.sh\n" > ~/Agents/testbench/pad/seed.txt' \
+    || die "could not seed an agent tree in the guest"
 
 # ── prove it is listening, then mint a device token the way the app does ──
 say "waiting for the host to answer"

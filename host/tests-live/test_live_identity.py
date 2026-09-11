@@ -140,20 +140,59 @@ def test_a_context_file_outside_the_root_is_refused(api):
         f"its context root")
 
 
-def test_the_control_actions_are_listed_then_one_runs(api):
-    """`/control/actions` is the menu and `/control/{action}` is the act. The
-    pairing matters: an action listed but unroutable is a button that fails
-    only when someone presses it."""
-    actions = api.ok("GET", "/control/actions")
+def _control_names(actions) -> list[str]:
     names = ([a.get("id") or a.get("action") or a.get("name") for a in actions]
              if isinstance(actions, list)
              else list(actions.get("actions", {})) or list(actions))
-    names = [n for n in names if n]
-    assert names, "no control actions offered"
+    return [n for n in names if n]
 
+
+def test_the_control_menu_answers_even_where_there_is_no_control_tier(api):
+    """An empty menu is a real answer, not a failure.
+
+    Control actions are the *embedding* host's own daemons, so a host running
+    the default profile has none and must say so with an empty list rather
+    than a 404 or a 500. An earlier draft of this test asserted the list was
+    non-empty and failed against a correct host — the assertion encoded this
+    Mac's configuration as if it were the contract.
+    """
+    actions = api.ok("GET", "/control/actions")
+    assert isinstance(actions, (list, dict)), actions
+
+
+def test_an_unknown_control_action_is_refused_not_dispatched(api):
+    """The dispatch route's always-reachable half, and the one that matters
+    most: `/control/{action}` takes an arbitrary string and hands it to a tier
+    that runs daemons. A 200 here would mean an unrecognised name got past the
+    lookup.
+
+    Which refusal is correct depends on the host, so the menu is read first
+    rather than guessed: a host with no convenience tier owes 503 (the tier is
+    missing, and the action was never the problem), a host that has one owes
+    4xx for a name it does not carry. Asserting one range for both is how this
+    test first failed against a host answering correctly.
+    """
+    has_tier = bool(_control_names(api.ok("GET", "/control/actions")))
+    r = api.post("/control/{action}", fmt={"action": "not-a-real-action"},
+                 json={})
+    if has_tier:
+        assert 400 <= r.status_code < 500, (
+            f"a host with control actions answered {r.status_code} for an "
+            f"unknown one: {r.text[:300]}")
+    else:
+        assert r.status_code == 503, (
+            f"a host with no control tier answered {r.status_code}, not 503: "
+            f"{r.text[:300]}")
+
+
+def test_a_listed_control_action_is_dispatchable(api):
+    """The pairing: an action on the menu that no route will run is a button
+    that fails only when someone presses it. Skips where the host offers no
+    read-only action — the refusal test above keeps the route covered."""
+    names = _control_names(api.ok("GET", "/control/actions"))
     safe = next((n for n in names if any(
         w in str(n).lower() for w in ("status", "list", "health", "info"))), None)
     if safe is None:
-        pytest.skip(f"no read-only control action to exercise safely: {names}")
+        pytest.skip(f"host offers no read-only control action: {names}")
     r = api.post("/control/{action}", fmt={"action": safe}, json={})
     assert r.status_code < 500, f"control/{safe} → {r.status_code}: {r.text[:300]}"

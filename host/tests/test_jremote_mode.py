@@ -74,6 +74,46 @@ def test_on_the_mesh_without_a_leaf_record_is_still_managed():
     assert "no local leaf install record" in v["note"]
 
 
+def test_a_managed_host_names_the_hub_it_is_managed_by():
+    """"Managed" with no parent is a mode with no object — the menu says a Mac
+    is administered from somewhere else and cannot say where, and the answer was
+    on disk the whole time."""
+    v = mode.classify(leaf_installed=True, on_mesh=True, is_hub=False,
+                      endpoint=False, parent="http://studio.local:9090")
+    assert v["parent"] == "http://studio.local:9090"
+    assert "studio.local" in v["note"]
+
+
+def test_a_host_that_dialled_out_to_nobody_carries_no_parent():
+    for v in (mode.classify(leaf_installed=False, on_mesh=False, is_hub=False,
+                            endpoint=False),
+              mode.classify(leaf_installed=False, on_mesh=False, is_hub=True,
+                            endpoint=True)):
+        assert not v.get("parent")
+
+
+def test_the_parent_is_read_off_the_attach_record_without_its_token(
+        tmp_path, monkeypatch):
+    """`parent.json` also holds this Mac's credential on the parent, and the
+    mode is served to every device that can read `/host`."""
+    monkeypatch.setattr(mode.hostenv, "state_dir", lambda: tmp_path)
+    assert mode._parent_url() == ""
+    (tmp_path / "parent.json").write_text(
+        '{"parent_url": "http://studio.local:9090", "device_id": "dev1", '
+        '"token": "jr1.dev1.SECRET"}')
+    assert mode._parent_url() == "http://studio.local:9090"
+    v = mode.classify(leaf_installed=True, on_mesh=True, is_hub=False,
+                      endpoint=False, parent=mode._parent_url())
+    assert "SECRET" not in repr(v)
+
+
+def test_an_unreadable_parent_record_is_no_parent_not_a_crash(tmp_path,
+                                                              monkeypatch):
+    monkeypatch.setattr(mode.hostenv, "state_dir", lambda: tmp_path)
+    (tmp_path / "parent.json").write_text("{not json")
+    assert mode._parent_url() == ""
+
+
 def test_a_hub_is_never_read_as_managed_even_with_a_stray_leaf_plist():
     # Owning the mesh wins: a hub is independent, never a leaf of itself.
     v = mode.classify(leaf_installed=True, on_mesh=True,

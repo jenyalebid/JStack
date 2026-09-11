@@ -10,8 +10,7 @@ being anything more than a mint button.
 import pytest
 from fastapi.testclient import TestClient
 
-from jstack_host import devices, grants
-from jstack_host.store import get_store
+from jstack_host import devices, grants, store
 
 
 @pytest.fixture
@@ -126,7 +125,7 @@ def test_minting_stamps_the_grant_so_an_abused_one_is_visible(client):
 def _adopted(key="leaf-mac-01", address="10.66.0.7", port=9090):
     """A machine in the registry, with a grant held for it — the state attach
     leaves behind."""
-    row = get_store().upsert_host(key, "Work Mac", address, port)
+    row = store.get_store().upsert_host(key, "Work Mac", address, port)
     grants.remember(key, "jrg1.deadbeef.secret", "http://hub:9090")
     return row
 
@@ -176,7 +175,7 @@ def test_asking_for_a_forgotten_machine_is_404_not_a_reachable_one(client, paire
     """A forgotten tile is invisible to `list_hosts`; it must be invisible here
     too, or a device could reach a machine it was never shown."""
     _adopted()
-    get_store().forget_host("leaf-mac-01")
+    store.get_store().forget_host("leaf-mac-01")
     _, device_token = paired
     resp = client.post("/api/jremote/v1/hosts/leaf-mac-01/grant", json={},
                        headers={"Authorization": f"Bearer {device_token}"})
@@ -188,7 +187,7 @@ def test_a_machine_with_a_tile_but_no_grant_says_so_instead_of_failing_blankly(
     """The state a leaf on an older build leaves: on the mesh, in the grid, not
     delegating. The 502 has to name the fix, because the tile looks identical to
     one that works."""
-    get_store().upsert_host("old-leaf", "Old Mac", "10.66.0.9", 9090)
+    store.get_store().upsert_host("old-leaf", "Old Mac", "10.66.0.9", 9090)
     _, device_token = paired
     resp = client.post("/api/jremote/v1/hosts/old-leaf/grant", json={},
                        headers={"Authorization": f"Bearer {device_token}"})
@@ -201,7 +200,7 @@ def test_a_machine_with_no_address_is_refused_before_a_request_is_made(client,
     """Enrolled without a mesh peer — a real state (`enrolment._register_host`
     writes the row whether or not the tunnel issued one). There is nothing to
     dial, and inventing an address would be worse than saying so."""
-    get_store().upsert_host("no-route", "Stranded", "", 9090)
+    store.get_store().upsert_host("no-route", "Stranded", "", 9090)
     grants.remember("no-route", "jrg1.x.y")
     _, device_token = paired
     resp = client.post("/api/jremote/v1/hosts/no-route/grant", json={},
@@ -238,6 +237,36 @@ def test_forgetting_a_machine_drops_the_grant_with_the_tile(client, paired):
     assert resp.status_code == 200
     assert resp.json()["grant_dropped"] is True
     assert grants.held("leaf-mac-01") == ""
+
+
+def test_the_grid_says_which_machines_a_device_can_actually_get_into(client,
+                                                                    paired):
+    """The tile and the access are two different facts, and the row that looks
+    fine is the one that lies: a machine enrolled by an older build shows on
+    every device and 502s the moment somebody taps it. `delegated` is that
+    difference, on the row itself."""
+    _adopted()
+    store.get_store().upsert_host("old-leaf", "Old Mac", "10.66.0.9", 9090)
+    _, device_token = paired
+    resp = client.get("/api/jremote/v1/hosts",
+                      headers={"Authorization": f"Bearer {device_token}"})
+    assert resp.status_code == 200
+    by_key = {h["key"]: h for h in resp.json()["hosts"]}
+    assert by_key["leaf-mac-01"]["delegated"] is True
+    assert by_key["old-leaf"]["delegated"] is False
+    # And it is a computed answer, never a column: `host_grants` does not sync,
+    # so nothing here may look like something a device could push back.
+    assert "token" not in by_key["leaf-mac-01"]
+
+
+def test_a_revoked_grant_stops_the_grid_claiming_access(client, paired):
+    _adopted()
+    grants.forget("leaf-mac-01")
+    store.get_store().upsert_host("leaf-mac-01", "Work Mac", "10.66.0.7", 9090)
+    _, device_token = paired
+    resp = client.get("/api/jremote/v1/hosts",
+                      headers={"Authorization": f"Bearer {device_token}"})
+    assert resp.json()["hosts"][0]["delegated"] is False
 
 
 def test_the_grant_roster_never_carries_the_tokens():

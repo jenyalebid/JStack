@@ -336,9 +336,35 @@ def _cmd_adopt(args) -> int:
     and the machine being adopted cannot work out where to send it.
     """
     _adopt(args)
-    from . import addresses, devices, enrolment
+    from . import addresses, devices, enrolment, mode, tunnel
     if not devices.provisioned():
         print("this host has no token yet — run `jstack-host install` first.",
+              file=sys.stderr)
+        return 1
+    # Refused here rather than at redemption, because redemption happens on the
+    # OTHER Mac. A host code is a promise of a leaf bundle, and the bundle is a
+    # peer minted off this machine's mesh: a code from a Mac with no mesh burns
+    # on the far end, with an error that reads as that machine's fault. The
+    # honest place to fail is the machine that cannot keep the promise.
+    m = mode.current()
+    if m["mode"] == "managed":
+        print("this Mac is a managed hub itself — it rides another hub's mesh "
+              "and has no peers of its own to mint. Adopt from the parent "
+              f"({m.get('parent') or 'the hub this one is attached to'}), or "
+              "`jstack-host detach` first.", file=sys.stderr)
+        return 1
+    if not tunnel.can_pair():
+        # `can_pair()` and not the mode's hub test, deliberately: the mode will
+        # call a machine a hub on the strength of holding `10.66.0.1`, which is
+        # true of a machine whose peer table this process cannot find. Minting
+        # is the narrower question — this process has to be able to edit the
+        # peer table, not merely be on the mesh it describes.
+        print("this Mac cannot mint a mesh peer, so it cannot hand a machine "
+              "the tunnel that joining means — the code would fail on the "
+              f"other Mac, not here. Expected the peer table at "
+              f"{tunnel.HUB_CONF}. If this Mac does run the mesh, that is the "
+              "wrong directory: set WG_PEER_DIR to the one its daemons drive. "
+              "Otherwise run `install_hub.sh` to make this Mac a hub.",
               file=sys.stderr)
         return 1
     row = enrolment.mint_code(args.name, created_by="", ttl=args.ttl,

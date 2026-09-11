@@ -370,6 +370,17 @@ class DefaultProfile:
         """The mesh tool, beside the package that installed it with it."""
         return package_root() / "scripts" / "wireguard" / "wg_peer.py"
 
+    def wireguard_dir(self) -> Path:
+        """The mesh's own state — `wg0.conf`, the server keys, the endpoint.
+
+        `<package>/Credentials/wireguard`, and deliberately not
+        `credentials_dir()`: `install_hub.sh` runs under `sudo`, where `$HOME`
+        is root's, so it lands the keys beside the code it derives from `$0`.
+        `wg_peer.py` mirrors that by resolving `Credentials/wireguard` from its
+        own location, and this is the third reader of the one location.
+        """
+        return package_root() / "Credentials" / "wireguard"
+
     def security_alert(self, body: str) -> None:
         """The server log — a standalone host has no messaging channel of its
         own, and a loud line where its logs are read is the honest maximum."""
@@ -745,6 +756,34 @@ def peer_script() -> Path:
     if env:
         return Path(env).expanduser()
     return profile().peer_script()
+
+
+def wireguard_dir() -> Path:
+    """Where this host's mesh state lives — `wg0.conf`, the keys, `endpoint`.
+
+    A profile answer for the same reason `peer_script()` is one, and it is the
+    same reason twice: the mesh tooling and the package do not have to have
+    arrived together, and a host that reads one directory while its own daemons
+    write another has two answers for one mesh. Splitting them is not a cosmetic
+    drift — it is `can_pair()` returning False on the machine that owns the
+    peer table, which takes `/tunnel/pair` to a 503 and reports a hub as
+    `local` (#42).
+
+    `WG_PEER_DIR` overrides, first and outright, because that is the variable
+    `wg_peer.py` itself honours — the tool and its readers move together or the
+    split comes back under a different name.
+
+    Read through `getattr` so a profile written before this existed keeps
+    working: an external profile is somebody else's file, and a package upgrade
+    that raises AttributeError on their machine is a package that broke them.
+    """
+    env = os.environ.get("WG_PEER_DIR")
+    if env:
+        return Path(env).expanduser()
+    answer = getattr(profile(), "wireguard_dir", None)
+    if answer is not None:
+        return answer()
+    return package_root() / "Credentials" / "wireguard"
 
 
 def state_dir() -> Path:

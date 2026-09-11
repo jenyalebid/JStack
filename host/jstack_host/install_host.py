@@ -80,8 +80,30 @@ def log_dir() -> Path:
 
 # ── the agent ──
 
+#: Variables outside the `JREMOTE_` namespace that still decide what this host
+#: *is*, and therefore have to travel with it.
+#:
+#: `WG_PEER_DIR` names the mesh state — `wg0.conf`, the keys, the endpoint — and
+#: `WG_ENDPOINT` declares a way in from outside. Both are read straight from the
+#: environment by `wg_peer.py`, which is why they are spelled this way and not
+#: `JREMOTE_*`: the tool owns the names, and renaming them here would split the
+#: tool from its readers to tidy a prefix.
+#:
+#: Leaving them out was the second half of #42. A host whose mesh lives outside
+#: the package tree records that fact in one place — its agent's environment —
+#: and a `jstack-host` typed into a shell adopted every variable except the two
+#: that decide whether the machine owns a mesh at all. So `mode` called this Mac
+#: `local` while it held `10.66.0.1` and five peers, and `can_pair()` answered
+#: False on the machine that owns the peer table.
+MESH_VARS = ("WG_PEER_DIR", "WG_ENDPOINT")
+
+
+def _carries(key: str) -> bool:
+    return key.startswith("JREMOTE_") or key in MESH_VARS
+
+
 def carried_environment(source: dict[str, str] | None = None) -> dict[str, str]:
-    """The `JREMOTE_*` overrides the agent must run under.
+    """The overrides the agent must run under — `JREMOTE_*` and the mesh pair.
 
     Whatever the installer resolved the token and the state dir against, the
     agent has to resolve the same way — and a launchd job inherits none of the
@@ -91,11 +113,11 @@ def carried_environment(source: dict[str, str] | None = None) -> dict[str, str]:
     comes up on the wrong profile after a reboot.
     """
     env = source if source is not None else dict(os.environ)
-    return {k: v for k, v in env.items() if k.startswith("JREMOTE_")}
+    return {k: v for k, v in env.items() if _carries(k)}
 
 
 def installed_environment(path: Path | None = None) -> dict[str, str]:
-    """The `JREMOTE_*` overrides the installed agent actually runs under.
+    """The overrides the installed agent actually runs under.
 
     `status` and `doctor` are typed into a shell, and a shell has none of the
     plist's environment: read from there they would resolve the profile, the
@@ -103,6 +125,11 @@ def installed_environment(path: Path | None = None) -> dict[str, str]:
     not exist — a registry looked for under $HOME, a state dir with no token.
     The plist is the one record of what the host was installed to be, so
     those commands adopt it before they look at anything.
+
+    The same set `carried_environment` writes, read back: `JREMOTE_*` and the
+    mesh pair. The two lists are one list on purpose — a variable an installer
+    writes into a plist and a shell then declines to adopt is a host that reads
+    differently depending on who is asking.
     """
     path = path or plist_path()
     try:
@@ -113,7 +140,7 @@ def installed_environment(path: Path | None = None) -> dict[str, str]:
     env = job.get("EnvironmentVariables") if isinstance(job, dict) else None
     if not isinstance(env, dict):
         return {}
-    return {str(k): str(v) for k, v in env.items() if str(k).startswith("JREMOTE_")}
+    return {str(k): str(v) for k, v in env.items() if _carries(str(k))}
 
 
 def installed_port(path: Path | None = None) -> int | None:
@@ -153,6 +180,15 @@ def adopt_installed_environment(path: Path | None = None) -> None:
             adopted = True
     if adopted:
         hostenv.reset_profile()
+        # And whatever already resolved against the environment we just
+        # replaced. `tunnel` binds four paths at import; a command that adopts
+        # `WG_PEER_DIR` after that would otherwise spend the rest of its run
+        # reading the mesh the shell implied rather than the one the agent
+        # declared. Only if it is already imported — importing it here to
+        # rebind it would be this function deciding a command needs the tunnel.
+        mod = sys.modules.get(f"{__package__}.tunnel")
+        if mod is not None:
+            mod.rebind()
 
 
 def render_plist(*, label: str = LABEL, port: int = DEFAULT_PORT,

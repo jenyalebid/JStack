@@ -756,16 +756,30 @@ def redeem_enrolment_code(body: EnrolmentRedeemRequest, request: Request):
 # change to it comes through a route that proved a bearer token first. A device
 # that could push a host row could invent a machine.
 
-def _serve_host(row: dict) -> dict:
-    return {**row, "deleted": bool(row["deleted"])}
+def _serve_host(row: dict, delegated: bool = False) -> dict:
+    return {**row, "deleted": bool(row["deleted"]), "delegated": delegated}
 
 
 @router.get("/hosts")
 def list_hosts(device_id: str = Depends(current_device)):
     """The machines this host has enrolled. Forgotten ones are excluded — the
-    tombstone exists for the mirror, not for the reader."""
+    tombstone exists for the mirror, not for the reader.
+
+    `delegated` rides with each row because the tile and the access are two
+    different facts and the row that looks fine is the one that lies: a machine
+    enrolled by an older build has a tile every device shows and no grant behind
+    it, so asking for access 502s at the moment somebody taps it. A caller that
+    can see the machine can see whether it will let them in.
+
+    From `host_grants`, which never rides `/sync` — so this is a boolean
+    computed on the way out and not a column any device can mirror, let alone
+    push back.
+    """
+    from . import grants
     from .store import get_store
-    return {"hosts": [_serve_host(r) for r in get_store().list_hosts()]}
+    live = {h["host_key"] for h in grants.holdings() if h["revoked_at"] is None}
+    return {"hosts": [_serve_host(r, r["key"] in live)
+                      for r in get_store().list_hosts()]}
 
 
 @router.post("/hosts/{key}/rename")

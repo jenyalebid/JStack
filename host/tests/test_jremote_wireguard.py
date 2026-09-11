@@ -67,16 +67,101 @@ def _wg_peer_default_dir() -> Path:
 
 
 def _tunnel_default_dir() -> Path:
-    """`tunnel.WG_DIR` with `WG_PEER_DIR` out of the picture — the fallback the
-    server uses when nothing relocated the state."""
-    return hostenv.package_root() / "Credentials" / "wireguard"
+    """What the server resolves with `WG_PEER_DIR` out of the picture — the
+    profile's answer, which for the default profile is the package root."""
+    return hostenv.wireguard_dir()
 
 
+@pytest.mark.skipif("WG_PEER_DIR" in os.environ,
+                    reason="WG_PEER_DIR is set, so both readers are honouring "
+                           "it and the defaults are not what is in play")
 def test_the_tool_and_the_server_default_to_the_same_directory():
     """The reconciliation this file exists for: `wg_peer.py` writing one
     directory while `tunnel.py` reads another is a hub that pairs a device and
-    then reports it cannot pair, because `can_pair()` looks at the wrong conf."""
+    then reports it cannot pair, because `can_pair()` looks at the wrong conf.
+
+    Asserted against the *tool this host actually runs* rather than against a
+    fixed path, which is the half that was missing: `peer_script()` has always
+    been a profile answer and `WG_DIR` was not, so a host whose tooling lives
+    outside the package tree read `<package>/Credentials/wireguard` while its
+    own daemons drove another directory entirely. That is jStack#42 — the Mac
+    holding `10.66.0.1` and five peers reporting itself `local`, with
+    `/tunnel/pair` answering 503 on the one machine that owns the mesh. The
+    relationship, not the literal, is what has to hold on every profile.
+    """
     assert _wg_peer_default_dir() == _tunnel_default_dir()
+
+
+def test_the_directory_is_a_profile_answer_and_follows_the_tool(monkeypatch):
+    """A host whose mesh predates the package: the profile names both, and the
+    server has to follow it rather than the tree it was imported from."""
+    class Elsewhere:
+        def peer_script(self):
+            return Path("/opt/mesh/scripts/wireguard/wg_peer.py")
+
+        def wireguard_dir(self):
+            return Path("/opt/mesh/Credentials/wireguard")
+
+    monkeypatch.delenv("WG_PEER_DIR", raising=False)
+    monkeypatch.setattr(hostenv, "profile", lambda: Elsewhere())
+    assert hostenv.wireguard_dir() == Path("/opt/mesh/Credentials/wireguard")
+
+
+def test_a_profile_that_predates_the_question_still_resolves(monkeypatch):
+    """An external profile is somebody else's file. A package upgrade that
+    raises AttributeError on their machine is a package that broke them, so the
+    seam falls back to the package default instead of insisting."""
+    class Older:
+        pass
+
+    monkeypatch.delenv("WG_PEER_DIR", raising=False)
+    monkeypatch.setattr(hostenv, "profile", lambda: Older())
+    assert hostenv.wireguard_dir() == (
+        hostenv.package_root() / "Credentials" / "wireguard")
+
+
+def test_adopting_the_agents_environment_carries_the_mesh_and_rebinds(
+        tmp_path, monkeypatch):
+    """The other half of #42, from the other side: a shell has none of the
+    installed agent's environment, and `WG_PEER_DIR` is the variable that says
+    where the mesh is. Adopted after `tunnel` already resolved, it has to move
+    the paths that were bound at import — a process reading one directory while
+    its own daemons write another is the whole defect."""
+    from jstack_host import install_host
+
+    plist = tmp_path / "com.jremote.host.plist"
+    mesh = tmp_path / "elsewhere" / "wireguard"
+    plist.write_bytes(install_host.plistlib.dumps({
+        "Label": "com.jremote.host",
+        "EnvironmentVariables": {"JREMOTE_STATE_DIR": str(tmp_path / "state"),
+                                 "WG_PEER_DIR": str(mesh)},
+    }))
+    assert install_host.installed_environment(plist)["WG_PEER_DIR"] == str(mesh)
+
+    # Pinned so monkeypatch puts them back: `rebind()` reassigns module state,
+    # and a test that leaves the process pointed at a tmp dir breaks the ones
+    # after it rather than itself.
+    for name in ("PEER_SCRIPT", "WG_DIR", "CLIENTS_DIR", "HUB_CONF"):
+        monkeypatch.setattr(tunnel, name, getattr(tunnel, name))
+    monkeypatch.delenv("WG_PEER_DIR", raising=False)
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    install_host.adopt_installed_environment(plist)
+    assert tunnel.WG_DIR == mesh
+    assert tunnel.HUB_CONF == mesh / "wg0.conf"
+    assert tunnel.CLIENTS_DIR == mesh / "clients"
+
+
+def test_the_env_wins_over_the_profile(monkeypatch):
+    """`WG_PEER_DIR` is the variable `wg_peer.py` itself honours, so it has to
+    outrank the profile here too — the tool and its readers move together or
+    the split comes back under a different name."""
+    class Elsewhere:
+        def wireguard_dir(self):
+            return Path("/opt/mesh/Credentials/wireguard")
+
+    monkeypatch.setenv("WG_PEER_DIR", "/tmp/somewhere-else")
+    monkeypatch.setattr(hostenv, "profile", lambda: Elsewhere())
+    assert hostenv.wireguard_dir() == Path("/tmp/somewhere-else")
 
 
 def test_install_hub_writes_into_that_same_directory():

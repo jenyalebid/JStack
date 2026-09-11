@@ -60,10 +60,11 @@ or set the env is judged by what the tunnel tool would do, not by a guess.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from pathlib import Path
 
-from . import addresses, tunnel
+from . import addresses, hostenv, tunnel
 
 #: The LaunchDaemon `install_leaf.sh` drops on a machine it turns into a leaf
 #: (`/Library/LaunchDaemons/com.jremote.leaf.plist`). Presence is the durable
@@ -77,6 +78,27 @@ def _leaf_installed() -> bool:
     """Whether a leaf tunnel is installed on this machine — the durable record,
     read without caring whether the daemon is loaded this second."""
     return LEAF_PLIST.is_file()
+
+
+def _parent_url() -> str:
+    """Which hub this machine is attached to, or "".
+
+    Read off `parent.json` — the record `attach` writes and `detach` drops, so
+    it is the same file that decides whether this machine is attached at all.
+    Only the URL is taken: that record also holds the device token this Mac
+    holds on its parent, and the mode is served to every device that can read
+    `/host`.
+
+    Worth carrying because "managed" without a parent is a mode with no object.
+    A menu that says a Mac is managed and cannot say by what leaves the one
+    question it raised unanswered, and the answer is already on disk.
+    """
+    try:
+        raw = json.loads((hostenv.state_dir() / "parent.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    url = raw.get("parent_url") if isinstance(raw, dict) else ""
+    return url if isinstance(url, str) else ""
 
 
 def _on_mesh(inets: list[str]) -> bool:
@@ -135,7 +157,7 @@ def _endpoint_declared() -> bool:
 
 def classify(*, leaf_installed: bool, on_mesh: bool,
              is_hub: bool, endpoint: bool, off_net_verified: bool = False,
-             owns_mesh_gateway: bool = False) -> dict:
+             owns_mesh_gateway: bool = False, parent: str = "") -> dict:
     """The taxonomy, from a handful of facts and nothing else. Pure on purpose.
 
     `off_net_verified` is the one that turns open mode's declaration into a
@@ -147,21 +169,28 @@ def classify(*, leaf_installed: bool, on_mesh: bool,
     `10.66.0.1` on an interface. Either it or `is_hub` settles the question, so
     a hub is never demoted to a leaf of itself because this package could not
     find the peer list it does not administer.
+
+    `parent` rides along on the managed answers and is empty everywhere else —
+    it is the hub this machine dialled out to, and it says nothing about a
+    machine that dialled out to nobody.
     """
     is_hub = is_hub or owns_mesh_gateway
+    named = f" ({parent})" if parent else ""
     if leaf_installed and not is_hub:
         return {
             "mode": "managed",
             "live": on_mesh,
-            "note": ("attached to a parent hub; the mesh tunnel is up"
+            "parent": parent,
+            "note": (f"attached to a parent hub{named}; the mesh tunnel is up"
                      if on_mesh else
-                     "attached to a parent hub, but the mesh tunnel is DOWN — "
-                     "not reachable through the parent right now"),
+                     f"attached to a parent hub{named}, but the mesh tunnel is "
+                     "DOWN — not reachable through the parent right now"),
         }
     if on_mesh and not is_hub:
         return {
             "mode": "managed",
             "live": True,
+            "parent": parent,
             "note": "on a parent hub's mesh (no local leaf install record)",
         }
     if is_hub and endpoint:
@@ -204,4 +233,5 @@ def current() -> dict:
         endpoint=endpoint,
         off_net_verified=verified,
         owns_mesh_gateway=owns_gateway,
+        parent=_parent_url(),
     )

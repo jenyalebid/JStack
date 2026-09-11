@@ -23,7 +23,6 @@ to it exactly as a human would, so pairing has one implementation.
 from __future__ import annotations
 
 import ipaddress
-import os
 import re
 import subprocess
 import sys
@@ -39,22 +38,43 @@ from . import hostenv
 #: keeps the copy its own daemons already drive.
 PEER_SCRIPT = hostenv.peer_script()
 #: The hub's tunnel state, resolved the *same way* `wg_peer.py` resolves it, so
-#: the tool never writes one directory while this module reads another:
-#: `WG_PEER_DIR` if set, else `<package>/Credentials/wireguard`. That last is
-#: not `credentials_dir()` on purpose — `install_hub.sh` runs under `sudo`,
-#: where `$HOME` is root's, so it lands the keys beside the code it derives from
-#: `$0` rather than under the invoking user's home; `wg_peer.py` mirrors that by
-#: resolving `Credentials/wireguard` from its own location, and this is the third
-#: reader of the one location. (The APNs key still lives under
-#: `credentials_dir()`: it is written in the user's own install context, where
-#: that path is right.)
-WG_DIR = (Path(os.environ["WG_PEER_DIR"]).expanduser()
-          if os.environ.get("WG_PEER_DIR")
-          else hostenv.package_root() / "Credentials" / "wireguard")
+#: the tool never writes one directory while this module reads another —
+#: `WG_PEER_DIR` first, then the profile's answer. A profile answer and not a
+#: path derived from this source for the same reason `PEER_SCRIPT` is one: the
+#: two belong to the same mesh and have to resolve to the same tree, and this
+#: Mac was the proof they could come apart (#42 — the hub reading
+#: `<package>/Credentials/wireguard` while its daemons drove the copy under
+#: Infrastructure, so `can_pair()` was False on the machine holding the peer
+#: table). (The APNs key still lives under `credentials_dir()`: it is written in
+#: the user's own install context, where that path is right.)
+WG_DIR = hostenv.wireguard_dir()
 CLIENTS_DIR = WG_DIR / "clients"
 HUB_CONF = WG_DIR / "wg0.conf"
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+
+
+def rebind() -> None:
+    """Re-resolve the four paths above against the environment as it is now.
+
+    Module constants are bound at import, and one caller legitimately changes
+    the answer afterwards: `install_host.adopt_installed_environment`, which
+    exists precisely because a command typed into a shell has none of the
+    installed agent's environment and must take it on before it looks at
+    anything. Adopting `WG_PEER_DIR` a moment after this module resolved
+    without it leaves the process reading the directory the shell implied and
+    the tool writing the one the agent declared — the same split as #42,
+    arrived at from the other side.
+
+    Named and callable rather than left to whoever remembers to reassign three
+    attributes: a rebind that misses `HUB_CONF` is a `can_pair()` that answers
+    for a different mesh than `issue()` writes to.
+    """
+    global PEER_SCRIPT, WG_DIR, CLIENTS_DIR, HUB_CONF
+    PEER_SCRIPT = hostenv.peer_script()
+    WG_DIR = hostenv.wireguard_dir()
+    CLIENTS_DIR = WG_DIR / "clients"
+    HUB_CONF = WG_DIR / "wg0.conf"
 
 
 class TunnelError(Exception):

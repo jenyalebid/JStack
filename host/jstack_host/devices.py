@@ -271,10 +271,10 @@ def mint(name: str, identity: str | None = None) -> tuple[dict, str]:
     device, presented at pair time (optional — an app that predates it sends
     none). When present, re-pairing the same device ROTATES its one row in
     place — same id, new secret, name refreshed, revocation cleared — instead
-    of minting a second credential beside the first; that accumulation is the
-    duplicate "Laptop"/"iPad" rows this keying exists to stop. Absent,
-    every call mints a fresh random row under a NULL identity, exactly as
-    before — the backward-compatible path."""
+    of minting a second credential beside the first; that accumulation (one
+    physical device showing up as two rows) is what this keying exists to stop.
+    Absent, every call mints a fresh random row under a NULL identity, exactly
+    as before — the backward-compatible path."""
     if identity:
         for _ in range(3):
             device_id = uuid.uuid4().hex[:12]

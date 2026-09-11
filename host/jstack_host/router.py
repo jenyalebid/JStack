@@ -544,6 +544,11 @@ def app_mac_download():
 
 class DeviceMintRequest(BaseModel):
     name: str
+    #: The physical device's stable, app-generated identity (the iOS app keeps a
+    #: UUID in the Keychain and presents it here). Optional — an app that
+    #: predates the field sends none. When present it keys the row, so re-pairing
+    #: the same device rotates its one credential instead of minting a duplicate.
+    identity: str | None = None
 
 
 class DeviceRenameRequest(BaseModel):
@@ -555,6 +560,30 @@ def _device_name(raw: str) -> str:
     if not name:
         raise HTTPException(status_code=400, detail="a device needs a name")
     return name
+
+
+# The device identity is machine-minted (a Keychain UUID), never human-typed, so
+# its alphabet is narrow on purpose: a value outside it is a mangled paste or a
+# probe, not a device. Bounding length and charset keeps a SQL wildcard, a
+# newline or an unbounded blob out of the column that now keys the table.
+_IDENTITY_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
+
+
+def _device_identity(raw: str | None) -> str | None:
+    """A client-supplied device identity, validated or refused.
+
+    Absent or empty stays None — identity is optional and a row keyed on nothing
+    is exactly the pre-field behavior. A present value is length- and
+    charset-checked; anything malformed is a 400, the same shape `_device_name`
+    raises, rather than something that reaches the store."""
+    if raw is None:
+        return None
+    identity = raw.strip()
+    if not identity:
+        return None
+    if len(identity) > 128 or not _IDENTITY_RE.match(identity):
+        raise HTTPException(status_code=400, detail="invalid device identity")
+    return identity
 
 
 @router.get("/devices")
@@ -581,7 +610,8 @@ def mint_device(body: DeviceMintRequest, request: Request):
             status_code=403,
             detail="minting device tokens is only available on the host's own "
                    "network — connect to the same Wi-Fi as the Mac and try again")
-    row, token = devices.mint(_device_name(body.name))
+    row, token = devices.mint(_device_name(body.name),
+                              _device_identity(body.identity))
     row["revoked"] = False
     return {"device": row, "token": token}
 

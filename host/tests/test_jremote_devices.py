@@ -76,6 +76,77 @@ def test_empty_and_absent_tokens_fail_closed(store):
     assert devices.authenticate("anything") is None  # empty table, no file
 
 
+# ── re-pairing one physical device: identity keys the row ─────────────────────
+#
+# The break this catches: with no device identity, pairing the same Mac or iPad
+# twice minted a second row, and the duplicates nobody would think to revoke
+# piled up (one laptop under two names, one iPad as two rows). An app that sends
+# a stable identity gets ONE row rotated in place instead; an app that sends none
+# keeps the old every-pairing-is-a-row behavior, untouched.
+
+def test_re_pairing_one_identity_rotates_one_row(store):
+    """Same identity twice → the same row, a new secret, the old token dead, and
+    exactly one row left behind — not a second live credential."""
+    first, first_tok = devices.mint("My Laptop", identity="device-uuid-1")
+    assert first["identity"] == "device-uuid-1"
+    second, second_tok = devices.mint("my-laptop", identity="device-uuid-1")
+    assert second["id"] == first["id"]                  # same row
+    assert second_tok != first_tok                      # rotated secret
+    assert devices.authenticate(first_tok) is None      # old token invalid
+    assert devices.authenticate(second_tok) == first["id"]
+    rows = [r for r in store.list_devices() if r["identity"] == "device-uuid-1"]
+    assert len(rows) == 1                               # exactly one row
+    assert rows[0]["name"] == "my-laptop"               # name refreshed
+
+
+def test_re_pairing_revives_a_revoked_identity_in_place(store):
+    """A device revoked and then paired again comes back as its OWN row with
+    revocation cleared — not a ghost living on beside a fresh one.
+
+    Deliberately unlike `rekey()`, which refuses to resurrect a revoked row: a
+    re-pair presents a stable identity the user chose to keep using, and the one
+    row it keys is the one the user sees and can revoke again."""
+    first, first_tok = devices.mint("my-ipad", identity="ipad-uuid")
+    assert devices.revoke(first["id"]) is True
+    assert devices.authenticate(first_tok) is None
+    second, second_tok = devices.mint("my-ipad", identity="ipad-uuid")
+    assert second["id"] == first["id"]
+    assert store.device(first["id"])["revoked_at"] is None        # revived
+    assert devices.authenticate(second_tok) == first["id"]
+    assert len([r for r in store.list_devices()
+                if r["identity"] == "ipad-uuid"]) == 1
+
+
+def test_minting_without_an_identity_still_makes_a_new_row_each_time(store):
+    """Backward compatibility: no identity keys on nothing, so every pairing is
+    a fresh random row under a NULL identity — the pre-field behavior."""
+    a, _ = devices.mint("laptop")
+    b, _ = devices.mint("laptop")
+    assert a["id"] != b["id"]
+    assert a["identity"] is None and b["identity"] is None
+    assert store.count_devices() == 2
+
+
+def test_the_partial_index_rejects_a_second_row_under_one_identity(store):
+    """The cross-process backstop: even a direct insert cannot plant a second
+    row under a non-null identity. NULL stays exempt — legacy, host-internal and
+    every pre-field row carry it and must coexist."""
+    import sqlite3
+    devices.mint("phone", identity="shared-uuid")
+    con = sqlite3.connect(store.db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO devices (id, name, token_hash, created_at, identity)"
+                " VALUES ('other','phone2','sha256:x',0,'shared-uuid')")
+            con.commit()
+    finally:
+        con.close()
+    devices.mint("no-id-1")           # two NULL identities still coexist
+    devices.mint("no-id-2")
+    assert store.count_devices() == 3
+
+
 # ── the legacy grandfather ───────────────────────────────────────────────────
 
 def test_the_file_token_becomes_row_legacy_on_first_use(store, legacy_file):
@@ -463,6 +534,36 @@ def test_minting_on_the_lan_hands_the_token_out_exactly_once(client, store, monk
     token = r.json()["token"]
     assert devices.authenticate(token) == r.json()["device"]["id"]
     assert token not in str(store.list_devices())
+
+
+def test_re_pairing_over_the_route_reuses_one_row(client, store, monkeypatch):
+    """The route carries the identity through to the mint: the same device
+    pairing again gets its one row rotated, not a duplicate."""
+    monkeypatch.setattr(devices, "mint_allowed_from", lambda ip: True)
+    base = "/api/jremote/v1/devices"
+    first = client.post(base, json={"name": "My Laptop", "identity": "uuid-x"}).json()
+    second = client.post(base, json={"name": "my-laptop", "identity": "uuid-x"}).json()
+    assert second["device"]["id"] == first["device"]["id"]
+    assert second["device"]["identity"] == "uuid-x"
+    assert devices.authenticate(first["token"]) is None            # rotated out
+    assert devices.authenticate(second["token"]) == first["device"]["id"]
+
+
+def test_a_malformed_identity_is_refused_by_the_route(client, monkeypatch):
+    """Identity is a Keychain UUID, never human-typed — a value too long or
+    carrying characters outside the machine alphabet is a mangled paste or a
+    probe, and it is refused before it reaches the column that keys the table."""
+    monkeypatch.setattr(devices, "mint_allowed_from", lambda ip: True)
+    base = "/api/jremote/v1/devices"
+    assert client.post(base, json={"name": "x", "identity": "has space"}).status_code == 400
+    assert client.post(base, json={"name": "x", "identity": "a;b"}).status_code == 400
+    assert client.post(base, json={"name": "x", "identity": "z" * 129}).status_code == 400
+    # A well-formed identity still mints, and the response carries the field.
+    r = client.post(base, json={"name": "x", "identity": "Keychain-UUID_1.2:3"})
+    assert r.status_code == 200
+    assert r.json()["device"]["identity"] == "Keychain-UUID_1.2:3"
+    # No identity at all is accepted, exactly as before the field existed.
+    assert client.post(base, json={"name": "x"}).status_code == 200
 
 
 def test_mint_gate_tells_lan_from_tunnel_and_garbage():

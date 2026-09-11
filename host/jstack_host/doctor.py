@@ -103,11 +103,26 @@ def check_fd_limit() -> dict:
 
 
 def check_token() -> dict:
+    """Can anything authenticate against this host — not "is the file there".
+
+    Those stopped being the same question at per-device tokens: the authority
+    is the `devices` table, the shared file is a spent migration source, and a
+    host whose table has already decided may well never have had one. An
+    embedded host is exactly that host, and grading it FAIL printed *the host
+    cannot serve chats until the failures above are fixed* under a machine
+    serving a roster of devices all day — while `status`, two lines of output
+    away, called the same host provisioned. `devices.provisioned()` is what
+    every gate in the package asks, so it is what this grades.
+    """
+    from . import devices
     path = hostenv.token_path()
-    if not path.exists():
-        return _check("token", FAIL, f"missing at {path}",
-                      "run the installer — it mints one")
-    return _check("token", OK, f"present at {path}")
+    if path.exists():
+        return _check("token", OK, f"present at {path}")
+    if devices.provisioned():
+        return _check("token", OK, "no shared token file — devices "
+                                   "authenticate from this host's store")
+    return _check("token", FAIL, f"missing at {path}, and no device rows",
+                  "run the installer — it mints one")
 
 
 def check_profile() -> dict:
@@ -214,23 +229,30 @@ def check_service() -> dict:
     """Only meaningful once installed — reported as-is, never as a failure of
     the machine: the doctor also runs before the LaunchAgent exists. A profile
     may declare the host runs embedded in another server (`embedded_in`), and
-    then there is no LaunchAgent to look for."""
-    from . import install_host
-    embedded = getattr(hostenv.profile(), "embedded_in", "")
+    then there is no LaunchAgent to look for.
+
+    Asked through `embed.server()` rather than off the profile directly, so
+    this and `status` cannot answer differently about the same machine — a
+    shell that could not import the profile used to get `embedded in the
+    dashboard` from one and `LaunchAgent not installed` from the other."""
+    from . import embed, install_host
+    embedded = embed.server()
     if embedded:
         return _check("service", OK, f"embedded in {embedded}")
-    if not install_host.plist_path().exists():
+    label = install_host.agent_label()
+    plist = install_host.plist_path(label)
+    if not plist.exists():
         return _check("service", WARN, "LaunchAgent not installed")
     # The agent's own port, never the default. Probing DEFAULT_PORT graded a
     # host installed on 9099 by whatever held 9090 — on this machine the
     # dashboard — and passed it as `answering on 9090`. A check that grades the
     # wrong program is worse than no check: it reported every check passed on a
     # machine whose host it had never contacted.
-    port = install_host.installed_port() or install_host.DEFAULT_PORT
+    port = install_host.installed_port(plist) or install_host.DEFAULT_PORT
     served = install_host.health(port)
     if not served:
         return _check("service", FAIL, f"installed but nothing answers on {port}",
-                      "launchctl kickstart -k gui/$(id -u)/com.jremote.host; "
+                      f"launchctl kickstart -k gui/$(id -u)/{label}; "
                       "then read logs/host.err in the state dir")
     if served.get("service") != "jremote-host":
         return _check("service", FAIL,

@@ -40,6 +40,42 @@ import Network
 /// find by resolving defaults, and reading defaults instead would report on a
 /// different, empty host — the same trap `jstack-host` avoids by adopting the
 /// installed environment before every read command.
+/// What an embedded host recorded about itself — the Swift reader for
+/// `jstack_host/embed.py`.
+///
+/// A host mounted into another application has no LaunchAgent, so every
+/// question this menu asks the plist has no answer there: which port, which
+/// state dir, and therefore which token. Defaulting each of those was how the
+/// bar came to report "no host running" on a Mac whose host was up and serving
+/// all day — the port right by luck, the state dir wrong, and no credential to
+/// make the one authenticated call that would have settled it.
+///
+/// The embedding server writes this file as it starts. Read at the same fixed
+/// path the Python side uses: the state dir a host with no configuration at
+/// all resolves, which is the situation this app is in before it has read
+/// anything.
+enum EmbedMarker {
+    struct Record: Decodable {
+        var server: String?
+        var port: Int?
+        var stateDir: String?
+        var tokenPath: String?
+        var profile: String?
+    }
+
+    /// Read fresh, never cached, for the same reason `token()` is: the
+    /// dashboard rewrites this on every start, and a bar holding the answer
+    /// from launch would keep pointing at a host that has since moved.
+    static func read() -> Record? {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/state/jremote/embedded.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(Record.self, from: data)
+    }
+}
+
 enum HostAgent {
     /// The LaunchAgent that owns the host's lifecycle.
     ///
@@ -84,12 +120,15 @@ enum HostAgent {
         let mine = ProcessInfo.processInfo.arguments
         if let i = mine.firstIndex(of: "--port"), i + 1 < mine.count,
            let p = Int(mine[i + 1]) { return p }
-        guard let args = job()?["ProgramArguments"] as? [String],
-              let i = args.firstIndex(of: "--port"),
-              i + 1 < args.count,
-              let p = Int(args[i + 1])
-        else { return defaultPort }
-        return p
+        if let args = job()?["ProgramArguments"] as? [String],
+           let i = args.firstIndex(of: "--port"), i + 1 < args.count,
+           let p = Int(args[i + 1]) { return p }
+        // An embedded host's port is an argument to the application it is
+        // mounted in, not to any job this app can read, so the marker is the
+        // only record of it. Before the default, because the default being
+        // right here was luck: the dashboard happens to serve 9090.
+        if let p = EmbedMarker.read()?.port { return p }
+        return defaultPort
     }
 
     /// The address the host was installed to bind, or nil where nothing on
@@ -109,12 +148,21 @@ enum HostAgent {
         return args[i + 1]
     }
 
-    /// The state dir the host is using. From the agent when there is one;
-    /// otherwise the package's own default — which is the right answer for a
-    /// host started with `jstack-host serve`, a documented way to run one and
-    /// a case with no plist to read anything off.
+    /// The state dir the host is using. From the agent when there is one, then
+    /// from what an embedded host recorded, and only then the package's own
+    /// default — which is the right answer for a host started with
+    /// `jstack-host serve`, a documented way to run one and a case with no
+    /// plist to read anything off.
+    ///
+    /// The marker step is what makes the menu right on a machine whose host is
+    /// embedded. Falling straight through to the default there put this app on
+    /// an empty directory belonging to no running host: no token in it, so no
+    /// authenticated call, so "no host running" printed under a live one.
     static func stateDir() -> URL {
         if let state = environment()["JREMOTE_STATE_DIR"], !state.isEmpty {
+            return URL(fileURLWithPath: (state as NSString).expandingTildeInPath)
+        }
+        if let state = EmbedMarker.read()?.stateDir, !state.isEmpty {
             return URL(fileURLWithPath: (state as NSString).expandingTildeInPath)
         }
         return FileManager.default.homeDirectoryForCurrentUser
@@ -161,7 +209,24 @@ enum HostAgent {
         if let explicit = environment()["JREMOTE_TOKEN_PATH"], !explicit.isEmpty {
             return URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
         }
-        return stateDir().appendingPathComponent("api-token")
+        let shared = stateDir().appendingPathComponent("api-token")
+        if FileManager.default.fileExists(atPath: shared.path) { return shared }
+        // No shared file, which since per-device tokens is the ordinary state
+        // of a working host and not a broken one — an embedded host commonly
+        // never had one minted at all. `internal-token` is the row the host
+        // mints for its own plumbing (`devices.internal_token`), and a menu
+        // running on the host, as the user who owns it, is exactly what that
+        // credential is for. Without this step the bar has nothing to
+        // authenticate the one call that proves an embedded host is there.
+        return stateDir().appendingPathComponent("internal-token")
+    }
+
+    /// What this host is embedded in, or nil. Read off the marker only: the
+    /// live answer is the profile's, and this app cannot import a profile.
+    static func embeddedIn() -> String? {
+        guard let server = EmbedMarker.read()?.server, !server.isEmpty
+        else { return nil }
+        return server
     }
 
     /// Read fresh every poll, never cached. A host provisioned after this app
@@ -400,8 +465,16 @@ struct HostState {
     /// internet would be the more useful half of the truth left out.
     var headline: String {
         guard isUp else {
-            return installed ? "Not answering on port \(HostAgent.port())"
-                             : "No hub on this Mac"
+            if installed { return "Not answering on port \(HostAgent.port())" }
+            // "No hub on this Mac" is a claim about the machine, and on one
+            // whose host is embedded this app has no LaunchAgent to base it on
+            // — which is how it came to print that under a host that was up.
+            // Where a record says there is one, say what is actually wrong:
+            // it is not answering.
+            if let server = HostAgent.embeddedIn() {
+                return "Not answering on port \(HostAgent.port()) — \(server)"
+            }
+            return "No hub on this Mac"
         }
         var parts = ["Port \(HostAgent.port())"]
         // Loopback is the one bind that changes what the port means, and it is
@@ -472,6 +545,11 @@ final class HostProbe {
     func poll(_ done: @escaping (HostState) -> Void) {
         var state = HostState()
         state.installed = HostAgent.isInstalled
+        // Known before the probe, not only inferred from one. The probe can
+        // only conclude "embedded" when it reaches the token-gated route, so a
+        // host that is embedded and momentarily down would otherwise be
+        // described as a terminal run that ended.
+        state.embedded = HostAgent.embeddedIn() != nil
         state.bind = HostAgent.bind()
         let port = HostAgent.port()
         let base = "http://127.0.0.1:\(port)"

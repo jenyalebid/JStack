@@ -254,6 +254,6 @@ No tests live inside the script; all live tests live in `plugins/jstack/tests/`.
 
 ## Where this fits
 
-This system is one of several inside JStack tracked in `plugins/jstack/systems.json`. A host machine may federate that file into its own systems registry at read time via an `imports:` field — each JStack entry then surfaces in the host's dashboard with an `origin: jstack` badge and a "Test" button that invokes this hook's `tests/path-rule-injection.sh` script.
+This system is one of several inside jStack tracked in `plugins/jstack/systems.json`. A host machine may federate that file into its own systems registry at read time via an `imports:` field — each jStack entry then surfaces in the host's dashboard with an `origin: jstack` badge and a "Test" button that invokes this hook's `tests/path-rule-injection.sh` script.
 
-Edit the hook where the code lives — in JStack. The federation propagates automatically on next dashboard read; `claude plugin update jstack` makes work-Claude's machine see the same change.
+Edit the hook where the code lives — in jStack. The federation propagates automatically on next dashboard read; `claude plugin update jstack` makes work-Claude's machine see the same change.

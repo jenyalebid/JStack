@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jstack-host"
 version = "0.1.0"
-description = "The JStack host — the API a phone, a Mac or another machine reaches this one through"
+description = "The jStack host — the API a phone, a Mac or another machine reaches this one through"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

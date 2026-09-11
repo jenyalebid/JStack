@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — is the tree free of the org it grew up in?
+# jStack live test — is the tree free of the org it grew up in?
 #
 # This plugin was built inside one private operation before it shipped as a
 # public product, and its history is squashed: whatever identity is in the

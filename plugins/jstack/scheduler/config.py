@@ -179,7 +179,7 @@ BUILTIN_INSTALL = {
     # "module:function" called when a job that opted in (notify_on_failure)
     # ends in a TERMINAL non-ok finish — one nothing in-band will recover.
     # Receives a dict (job_id, agent_id, status, error, consecutive_errors,
-    # session_id) and delivers it however this machine reaches a human. JStack
+    # session_id) and delivers it however this machine reaches a human. jStack
     # ships only the seam: absent → a failure is journaled but pushed nowhere,
     # which is exactly the silence #17 is about. A notifier that raises is
     # logged and swallowed, never allowed to fault the daemon.

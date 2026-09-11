@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack adapter — open a new Claude Code terminal at a directory.
+# jStack adapter — open a new Claude Code terminal at a directory.
 #
 # Contract:  open-terminal-here <cwd> [adapter-opts...] [extra-claude-args...]
 # Behavior:  opens a new terminal window at <cwd> and runs `claude <extra-args>`.

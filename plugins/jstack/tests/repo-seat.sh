@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — repo seats.
+# jStack live test — repo seats.
 #
 # An IDE fixes a session's cwd to the checked-out repo, so the session lands
 # outside {agent_root} and resolves to no seat: no timeline on entry, no entry

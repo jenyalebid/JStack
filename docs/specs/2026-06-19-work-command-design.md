@@ -50,7 +50,7 @@ A single grounded summary message covering: project + repo resolved, stack, skil
 - Ships in `plugins/jstack/skills/work/SKILL.md`, namespaced `/jstack:work`.
 - Reuses the existing `${user_config.repo_root}` / `agent_root` seam for repo resolution; adds **no** new `userConfig` keys.
 - Fully portable: every project/stack fact comes from the agent's own loaded identity + repo sniffing, never from host config.
-- Register in `plugins/jstack/systems.json` if it warrants a test; bump plugin version; update `README.md` skill list/count. Push JStack after the change (per the JStack maintenance rule).
+- Register in `plugins/jstack/systems.json` if it warrants a test; bump plugin version; update `README.md` skill list/count. Push jStack after the change (per the jStack maintenance rule).
 
 ## Open edges (decide at implementation)
 

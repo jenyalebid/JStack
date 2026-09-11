@@ -629,7 +629,7 @@ def open_managed(sid: str, cwd: str, resume: bool = True, displace=None,
     on bytes and process liveness, not on which CLI is running.
 
     `tag` opens the session on a SUBJECT: exported as `JSTACK_TIMELINE_TAG`
-    into the pane, where JStack's SessionStart hook swaps the seat's injected
+    into the pane, where jStack's SessionStart hook swaps the seat's injected
     history for that tag's — every agent's work on it — and files this
     session's own entries under it. Env and not a CLI flag because it is not
     the CLI's business: both engines run the same hooks, and the pin has to

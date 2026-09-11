@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# JStack installer — a bare machine to a working stack, in one command.
+# jStack installer — a bare machine to a working stack, in one command.
 #
-#   curl -fsSL https://raw.githubusercontent.com/jenyalebid/JStack/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jenyalebid/jStack/main/install.sh | bash
 #   ./install.sh --yes --agent Ada                   # unattended, everything
 #   ./install.sh --dry-run                           # print the plan, touch nothing
 #
@@ -16,8 +16,8 @@
 
 set -uo pipefail
 
-REPO_URL="${JSTACK_REPO_URL:-https://github.com/jenyalebid/JStack.git}"
-CHECKOUT="${JSTACK_CHECKOUT:-$HOME/JStack}"
+REPO_URL="${JSTACK_REPO_URL:-https://github.com/jenyalebid/jStack.git}"
+CHECKOUT="${JSTACK_CHECKOUT:-$HOME/jStack}"
 AGENT_ROOT="${JSTACK_AGENT_ROOT:-$HOME/Agents}"
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=9
@@ -49,7 +49,7 @@ usage: install.sh [options]
   --root DIR          root for Agents, Logs, Config, State, Credentials
   --agent NAME        create this agent workspace (default: ask, or "Jarvis" with --yes)
   --agent-root DIR    where agent workspaces live (default: <root>/Agents)
-  --checkout DIR      where to clone JStack (default: ~/JStack)
+  --checkout DIR      where to clone jStack (default: ~/jStack)
   --no-scheduler      don't install the scheduler daemon (no recurring wakes)
   --no-claude         don't install Claude Code even if it is missing
   --no-host           don't install the host (no remote access, no icon)
@@ -215,7 +215,7 @@ run_long() {
 
 step "Checking prerequisites"
 
-[ "$(id -u)" != "0" ] || die "don't run this as root — JStack installs per-user, and a root-owned checkout is a machine only root can fix"
+[ "$(id -u)" != "0" ] || die "don't run this as root — jStack installs per-user, and a root-owned checkout is a machine only root can fix"
 
 case "$(uname -s)" in
     Darwin|Linux) ok "$(uname -s) $(uname -m)" ;;
@@ -405,7 +405,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # ── 2. the checkout ─────────────────────────────────────────────────────────
 
-step "JStack source at $CHECKOUT"
+step "jStack source at $CHECKOUT"
 
 if [ -d "$CHECKOUT/.git" ]; then
     # An existing checkout is somebody's working tree. Fetch so the install is
@@ -438,19 +438,19 @@ if [ -z "$CLAUDE" ]; then
 else
     # A directory-source marketplace means the plugin runs FROM the checkout:
     # `git pull` is the update, and there is no versioned cache to go stale.
-    if "$CLAUDE" plugin marketplace list 2>/dev/null | grep -q "JStack"; then
-        ok "marketplace JStack already registered"
+    if "$CLAUDE" plugin marketplace list 2>/dev/null | grep -q "jStack"; then
+        ok "marketplace jStack already registered"
     else
         run "$CLAUDE" plugin marketplace add "$CHECKOUT" >/dev/null 2>&1 \
-            && ok "marketplace JStack → $CHECKOUT" \
+            && ok "marketplace jStack → $CHECKOUT" \
             || warn "could not register the marketplace"
     fi
-    if "$CLAUDE" plugin list 2>/dev/null | grep -q "jstack@JStack"; then
-        ok "plugin jstack@JStack already installed"
+    if "$CLAUDE" plugin list 2>/dev/null | grep -q "jstack@jStack"; then
+        ok "plugin jstack@jStack already installed"
     else
-        run "$CLAUDE" plugin install "jstack@JStack" --config "agent_root=$AGENT_ROOT" >/dev/null 2>&1 \
-            && ok "plugin jstack@JStack installed, agent_root=$AGENT_ROOT" \
-            || warn "could not install the plugin — run: claude plugin install jstack@JStack"
+        run "$CLAUDE" plugin install "jstack@jStack" --config "agent_root=$AGENT_ROOT" >/dev/null 2>&1 \
+            && ok "plugin jstack@jStack installed, agent_root=$AGENT_ROOT" \
+            || warn "could not install the plugin — run: claude plugin install jstack@jStack"
     fi
 fi
 
@@ -490,7 +490,7 @@ else
             cat > "$seat/CLAUDE.md" <<EOF
 # $AGENT_NAME
 
-Who this agent is, and what it owns. JStack reads this file's EXISTENCE to
+Who this agent is, and what it owns. jStack reads this file's EXISTENCE to
 decide that $seat is an agent workspace — the contents are yours.
 
 Replace everything below.
@@ -593,13 +593,13 @@ if [ "$DECLARE_ROOT" = "1" ]; then
             STAMP="$(date +%Y-%m-%d)"
             awk -v new="$ROOT_LINE" -v stamp="$STAMP" '
                 /^[[:space:]]*export[[:space:]]+JSTACK_ROOT=/ && !done {
-                    print "# replaced by the JStack installer on " stamp ": " $0
+                    print "# replaced by the jStack installer on " stamp ": " $0
                     print new
                     done = 1
                     next
                 }
                 /^[[:space:]]*export[[:space:]]+JSTACK_ROOT=/ {
-                    print "# removed by the JStack installer on " stamp ": " $0
+                    print "# removed by the jStack installer on " stamp ": " $0
                     next
                 }
                 { print }
@@ -839,8 +839,8 @@ rm -f "$doctor_out"
 
 echo
 case "$rc" in
-    0) printf '%sJStack is installed and every check passed.%s\n' "$GRN$B" "$Z" ;;
-    1) printf '%sJStack is installed and working.%s The warnings above are capabilities\nthat stay absent until you add them — normal on a fresh machine.\n' "$GRN$B" "$Z" ;;
+    0) printf '%sjStack is installed and every check passed.%s\n' "$GRN$B" "$Z" ;;
+    1) printf '%sjStack is installed and working.%s The warnings above are capabilities\nthat stay absent until you add them — normal on a fresh machine.\n' "$GRN$B" "$Z" ;;
     *) printf '%sInstalled, but %s is broken.%s Its FAIL line above names the fix;\nre-run `jstack-doctor` after it.\n' "$YEL$B" "${broken:-a check above}" "$Z" ;;
 esac
 

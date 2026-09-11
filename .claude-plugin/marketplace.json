@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "JStack",
+  "name": "jStack",
   "description": "Cross-machine Claude Code skills and rules for agent workflows.",
   "owner": {
     "name": "jenyalebid"

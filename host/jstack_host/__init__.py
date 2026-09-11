@@ -1,4 +1,4 @@
-"""jRemote host API — the remote surface for the JStack system.
+"""jRemote host API — the remote surface for the jStack system.
 
 A self-contained, token-authed, versioned API (`/api/jremote/v1/*`) that lets
 the jRemote iOS app list and drive Claude Code agent sessions on this Mac.

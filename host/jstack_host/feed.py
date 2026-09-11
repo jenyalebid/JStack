@@ -1,6 +1,6 @@
 """The day feed — everything this host did, on a day scale, as one stream.
 
-The app's Timeline tab. A machine running JStack already records what it does,
+The app's Timeline tab. A machine running jStack already records what it does,
 in stores that never talk to each other: the timeline narrates (`log_event`),
 the session index knows what spawned and what it was asked to do, git knows
 what shipped, the scheduler knows how its wakes ended, the inbox carries
@@ -10,7 +10,7 @@ merges them into one ordered stream, so a phone can read a day.
 This is the one reader, on every host. It asks `hostenv` for every machine
 fact — where the timeline is, which checkouts are ours, which project and
 agent a checkout files under, where the scheduler journals, whether a ping
-lane exists — so the same code serves a host with nothing but JStack
+lane exists — so the same code serves a host with nothing but jStack
 installed and a dashboard-embedded host alike.
 
 **One event shape, six producers.** Every source flattens to the same dict,
@@ -364,7 +364,7 @@ def _run_events(day: str, lo: str, hi: str) -> list[dict]:
 
 def _message_events(day: str, lo: str, hi: str) -> list[dict]:
     """Agent-to-agent traffic — who asked whom for what, and whether it was a
-    blocking task or an update that obliges nobody. JStack's inbox keeps the
+    blocking task or an update that obliges nobody. jStack's inbox keeps the
     `messages` table beside the timeline's entries."""
     db = _ro(hostenv.timeline_db())
     if db is None:

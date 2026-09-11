@@ -14,7 +14,7 @@ without asking anyone.
 
 The agent runs the interpreter that ran this installer, against the package
 this module is in. Nothing is copied, nothing is unpacked, no path is guessed —
-a host installed from a JStack checkout runs that checkout, and one installed
+a host installed from a jStack checkout runs that checkout, and one installed
 from an unpacked payload runs the payload. It is the one arrangement that
 cannot come up pointing at a Python that no longer exists.
 

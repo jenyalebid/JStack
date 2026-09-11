@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack adapter — file a GitHub issue for a finding the session did not fix,
+# jStack adapter — file a GitHub issue for a finding the session did not fix,
 # and put it where a human will actually see it.
 #
 # Contract:

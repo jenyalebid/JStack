@@ -218,14 +218,14 @@ NODE_OK='{"data":{"node":{"id":"PVT_cfg","number":7,"title":"Auto-Work","closed"
 
 echo "an out-of-org repo places on the configured board"
 boards a "$AUTOWORK"; cfg "$CFG_ORG"; : > "$GH_CALLS"
-run --repo jenyalebid/JStack --issue 6 --status Review --dry-run
+run --repo jenyalebid/jStack --issue 6 --status Review --dry-run
 [[ $RC -eq 0 && "$OUT" == *"PLACED board=Auto-Work status=Review"* ]] && grep -q "owner=Acme-Org" "$GH_CALLS" \
   && ok "board.org is searched, not the repo's owner" || bad "board.org is searched, not the repo's owner" "rc=$RC $OUT"
 ! grep -q "owner=jenyalebid" "$GH_CALLS" \
   && ok "the repo owner is never searched once a board is configured" || bad "repo owner not searched" "$(cat "$GH_CALLS")"
 
 node "$NODE_OK"; cfg "$CFG_ID"; : > "$GH_CALLS"
-run --repo jenyalebid/JStack --issue 6 --status Review --dry-run
+run --repo jenyalebid/jStack --issue 6 --status Review --dry-run
 [[ $RC -eq 0 && "$OUT" == *"PLACED board=Auto-Work status=Review"* ]] && grep -q "id=PVT_cfg" "$GH_CALLS" \
   && ok "board.project_id names the board outright" || bad "board.project_id names the board outright" "rc=$RC $OUT"
 ! grep -q "owner=" "$GH_CALLS" \
@@ -233,7 +233,7 @@ run --repo jenyalebid/JStack --issue 6 --status Review --dry-run
 
 node '{"data":{"node":{"id":"PVT_cfg","number":7,"title":"Auto-Work 2027","closed":false,
   "field":{"id":"F_CFG","options":[{"id":"c_rev","name":"Review"}]}}}}'
-run --repo jenyalebid/JStack --issue 6 --status Review --dry-run
+run --repo jenyalebid/jStack --issue 6 --status Review --dry-run
 [[ $RC -eq 0 && "$OUT" == *"board=Auto-Work 2027"* ]] \
   && ok "a renamed board still takes the card — the id is the identity" || bad "renamed board still takes the card" "rc=$RC $OUT"
 
@@ -245,7 +245,7 @@ run --repo Acme-Org/thing --issue 5 --status "In Progress" --dry-run
 
 echo "the caller can still ask for somewhere else"
 cfg "$CFG_ID"; boards a "$AUTOWORK"; : > "$GH_CALLS"
-run --repo jenyalebid/JStack --issue 6 --status Todo --owner Other-Org --dry-run
+run --repo jenyalebid/jStack --issue 6 --status Todo --owner Other-Org --dry-run
 [[ $RC -eq 0 ]] && grep -q "owner=Other-Org" "$GH_CALLS" && ! grep -q "id=PVT_cfg" "$GH_CALLS" \
   && ok "--owner outranks the config and drops its board id" || bad "--owner outranks the config" "rc=$RC $OUT"
 
@@ -253,7 +253,7 @@ boards shadow2 '{"data":{"organization":{"projectsV2":{"nodes":[
   {"id":"PVT_A","number":1,"title":"Auto-Work","closed":false,"field":{"id":"FA","options":[{"id":"a","name":"Todo"}]}},
   {"id":"PVT_D","number":3,"title":"Design","closed":false,"field":{"id":"FD","options":[{"id":"d","name":"Todo"}]}}]}},"user":null}}'
 : > "$GH_CALLS"
-run --repo jenyalebid/JStack --issue 6 --status Todo --board Design --dry-run
+run --repo jenyalebid/jStack --issue 6 --status Todo --board Design --dry-run
 [[ $RC -eq 0 && "$OUT" == *"board=Design"* ]] && grep -q "owner=Acme-Org" "$GH_CALLS" && ! grep -q "id=PVT_cfg" "$GH_CALLS" \
   && ok "--board naming another board searches the configured org by title" || bad "--board bypasses the configured id" "rc=$RC $OUT"
 
@@ -269,11 +269,11 @@ run --repo O/R --issue 5 --status Todo --project-id PVT_cfg --owner Someone
 
 echo "the loud failures stay loud"
 cfg "$CFG_ID"; node '{"data":{"node":null}}'
-run --repo jenyalebid/JStack --issue 6 --status Review
+run --repo jenyalebid/jStack --issue 6 --status Review
 [[ $RC -eq 4 && "$OUT" == *"PVT_cfg"* && "$OUT" == *"issue_work.json"* ]] \
   && ok "a configured id that no longer resolves exits 4 and names its source" || bad "stale configured id exits 4" "rc=$RC $OUT"
 node '{"data":{"node":{"id":"PVT_cfg","number":7,"title":"Retired","closed":true,"field":null}}}'
-run --repo jenyalebid/JStack --issue 6 --status Review
+run --repo jenyalebid/jStack --issue 6 --status Review
 [[ $RC -eq 4 && "$OUT" == *"closed"* ]] \
   && ok "a configured board that was closed exits 4" || bad "closed configured board exits 4" "rc=$RC $OUT"
 
@@ -281,17 +281,17 @@ run --repo jenyalebid/JStack --issue 6 --status Review
 # fell back to a personal account that has none. Still exit 4 and still nothing
 # placed — but it now names what to set instead of only what it could not find.
 cfg ""; boards empty '{"data":{"organization":null,"user":{"projectsV2":{"nodes":[]}}}}'
-run --repo jenyalebid/JStack --issue 6 --status Review
+run --repo jenyalebid/jStack --issue 6 --status Review
 [[ $RC -eq 4 && "$OUT" == *"matched 0 boards on jenyalebid"* && "$OUT" == *"no board config at"* ]] \
   && ok "an unconfigured out-of-org repo exits 4 and names its fix" || bad "unconfigured out-of-org names its fix" "rc=$RC $OUT"
 
 echo "a configured board is placed on for real, and its columns are still live"
 cfg "$CFG_ID"; node "$NODE_OK"; : > "$GH_CALLS"
-run --repo jenyalebid/JStack --issue 6 --status Review
+run --repo jenyalebid/jStack --issue 6 --status Review
 [[ $RC -eq 0 && "$OUT" == *"PLACED board=Auto-Work status=Review item=PVTI_item9"* ]] \
   && grep -q "p=PVT_cfg" "$GH_CALLS" && grep -q "o=c_rev" "$GH_CALLS" \
   && ok "card added to the configured board and its column set" || bad "real placement on configured board" "rc=$RC $OUT"
-run --repo jenyalebid/JStack --issue 6 --status Shipped
+run --repo jenyalebid/jStack --issue 6 --status Shipped
 [[ $RC -eq 5 && "$OUT" == *"status=unset"* && "$OUT" == *"Todo, Review"* ]] \
   && ok "unknown column on a configured board: card lands, exit 5, real columns named" || bad "unknown column on configured board" "rc=$RC $OUT"
 

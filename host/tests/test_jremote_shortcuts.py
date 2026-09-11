@@ -626,11 +626,11 @@ def plugins(tmp_path, monkeypatch):
     version-pinned, so its clone under `marketplaces/` may run ahead of what
     the session actually loads.
     """
-    live = tmp_path / "JStack"
+    live = tmp_path / "jStack"
     _plugin_tree(live / "plugins" / "jstack", "jstack", "pict", "live wording")
     (live / ".claude-plugin").mkdir(parents=True, exist_ok=True)
     (live / ".claude-plugin" / "marketplace.json").write_text(json.dumps(
-        {"name": "JStack",
+        {"name": "jStack",
          "plugins": [{"name": "jstack", "source": "./plugins/jstack"}]}))
 
     cache = tmp_path / "cache"
@@ -638,13 +638,13 @@ def plugins(tmp_path, monkeypatch):
     _plugin_tree(cache / "other" / "1.0.0", "other", "thing", "from cache")
 
     (tmp_path / "known_marketplaces.json").write_text(json.dumps({
-        "JStack": {"source": {"source": "directory", "path": str(live)},
+        "jStack": {"source": {"source": "directory", "path": str(live)},
                    "installLocation": str(live)},
         "official": {"source": {"source": "github", "repo": "a/b"},
                      "installLocation": str(tmp_path / "marketplaces" / "official")},
     }))
     (tmp_path / "installed_plugins.json").write_text(json.dumps({"plugins": {
-        "jstack@JStack": [{"installPath": str(cache / "jstack" / "0.1.0")}],
+        "jstack@jStack": [{"installPath": str(cache / "jstack" / "0.1.0")}],
         "other@official": [{"installPath": str(cache / "other" / "1.0.0")}],
     }}))
 
@@ -664,7 +664,7 @@ def plugins(tmp_path, monkeypatch):
 
 
 def test_a_directory_marketplace_is_read_where_it_lives(tree, plugins):
-    """`~/JStack` is a `directory` marketplace: editing it changes what the
+    """`~/jStack` is a `directory` marketplace: editing it changes what the
     next session can invoke, with no reinstall. Reading the frozen
     `plugins/cache/` copy instead left the palette hours behind the machine —
     `/jstack:pict` had shipped and the phone had never heard of it."""
@@ -692,18 +692,18 @@ def test_an_unresolvable_live_root_falls_back_to_the_snapshot(tree, plugins,
     """A marketplace manifest that has moved on — renamed plugin, deleted
     source dir — must leave the installed copy standing, not blank the
     namespaced half of the palette."""
-    (plugins / "JStack" / ".claude-plugin" / "marketplace.json").write_text(
-        json.dumps({"name": "JStack",
+    (plugins / "jStack" / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "jStack",
                     "plugins": [{"name": "jstack", "source": "./gone"}]}))
     got = {c["name"]: c["description"] for c in commands.list_commands("atlas")}
     assert got["/jstack:stale"] == "stale wording"
 
 
 def test_a_description_survives_to_the_length_jstack_enforces(tree, plugins):
-    """140 chars is JStack's own ceiling; the palette cut at 120 and ended
+    """140 chars is jStack's own ceiling; the palette cut at 120 and ended
     `/jstack:recall` mid-word."""
     long = "Use when " + "x" * 125          # 134 chars
-    sk = plugins / "JStack" / "plugins" / "jstack" / "skills" / "pict"
+    sk = plugins / "jStack" / "plugins" / "jstack" / "skills" / "pict"
     (sk / "SKILL.md").write_text(f"---\ndescription: {long}\n---\n")
     got = {c["name"]: c["description"] for c in commands.list_commands("atlas")}
     assert got["/jstack:pict"] == long

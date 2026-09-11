@@ -6,7 +6,7 @@ Two surfaces answer "what can this machine invoke" — jRemote's slash palette
 versioned copy under `~/.claude/plugins/cache/`. For a
 plugin whose marketplace is a `directory` source that copy is a snapshot, not
 the truth: the install location *is* the working tree, so an edit to
-`~/JStack` is invocable in the very next session with no reinstall, while the
+`~/jStack` is invocable in the very next session with no reinstall, while the
 cache stays frozen at whatever the last install wrote.
 
 The cost of reading the snapshot was a pair of screens quietly behind the
@@ -119,11 +119,11 @@ def plugin_root(plugin_id: str, fallback: Path | None = None,
 
 #: The plugin this repo shells out to, and where it sits on the machine that
 #: maintains it — a checkout the marketplace registers as a `directory` source.
-JSTACK_ID = "jstack@JStack"
+JSTACK_ID = "jstack@jStack"
 
 
 def jstack_dev() -> Path:
-    return Path.home() / "JStack" / "plugins" / "jstack"
+    return Path.home() / "jStack" / "plugins" / "jstack"
 
 
 def jstack_root() -> Path:
@@ -132,10 +132,10 @@ def jstack_root() -> Path:
     Live checkout, then the dev tree if one exists, then the newest installed
     version. The dev path is the answer only where the marketplace is a
     `directory` source; install the plugin from its github marketplace and
-    there is no `~/JStack` at all — the working copy is the versioned one under
+    there is no `~/jStack` at all — the working copy is the versioned one under
     `plugins/cache/`, the same copy Claude Code itself runs.
 
-    Never probed here. A caller that must degrade (a machine with no JStack)
+    Never probed here. A caller that must degrade (a machine with no jStack)
     tests the result itself and keeps its own answer for absence — "this host
     has no renderer" and "the render failed" are different answers.
     """
@@ -146,7 +146,7 @@ def jstack_bin(name: str) -> Path:
     """`bin/<name>` — the one place this repo spells a jstack adapter's path.
 
     Nine call sites across the host, the dashboard, the assistant and the test
-    suite each spelled `~/JStack/plugins/jstack/bin/<name>` in full, and every
+    suite each spelled `~/jStack/plugins/jstack/bin/<name>` in full, and every
     one of them was a machine assumption wearing a path. On 2026-09-04 that
     assumption answered `/pict` from the app with 501 "pict isn't installed on
     this host" and killed splitoff with a FileNotFoundError, on a Mac where

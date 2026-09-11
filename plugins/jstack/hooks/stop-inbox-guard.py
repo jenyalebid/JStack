@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JStack Stop hook — what was addressed to THIS session reaches it.
+"""jStack Stop hook — what was addressed to THIS session reaches it.
 
 A channel has two ends and this hook serves both:
 

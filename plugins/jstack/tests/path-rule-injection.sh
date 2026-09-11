@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — path-rule-injection hook.
+# jStack live test — path-rule-injection hook.
 #
 # Calls the real hook script with the real PreToolUse JSON stdin contract
 # against a hermetic fixture (JSTACK_RULES_DIR + JSTACK_CACHE_ROOT overrides).

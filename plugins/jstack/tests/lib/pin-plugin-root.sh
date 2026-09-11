@@ -10,7 +10,7 @@
 # checkout it is answering about must not answer at all.
 #
 # PYTHONPATH alone is not enough: the pre-push gate hands these tests the
-# host's venv, whose .pth does `sys.path.insert(0, ~/JStack/plugins/jstack)`,
+# host's venv, whose .pth does `sys.path.insert(0, ~/jStack/plugins/jstack)`,
 # and position 0 outranks PYTHONPATH. lib/sitecustomize.py is imported after
 # every .pth and does the real work; see lib/jstack_pin.py.
 

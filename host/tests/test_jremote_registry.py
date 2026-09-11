@@ -1,11 +1,11 @@
-"""The JStack agent registry beside the roster — how the default profile draws
+"""The jStack agent registry beside the roster — how the default profile draws
 its agents, and where a bare id opens.
 
-The filesystem is the roster; `{agent_root}/agents.json` (JStack's registry,
+The filesystem is the roster; `{agent_root}/agents.json` (jStack's registry,
 the file `repo-seat` and `day-audit` already read) says how to draw it: the
 name, the emoji, the role, and the seat an agent works in. Without it every
 card is a bare directory and the app falls back to the robot; with it a fresh
-install on a JStack machine shows the fleet the way its owner named it.
+install on a jStack machine shows the fleet the way its owner named it.
 """
 
 import json
@@ -100,7 +100,7 @@ def test_the_registry_path_honours_jstacks_override(root, tmp_path, monkeypatch)
 
 
 def test_repos_are_the_checkouts_beside_the_agents(root, tmp_path):
-    """The repo root is the parent of the agents root — JStack's own default
+    """The repo root is the parent of the agents root — jStack's own default
     — and a checkout is a directory holding a `.git` directory. A linked
     worktree (`.git` file) is its main checkout's history and is skipped; a
     package checkout inside a repo's build tree is not ours."""
@@ -115,11 +115,11 @@ def test_repos_are_the_checkouts_beside_the_agents(root, tmp_path):
 
 def test_jstacks_own_clone_is_not_the_users_work(root, tmp_path, monkeypatch):
     """A Mac that has just run the installer holds exactly one checkout —
-    JStack's. Unpruned, the Timeline tab opens on a day made entirely of
+    jStack's. Unpruned, the Timeline tab opens on a day made entirely of
     commits the user never wrote, which is what a fresh install showed."""
-    for name in ("Widget-iOS", "JStack"):
+    for name in ("Widget-iOS", "jStack"):
         (tmp_path / name / ".git").mkdir(parents=True)
-    plugin = tmp_path / "JStack" / "plugins" / "jstack"
+    plugin = tmp_path / "jStack" / "plugins" / "jstack"
     plugin.mkdir(parents=True)
     monkeypatch.setattr("jstack_host.plugin_paths.jstack_root", lambda: plugin)
     assert {p.name for p in hostenv.repos()} == {"Widget-iOS"}
@@ -131,16 +131,16 @@ def test_a_repo_that_merely_contains_jstack_is_still_the_users_work(
     directory that is itself a repo contains the clone, and its history is
     the user's."""
     (tmp_path / ".git").mkdir(parents=True)
-    plugin = tmp_path / "JStack" / "plugins" / "jstack"
+    plugin = tmp_path / "jStack" / "plugins" / "jstack"
     plugin.mkdir(parents=True)
-    (tmp_path / "JStack" / ".git").mkdir()
+    (tmp_path / "jStack" / ".git").mkdir()
     monkeypatch.setattr("jstack_host.plugin_paths.jstack_root", lambda: plugin)
     # The walk stops at the outer checkout, and the outer checkout survives.
     assert [p for p in hostenv.repos()] == [tmp_path]
 
 
 def test_a_plugin_with_no_clone_prunes_nothing(root, tmp_path, monkeypatch):
-    """Installed from the github marketplace there is no `~/JStack` at all —
+    """Installed from the github marketplace there is no `~/jStack` at all —
     the working copy sits under `plugins/cache/` with no `.git` above it."""
     (tmp_path / "Widget-iOS" / ".git").mkdir(parents=True)
     cache = tmp_path / "cache" / "jstack"

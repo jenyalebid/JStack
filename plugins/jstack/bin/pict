@@ -37,7 +37,7 @@ Options — describe the spawn being previewed:
   --exec-hooks      actually RUN SessionStart hooks — user settings + every
                     installed plugin — and render what each one injects.
                     OFF by default: hook commands are arbitrary programs.
-                    The JStack timeline injector is never re-run (its output
+                    The jStack timeline injector is never re-run (its output
                     is already emulated read-only below).
   --request FILE    render a CAPTURED API request body (the JSON POSTed to
                     /v1/messages) instead of emulating: every top-level key,
@@ -75,7 +75,7 @@ Stages, in wire order (verified against captured request bodies):
      command expansion       their full body with $ARGUMENTS / $1..$n
                              substituted, exactly as the harness does.
   4. After the first       — SessionStart hook context + harness
-     message                 reminders. The JStack timeline injection is
+     message                 reminders. The jStack timeline injection is
                              emulated faithfully (same seat resolution +
                              config as hooks/session-start-inject.py).
                              Other hooks are LISTED unless --exec-hooks
@@ -83,7 +83,7 @@ Stages, in wire order (verified against captured request bodies):
   5. Mid-session data      — --serve captures, in order given.
 
 Then the on-demand layer: path-scoped rules whose `paths:` globs match a
-file that EXISTS under the spawn dir right now (JStack tail-matching
+file that EXISTS under the spawn dir right now (jStack tail-matching
 semantics), bodies included — these inject on demand, NEVER at spawn.
 Rules with no matching files are listed by name only. Finally every
 remaining hook from user settings and all installed plugins, one line each.
@@ -527,7 +527,7 @@ def _matcher_hits_startup(matcher: str) -> bool:
 
 def exec_session_hooks(directory: Path, hooks: list[Hook],
                        sources: list[Source]) -> None:
-    """Run SessionStart hooks and render what each injects. The JStack
+    """Run SessionStart hooks and render what each injects. The jStack
     timeline injector is skipped — gather_timeline() emulates it read-only."""
     stdin_payload = json.dumps({
         "hook_event_name": "SessionStart", "source": "startup",
@@ -1341,7 +1341,7 @@ def render(directory: Path, opts: dict) -> str:
     lines.append("---\n")
     lines.append("# On-demand rules — matching files exist under this directory\n")
     lines.append("NOT loaded at spawn. Each loads only when one of its matching files")
-    lines.append("is read/edited (native) or about to be mutated (JStack PreToolUse")
+    lines.append("is read/edited (native) or about to be mutated (jStack PreToolUse")
     lines.append("hook, re-injected after ~400KB of transcript growth).\n")
     if not anchored:
         lines.append("*(none)*\n")

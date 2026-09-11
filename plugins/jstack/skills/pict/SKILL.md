@@ -1,6 +1,6 @@
 ---
 name: pict
-description: Use only when the user asks what a session opens with and the JStack hook did not answer it.
+description: Use only when the user asks what a session opens with and the jStack hook did not answer it.
 argument-hint: "[dir] [--full] [pict flags]"
 ---
 

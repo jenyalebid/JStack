@@ -5,7 +5,7 @@
 these pin the rule once: markdown only, under the roots, checked *after*
 symlinks resolve.
 
-The symlink case is the one worth writing down. Half of what a JStack machine
+The symlink case is the one worth writing down. Half of what a jStack machine
 publishes is a symlink into a plugin checkout, so following them is required —
 which means a fence that checked the name it was given would be walked around
 by a link whose name is innocent and whose target is not.

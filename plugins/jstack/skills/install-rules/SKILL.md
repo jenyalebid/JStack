@@ -1,6 +1,6 @@
 ---
 name: install-rules
-description: Use when the user asks to install or refresh the JStack rules and bare slash commands in ~/.claude/.
+description: Use when the user asks to install or refresh the jStack rules and bare slash commands in ~/.claude/.
 argument-hint: "[--copy] [--force]"
 ---
 

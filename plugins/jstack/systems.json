@@ -1,5 +1,5 @@
 {
-  "_doc": "JStack systems registry — every system bundled by the JStack plugin (hooks, skills, runtime mechanisms) that must be tracked, documented, and live-testable. A host machine may federate this file into its own systems registry via an `imports:` field and stamps each entry with `origin: \"jstack\"` + the resolved plugin version at read time. Maintenance rule: every entry lives where its code lives — edit JStack systems in JStack, host systems in the host registry, never both. Every entry MUST declare a `test` so verification is callable on demand from any surface (CLI, dashboard, work-Claude debugging).",
+  "_doc": "jStack systems registry — every system bundled by the jStack plugin (hooks, skills, runtime mechanisms) that must be tracked, documented, and live-testable. A host machine may federate this file into its own systems registry via an `imports:` field and stamps each entry with `origin: \"jstack\"` + the resolved plugin version at read time. Maintenance rule: every entry lives where its code lives — edit jStack systems in jStack, host systems in the host registry, never both. Every entry MUST declare a `test` so verification is callable on demand from any surface (CLI, dashboard, work-Claude debugging).",
   "_schema": {
     "kind": "hook | skill | system | subsystem — 'hook' = Claude Code lifecycle hook (PreToolUse, SessionStart, etc.). 'skill' = invocable slash-command skill shipped under skills/. 'system' = composite mechanism (rules-injection pipeline, install flow). 'subsystem' = nested sub-feature inside a parent.",
     "id": "string — stable identifier, kebab-case",
@@ -540,7 +540,7 @@
       "kind": "system",
       "name": "Root Derivation",
       "status": "live",
-      "description": "The one declaration a JStack install derives its tree from. $JSTACK_ROOT (else a caller-supplied cfg 'root', else $HOME) yields Agents/, Systems/, Config/, State/, Logs/ and Credentials/ by structure — visible, declared folders, never a hidden dotfolder, because a hidden state dir is a second shadow root and that is the disease this cures. Each derived dir keeps its own env override above the derivation and a cfg key between them, so an install that names dirs explicitly is untouched by the derivation existing. Also the single definition of an agent — a directory under agents_dir() with a CLAUDE.md, or with a seat subdir carrying one — behind agents()/resolve_agent()/seats(), replacing copies that had drifted apart across the scheduler, both hooks, repo_seat and msg.",
+      "description": "The one declaration a jStack install derives its tree from. $JSTACK_ROOT (else a caller-supplied cfg 'root', else $HOME) yields Agents/, Systems/, Config/, State/, Logs/ and Credentials/ by structure — visible, declared folders, never a hidden dotfolder, because a hidden state dir is a second shadow root and that is the disease this cures. Each derived dir keeps its own env override above the derivation and a cfg key between them, so an install that names dirs explicitly is untouched by the derivation existing. Also the single definition of an agent — a directory under agents_dir() with a CLAUDE.md, or with a seat subdir carrying one — behind agents()/resolve_agent()/seats(), replacing copies that had drifted apart across the scheduler, both hooks, repo_seat and msg.",
       "code": [
         "root.py"
       ],
@@ -561,7 +561,7 @@
       "kind": "system",
       "name": "Suite tree pin",
       "status": "live",
-      "description": "Makes JStack's own suite answer about the checkout it ships in. The pre-push gate runs the tests with JSTACK_PYTHON pointed at the host's venv (the scheduler suite needs dateutil), and that venv carries a .pth doing sys.path.insert(0, ~/JStack/plugins/jstack) so the host's daemon can find the plugin. Position 0 outranks PYTHONPATH, and every issue is worked in a worktree by mandate — so `import root` in a test resolved to the MAIN checkout: a false red on root.sh's shipping-tree guard, and a false green for any change to root.py, repo_seat.py or scheduler/* pushed from a worktree. tests/lib/pin-plugin-root.sh is sourced by every test that starts an interpreter touching plugin python; it fronts tests/lib on PYTHONPATH, where a sitecustomize imports jstack_pin — sitecustomize being the one hook imported after the last .pth — and then asserts the pin took, exiting the test if it did not.",
+      "description": "Makes jStack's own suite answer about the checkout it ships in. The pre-push gate runs the tests with JSTACK_PYTHON pointed at the host's venv (the scheduler suite needs dateutil), and that venv carries a .pth doing sys.path.insert(0, ~/jStack/plugins/jstack) so the host's daemon can find the plugin. Position 0 outranks PYTHONPATH, and every issue is worked in a worktree by mandate — so `import root` in a test resolved to the MAIN checkout: a false red on root.sh's shipping-tree guard, and a false green for any change to root.py, repo_seat.py or scheduler/* pushed from a worktree. tests/lib/pin-plugin-root.sh is sourced by every test that starts an interpreter touching plugin python; it fronts tests/lib on PYTHONPATH, where a sitecustomize imports jstack_pin — sitecustomize being the one hook imported after the last .pth — and then asserts the pin took, exiting the test if it did not.",
       "code": [
         "tests/lib/jstack_pin.py",
         "tests/lib/sitecustomize.py",
@@ -581,7 +581,7 @@
       "kind": "tool",
       "name": "Doctor",
       "status": "live",
-      "description": "Install validator — one command that answers 'is this JStack working, and if not which part'. Thirteen checks over the same seams the tools read at runtime (root derivation, agent resolution, the spawn path, hooks.json, the rules/commands stages, the scheduler service), graded ok/warn/fail with the worst grade as the exit status. Read-only: it never creates the paths it reports on.",
+      "description": "Install validator — one command that answers 'is this jStack working, and if not which part'. Thirteen checks over the same seams the tools read at runtime (root derivation, agent resolution, the spawn path, hooks.json, the rules/commands stages, the scheduler service), graded ok/warn/fail with the worst grade as the exit status. Read-only: it never creates the paths it reports on.",
       "code": [
         "bin/jstack-doctor"
       ],
@@ -600,7 +600,7 @@
       "kind": "system",
       "name": "Scheduler",
       "status": "live",
-      "description": "Deterministic daemon that fires one-time and recurring agent runs on RFC-5545 RRULE schedules — the piece that lets JStack START a session, not just review and remember one. Timeout counts from spawn, the daemon owns child pgids, TTFT/stall watchdogs kill hung turns, catch-up covers downtime.",
+      "description": "Deterministic daemon that fires one-time and recurring agent runs on RFC-5545 RRULE schedules — the piece that lets jStack START a session, not just review and remember one. Timeout counts from spawn, the daemon owns child pgids, TTFT/stall watchdogs kill hung turns, catch-up covers downtime.",
       "code": [
         "scheduler/"
       ],
@@ -760,7 +760,7 @@
       "kind": "system",
       "name": "Commit identity guard",
       "status": "live",
-      "description": "Pre-commit hook for the JStack checkout itself: this repo is public, and a commit made under the wrong local git identity once put a private employer email into its history. The hook refuses any commit whose author or committer email is off an explicit allowlist (the org agent account, the owner's GitHub noreply, and the historical agent@local), and the refusal message states the `git config user.email` fix. Default-deny: a new identity is added to the allowlist in the hook file, never forced past it. .git/hooks is untracked, so the versioned copy lives at githooks/pre-commit and a clone restores it with `ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit` — the same symlink pattern as the pre-push gate.",
+      "description": "Pre-commit hook for the jStack checkout itself: this repo is public, and a commit made under the wrong local git identity once put a private employer email into its history. The hook refuses any commit whose author or committer email is off an explicit allowlist (the org agent account, the owner's GitHub noreply, and the historical agent@local), and the refusal message states the `git config user.email` fix. Default-deny: a new identity is added to the allowlist in the hook file, never forced past it. .git/hooks is untracked, so the versioned copy lives at githooks/pre-commit and a clone restores it with `ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit` — the same symlink pattern as the pre-push gate.",
       "code": [
         "githooks/pre-commit"
       ],

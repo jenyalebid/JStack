@@ -27,7 +27,7 @@ Two tiers, and a host has the first one the moment Claude Code is installed:
    endpoint. Whichever tier's sample is newest is the one served.
 
 Refusals are a third fact, deliberately not merged with either: the provider
-actually turned a request away. JStack's scheduler already sees that from a
+actually turned a request away. jStack's scheduler already sees that from a
 HEADLESS run — it parses "You've hit your limit · resets 9:40am" out of a
 run's output and scores it `rate_limited` — so `sync_from_scheduler()` reads
 its state as a free probe of exactly the sessions the cache cannot see.
@@ -440,7 +440,7 @@ def sync_from_scheduler(state_path: Path | None = None) -> bool:
     """Turn the scheduler's `rate_limited` runs into a refusal. True if one
     new outage was folded in.
 
-    JStack's scheduler is the one component that already sees a cap from a
+    jStack's scheduler is the one component that already sees a cap from a
     HEADLESS session. Its per-job state carries `last_status` and
     `last_run_at_ms`; a watermark on the latter keeps one outage from being
     re-recorded on every read. The state file is either a map of jobs or a

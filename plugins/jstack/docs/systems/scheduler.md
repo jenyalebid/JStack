@@ -1,6 +1,6 @@
 # Scheduler
 
-Fires one-time and recurring agent runs on RFC-5545 RRULE schedules. It is the piece that lets JStack **start** a session — the timeline remembers what sessions did and the session-end engine reviews them, but neither can begin one.
+Fires one-time and recurring agent runs on RFC-5545 RRULE schedules. It is the piece that lets jStack **start** a session — the timeline remembers what sessions did and the session-end engine reviews them, but neither can begin one.
 
 Native `CronCreate` lives and dies with a session; cloud routines run in Anthropic's cloud, not on your machine. This runs locally, unattended, and keeps state across restarts.
 

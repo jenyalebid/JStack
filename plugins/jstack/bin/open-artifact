@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack adapter — open a file or URL in the OS's default visual viewer.
+# jStack adapter — open a file or URL in the OS's default visual viewer.
 #
 # Contract:  open-artifact <path-or-url> [path-or-url...]
 # Behavior:  hands each target to the platform's default app/viewer so the

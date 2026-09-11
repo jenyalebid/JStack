@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — does JStack describe itself correctly?
+# jStack live test — does jStack describe itself correctly?
 #
 # Every fact below is stated in two places: once on disk, once in a file a
 # human maintains (systems.json, README.md, the two plugin manifests). The
@@ -288,5 +288,5 @@ if fails:
     for f in fails:
         print(f"  · {f}")
     sys.exit(1)
-print(f"PASS — {len(passes)} checks, JStack matches its own description")
+print(f"PASS — {len(passes)} checks, jStack matches its own description")
 PY

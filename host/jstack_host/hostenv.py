@@ -86,11 +86,11 @@ class DefaultProfile:
         self.root = root
         self._reg_cache: tuple[tuple[int, int], dict] | None = None
 
-    # -- the registry: JStack's agents.json, beside the roster ---------------
+    # -- the registry: jStack's agents.json, beside the roster ---------------
 
     def registry_path(self) -> Path:
-        """Where JStack keeps the agent registry: `{agent_root}/agents.json`,
-        `JSTACK_AGENT_REGISTRY` overriding — the same two answers JStack's own
+        """Where jStack keeps the agent registry: `{agent_root}/agents.json`,
+        `JSTACK_AGENT_REGISTRY` overriding — the same two answers jStack's own
         tools (`repo-seat`, `day-audit`) resolve, so one file describes the
         fleet to both."""
         env = os.environ.get("JSTACK_AGENT_REGISTRY", "").strip()
@@ -193,7 +193,7 @@ class DefaultProfile:
             # An unmade sub-mode dir under a real agent root is still that
             # agent's seat — the same call lib.agents answers for an umbrella.
             return sub
-        # A bare id opens where the registry says the agent works. JStack's
+        # A bare id opens where the registry says the agent works. jStack's
         # entries name the seat (`…/Ops/chat`), and a session started at the
         # umbrella root instead would sit outside every rule glob and timeline
         # seat the fleet has — the one place nobody meant a chat to land.
@@ -268,7 +268,7 @@ class DefaultProfile:
 
     def repo_root(self) -> Path:
         """Where this machine keeps its checkouts: `JSTACK_REPO_ROOT`, else the
-        parent of the agents root — JStack's own default for `repo_root`, the
+        parent of the agents root — jStack's own default for `repo_root`, the
         layout `Agents/` sits beside the repos it works on."""
         env = os.environ.get("JSTACK_REPO_ROOT", "").strip()
         return Path(env).expanduser() if env else self.root.parent
@@ -279,7 +279,7 @@ class DefaultProfile:
         Found, not declared: the registry's `repos` lists are names, and a
         checkout the registry never mentions still shipped commits today.
         Build trees are pruned — a package checkout under SourcePackages/
-        is SwiftPM's, not ours — and so is JStack's own clone, which is the
+        is SwiftPM's, not ours — and so is jStack's own clone, which is the
         tool rather than the work. See `_own_checkout`.
         """
         return [r for r in _git_checkouts(self.repo_root())
@@ -287,7 +287,7 @@ class DefaultProfile:
 
     def repo_agent(self, repo: Path) -> str:
         """The agent the registry says owns this checkout, or ''. Names are
-        folded the way JStack's `repo_seat` folds them, so `ProjectName_iOS`
+        folded the way jStack's `repo_seat` folds them, so `ProjectName_iOS`
         and `ProjectName-iOS` are one repo whichever spelling the entry
         used."""
         want = _fold(repo.name)
@@ -310,7 +310,7 @@ class DefaultProfile:
         return ""
 
     def scheduler_dir(self) -> Path:
-        """JStack's scheduler home — `SCHEDULER_HOME`, else the plugin's own
+        """jStack's scheduler home — `SCHEDULER_HOME`, else the plugin's own
         default under `~/.claude/jstack`. `config/schedule.json` and
         `state/scheduler/runs/` hang off it on every machine."""
         env = os.environ.get("SCHEDULER_HOME", "").strip()
@@ -436,7 +436,7 @@ def _resolve_nested(root: Path, mode: str) -> str | None:
 
 
 def _jstack_timeline_db() -> Path:
-    """JStack's timeline store. `JSTACK_TIMELINE_DIR` is the plugin's own
+    """jStack's timeline store. `JSTACK_TIMELINE_DIR` is the plugin's own
     override; the default is where `log_event` writes on every machine."""
     root = os.environ.get("JSTACK_TIMELINE_DIR", "").strip() \
         or str(HOME / "Logs" / "Timeline")
@@ -470,14 +470,14 @@ def _git_checkouts(root: Path, depth: int = 3) -> list[Path]:
 
 
 def _jstack_checkout() -> Path | None:
-    """The clone JStack itself lives in, or None where it has no clone.
+    """The clone jStack itself lives in, or None where it has no clone.
 
     The nearest `.git` ancestor of the installed plugin — NOT any checkout
     that happens to contain it. A home directory that is itself a repo
-    contains the JStack clone too, and matching on containment alone prunes
+    contains the jStack clone too, and matching on containment alone prunes
     the user's entire tree to remove one directory inside it.
 
-    None is the right answer twice over: on a machine with no JStack, and on
+    None is the right answer twice over: on a machine with no jStack, and on
     one running the plugin from `plugins/cache/` where there is no clone to
     confuse with anybody's work.
     """
@@ -496,9 +496,9 @@ def _jstack_checkout() -> Path | None:
 
 
 def _own_checkout(repo: Path) -> bool:
-    """Is this checkout JStack's own clone rather than the user's work?
+    """Is this checkout jStack's own clone rather than the user's work?
 
-    The feed's git producer answers "what shipped here today". JStack's
+    The feed's git producer answers "what shipped here today". jStack's
     development history is the tool's, not the machine's — and on a Mac that
     has just run the installer it is the ONLY checkout under the root, so the
     Timeline tab opens on a day made entirely of commits the user never wrote

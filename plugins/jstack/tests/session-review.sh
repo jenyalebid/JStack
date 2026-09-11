@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — bin/session-review-spawn engine.
+# jStack live test — bin/session-review-spawn engine.
 #
 # Imports the real shipped engine (hermetic: JSTACK_REVIEW_CONFIG pointed at a
 # temp config so CFG never reads the machine's real one) and exercises the

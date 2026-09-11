@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — skills manifest validation.
+# jStack live test — skills manifest validation.
 #
 # Validates every skill bundled under plugins/jstack/skills/ as a live artifact:
 #   - SKILL.md exists and is non-empty

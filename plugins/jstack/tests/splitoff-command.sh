@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — hooks/splitoff-command.py (`/splitoff` forks, no turn).
+# jStack live test — hooks/splitoff-command.py (`/splitoff` forks, no turn).
 #
 # Pipes fixture UserPromptSubmit JSON through the real hook with the REAL dubber
 # against a temp project tree, and a faked terminal adapter — opening a window

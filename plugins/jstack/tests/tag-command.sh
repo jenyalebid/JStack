@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — hooks/tag-command.py (`/tag` answered without a turn).
+# jStack live test — hooks/tag-command.py (`/tag` answered without a turn).
 #
 # Pipes fixture UserPromptSubmit JSON through the real hook against a temp
 # JSTACK_TIMELINE_DIR (hermetic — never touches the real timeline), and checks

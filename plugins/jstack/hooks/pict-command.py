@@ -25,7 +25,7 @@ not the renderer's — it drops `--bare` rather than adding anything.
 Where the file lands, in order: a `pad/` beside the session, when the workspace
 has one — a host that fences what its viewer may read draws that fence around
 the workspace, so a render outside it opens onto a refusal — otherwise a
-JStack-owned directory under the Claude config. The name is stable per rendered
+jStack-owned directory under the Claude config. The name is stable per rendered
 directory, so asking twice refreshes the document already on screen instead of
 stacking a second beside it.
 
@@ -87,7 +87,7 @@ def target(words: list[str], cwd: Path) -> tuple[Path, list[str]]:
 
 
 def out_dir(cwd: Path) -> Path:
-    """Where the render goes — the session's pad, or JStack's own directory."""
+    """Where the render goes — the session's pad, or jStack's own directory."""
     pad = cwd / "pad"
     return pad if pad.is_dir() else FALLBACK
 

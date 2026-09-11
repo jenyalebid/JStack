@@ -1,4 +1,4 @@
-"""root — the one declaration a JStack install derives its tree from.
+"""root — the one declaration a jStack install derives its tree from.
 
 "Where is everything" used to be answered in six places: SCHEDULER_HOME, an
 `agent_root` in scheduler.json, the same default restated independently in
@@ -43,7 +43,7 @@ from pathlib import Path
 
 
 def _shipping_tree_roots() -> "tuple[Path, ...]":
-    """The trees no JStack data dir may resolve into: the checkout shipping this file.
+    """The trees no jStack data dir may resolve into: the checkout shipping this file.
 
     Same rule as `scheduler/config.py::_shipping_tree_roots`, and deliberately
     a copy rather than an import. config.py must keep working on an older

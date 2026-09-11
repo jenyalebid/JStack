@@ -1,6 +1,6 @@
 ---
 name: pict
-description: Use only if /pict was typed and the JStack hook did not answer it.
+description: Use only if /pict was typed and the jStack hook did not answer it.
 argument-hint: "[dir] [--full] [pict flags]"
 ---
 

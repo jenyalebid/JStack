@@ -103,7 +103,7 @@ def main(argv=None) -> int:
         route, url = show(a.path, a.title)
     except PermissionError as e:
         print(f"show-doc: {e} — the app can only read markdown under "
-              f"~/Agents, ~/Systems, ~/JStack and ~/.claude", file=sys.stderr)
+              f"~/Agents, ~/Systems, ~/jStack and ~/.claude", file=sys.stderr)
         return 77
     except FileNotFoundError as e:
         print(f"show-doc: no such file: {e}", file=sys.stderr)

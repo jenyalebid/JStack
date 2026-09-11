@@ -1,4 +1,4 @@
-# JStack
+# jStack
 
 Cross-machine Claude Code skills for agent workflows. Built around the `{agent_root}/{Name}/` workspace convention, where `agent_root` is **configured per machine** (no hardcoded paths). Adapters ship inside the plugin and self-detect the environment, so the same plugin behaves richly everywhere with zero per-machine scripting.
 
@@ -63,19 +63,19 @@ If `claude` is missing, install Claude Code first (`brew install --cask claude-c
 ### 2. Register the marketplace and install the plugin
 
 ```bash
-claude plugin marketplace add jenyalebid/JStack
-claude plugin install jstack@JStack
+claude plugin marketplace add jenyalebid/jStack
+claude plugin install jstack@jStack
 ```
 
 Verify:
 
 ```bash
-claude plugin list   # should show jstack@JStack as enabled
+claude plugin list   # should show jstack@jStack as enabled
 ```
 
 ### 3. Configure the agent root (and optional follow-up backend)
 
-JStack reads its paths from **plugin config** — no path is hardcoded. Three options (declared in `plugin.json` `userConfig`):
+jStack reads its paths from **plugin config** — no path is hardcoded. Three options (declared in `plugin.json` `userConfig`):
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -89,7 +89,7 @@ Set them in Claude Code's plugin config UI, or directly in `settings.json`:
 // ~/.claude/settings.json  (or .claude/settings.json for a project)
 {
   "pluginConfigs": {
-    "jstack@JStack": {
+    "jstack@jStack": {
       "options": {
         "agent_root": "/Users/you/Desktop/MyStuff/Agents",
         "followup_backend": "reminders",
@@ -100,7 +100,7 @@ Set them in Claude Code's plugin config UI, or directly in `settings.json`:
 }
 ```
 
-If you leave `agent_root` at the default, JStack uses `~/Agents/`.
+If you leave `agent_root` at the default, jStack uses `~/Agents/`.
 
 #### Declaring a root (optional — skip it and everything still works)
 
@@ -207,7 +207,7 @@ code and says so.
 | `app/install.sh` | You want the Mac app only, against a host that already exists elsewhere. |
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jenyalebid/JStack/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jenyalebid/jStack/main/install.sh | bash
 ./install.sh --dry-run           # print the plan, touch nothing
 ./install.sh --yes --agent Ada   # unattended, everything
 ```
@@ -282,8 +282,8 @@ Store: `{root}/Logs/Timeline/timeline.db` — `~/Logs/Timeline/timeline.db` unti
 ### Verify it works
 
 ```bash
-"$(ls ~/.claude/plugins/cache/JStack/jstack/*/tests/log-event.sh | sort -V | tail -1)"        # timeline CLI contract
-"$(ls ~/.claude/plugins/cache/JStack/jstack/*/tests/session-review.sh | sort -V | tail -1)"   # engine validator/resolution/claims
+"$(ls ~/.claude/plugins/cache/jStack/jstack/*/tests/log-event.sh | sort -V | tail -1)"        # timeline CLI contract
+"$(ls ~/.claude/plugins/cache/jStack/jstack/*/tests/session-review.sh | sort -V | tail -1)"   # engine validator/resolution/claims
 ```
 
 Then the live test: `cd` into a reviewable agent dir, run `claude --print -p "test"`, and watch `SPAWN → DONE` appear in the review log within a few minutes.
@@ -292,7 +292,7 @@ Then the live test: `cd` into a reviewable agent dir, run `claude --print -p "te
 
 ## Adapters (bundled — usually nothing to do)
 
-JStack ships two adapter scripts in the plugin's `bin/`, which Claude Code auto-adds to the Bash `PATH` while the plugin is enabled. Skills call them as bare commands.
+jStack ships two adapter scripts in the plugin's `bin/`, which Claude Code auto-adds to the Bash `PATH` while the plugin is enabled. Skills call them as bare commands.
 
 ### `open-terminal-here` — used by `/handoff`
 
@@ -351,7 +351,7 @@ Symlinks every `.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/` into `~/.claude/rul
 
 Native rules in `~/.claude/rules/*.md` auto-load by `paths:` glob, but only against files **inside the session's launch CWD**. If your editor is launched from one tree (`~/Agents/AgentA/`) and the code you're editing lives in a sibling tree (`~/Some-Project/`), no rule fires — a real gap for agents that span multiple projects.
 
-JStack ships a PreToolUse hook (`plugins/jstack/hooks/inject-path-rules.py`, auto-registered via `plugins/jstack/hooks/hooks.json`) that closes that gap. Whenever Claude Code is about to invoke `Edit`, `Write`, `MultiEdit`, or `NotebookEdit`, the hook:
+jStack ships a PreToolUse hook (`plugins/jstack/hooks/inject-path-rules.py`, auto-registered via `plugins/jstack/hooks/hooks.json`) that closes that gap. Whenever Claude Code is about to invoke `Edit`, `Write`, `MultiEdit`, or `NotebookEdit`, the hook:
 
 1. Reads the tool's `tool_input.file_path` (an **absolute** path, so launch CWD doesn't matter).
 2. Walks `~/.claude/rules/*.md`, parses each rule's `paths:` frontmatter, tests every glob against the file path.
@@ -384,7 +384,7 @@ The hook is content-agnostic — whatever rules' `paths:` globs are, that's what
 ## Update
 
 ```bash
-claude plugin marketplace update JStack
+claude plugin marketplace update jStack
 claude plugin update jstack
 ```
 
@@ -396,7 +396,7 @@ Symlinked rules track new content automatically. The plugin install path changes
 
 ```bash
 claude plugin uninstall jstack
-claude plugin marketplace remove JStack
+claude plugin marketplace remove jStack
 ```
 
 Remove any rule symlinks still pointing into a jstack install:
@@ -417,7 +417,7 @@ done
 4. **Sub-modes** — subdirectories of the agent root, same identity in a different context (walk-up handles inheritance)
 5. **Adapters** — bundled in the plugin's `bin/`, configured via `followup_backend` / `followup_target`
 
-Set `agent_root` to wherever your workspaces live and JStack works out of the box on any machine.
+Set `agent_root` to wherever your workspaces live and jStack works out of the box on any machine.
 
 ---
 
@@ -434,7 +434,7 @@ Set `agent_root` to wherever your workspaces live and JStack works out of the bo
 ## Repository layout
 
 ```
-JStack/
+jStack/
 ├── .claude-plugin/marketplace.json        # marketplace manifest
 ├── plugins/jstack/
 │   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
@@ -505,7 +505,7 @@ JStack/
 └── README.md                              # this file
 ```
 
-**Working on JStack itself?** This repo is public, and `.git/hooks/` does not travel with a clone — restore the commit identity gate first, so a commit under an off-list author email (a work or personal address that must never enter public history) is refused before it exists:
+**Working on jStack itself?** This repo is public, and `.git/hooks/` does not travel with a clone — restore the commit identity gate first, so a commit under an off-list author email (a work or personal address that must never enter public history) is refused before it exists:
 
 ```bash
 ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit
@@ -515,7 +515,7 @@ ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit
 
 ## For a model setting this up
 
-If you're a Claude session setting this up on a fresh machine, execute steps 1–6 in order. All steps are mechanical now: there are no adapters to hand-write (they're bundled and self-detecting). The only choices are the `agent_root` path and, optionally, the `followup_backend`. After step 6 returns a successful `/active` listing, JStack is installed and verified.
+If you're a Claude session setting this up on a fresh machine, execute steps 1–6 in order. All steps are mechanical now: there are no adapters to hand-write (they're bundled and self-detecting). The only choices are the `agent_root` path and, optionally, the `followup_backend`. After step 6 returns a successful `/active` listing, jStack is installed and verified.
 
 To activate the self-running systems, add the **Post-session review + timeline** section's one `mkdir` (the `review/` dir per agent), run `/install-rules` (the `timeline` + `agent-state` rules carry the format discipline), and run the two test scripts under **Verify it works**. No config file is required unless you're overriding defaults — read `plugins/jstack/docs/systems/session-end-engine.md` before writing one.
 

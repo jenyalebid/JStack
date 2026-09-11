@@ -7,7 +7,7 @@
 #   ./install.sh --uninstall               # take it back off
 #   ./install.sh --purge                   # and delete everything it wrote
 #
-# What it does, and nothing else: clone (or update) the JStack checkout, build a
+# What it does, and nothing else: clone (or update) the jStack checkout, build a
 # private virtualenv beside the package, install the host into it, and register
 # a **user** LaunchAgent so the host survives a logout and a reboot.
 #
@@ -27,7 +27,7 @@ set -uo pipefail
 # the script normally runs *from* the checkout, and a hardcoded account name
 # in a public installer is a name that outlives whoever owns the repo.
 REPO_URL="${JSTACK_REPO_URL:-}"
-CHECKOUT="${JSTACK_CHECKOUT:-$HOME/JStack}"
+CHECKOUT="${JSTACK_CHECKOUT:-$HOME/jStack}"
 BIN_DIR="${JSTACK_BIN_DIR:-$HOME/.local/bin}"
 MIN_PY_MAJOR=3
 MIN_PY_MINOR=11
@@ -59,7 +59,7 @@ usage: install.sh [options]
   --state-dir DIR    where this host keeps its state
                      (default ~/.local/state/jremote)
   --force            install even if something already answers on the port
-  --checkout DIR     where to clone JStack (default ~/JStack)
+  --checkout DIR     where to clone jStack (default ~/jStack)
   --no-menubar       skip the menu bar app (the host is a terminal program
                      either way; the app is only its indicator)
   --no-pair          don't introduce the app to this host at the end

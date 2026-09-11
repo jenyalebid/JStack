@@ -465,7 +465,7 @@ def _cmd_version(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="jstack-host",
-        description="The JStack host: the API a phone, an iPad or another Mac "
+        description="The jStack host: the API a phone, an iPad or another Mac "
                     "reaches this machine through.")
     ap.add_argument("--label", default=install_host.LABEL,
                     help=argparse.SUPPRESS)

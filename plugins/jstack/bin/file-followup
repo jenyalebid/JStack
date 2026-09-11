@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack adapter — file a follow-up reminder when /jstack:save runs.
+# jStack adapter — file a follow-up reminder when /jstack:save runs.
 #
 # Contract:  file-followup <title> <body>
 # Backend:   chosen by userConfig `followup_backend`, exported here as

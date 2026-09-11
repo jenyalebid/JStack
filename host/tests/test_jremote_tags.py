@@ -43,10 +43,10 @@ def test_normalize_matches_the_writers(monkeypatch):
 
 def test_binary_prefers_dev_checkout(monkeypatch, tmp_path):
     home = tmp_path
-    dev = home / "JStack" / "plugins" / "jstack" / "bin" / "log_event"
+    dev = home / "jStack" / "plugins" / "jstack" / "bin" / "log_event"
     dev.parent.mkdir(parents=True)
     dev.write_text("#!/bin/sh\n")
-    cache = home / ".claude/plugins/cache/JStack/jstack/9.9.9/bin/log_event"
+    cache = home / ".claude/plugins/cache/jStack/jstack/9.9.9/bin/log_event"
     cache.parent.mkdir(parents=True)
     cache.write_text("#!/bin/sh\n")
     monkeypatch.setattr(timeline.Path, "home", staticmethod(lambda: home))
@@ -59,7 +59,7 @@ def test_binary_prefers_dev_checkout(monkeypatch, tmp_path):
 def test_cache_version_sort_parses_not_sorts_lexically(monkeypatch, tmp_path):
     home = tmp_path
     for v in ("0.8.0", "0.29.0", "0.10.0"):
-        p = home / f".claude/plugins/cache/JStack/jstack/{v}/bin/log_event"
+        p = home / f".claude/plugins/cache/jStack/jstack/{v}/bin/log_event"
         p.parent.mkdir(parents=True)
         p.write_text("#!/bin/sh\n")
     monkeypatch.setattr(timeline.Path, "home", staticmethod(lambda: home))
@@ -339,7 +339,7 @@ def test_pin_on_a_host_with_no_timeline_is_503(client, no_timeline, spawn_env):
 
 def test_no_pin_is_the_ordinary_session(client, no_timeline, spawn_env):
     """The timeline being absent must cost only the pin. An unpinned spawn on
-    a host with no JStack is the normal case, not a degraded one."""
+    a host with no jStack is the normal case, not a degraded one."""
     r = client.post("/api/jremote/v1/sessions/open-new",
                     json={"agent_id": "testa"})
     assert r.status_code == 200

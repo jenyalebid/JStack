@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JStack session-end engine — resolve, gate, and write a session's running memory.
+"""jStack session-end engine — resolve, gate, and write a session's running memory.
 
 SessionEnd hook → this engine → (default) resume the just-ended session for ONE
 turn to write its own seat-tagged timeline entry — the seat's running memory,

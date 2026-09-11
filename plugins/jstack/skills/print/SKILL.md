@@ -1,6 +1,6 @@
 ---
 name: print
-description: Use only when the user asks for this session's transcript path and the JStack hook did not answer it.
+description: Use only when the user asks for this session's transcript path and the jStack hook did not answer it.
 argument-hint: ""
 ---
 

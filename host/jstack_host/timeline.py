@@ -13,8 +13,8 @@ directly. A second writer forks the source of truth, and a tag minted by a UI
 would defeat the one property that makes tags worth having — a small vocabulary
 that means the same thing to every writer.
 
-**Optional, like every other borrowed screen.** The timeline belongs to JStack,
-not to this package: a Mac running the host with no JStack install has no
+**Optional, like every other borrowed screen.** The timeline belongs to jStack,
+not to this package: a Mac running the host with no jStack install has no
 vocabulary, and that is a normal answer, not a fault. `available()` says so and
 the routes report absence rather than an empty list — "no tags exist" and "this
 host cannot see tags" are different answers, and a picker that silently shows
@@ -35,7 +35,7 @@ _TIMEOUT = 8
 
 
 def log_event_bin() -> Path | None:
-    """The jstack `log_event` binary, or None on a host without JStack.
+    """The jstack `log_event` binary, or None on a host without jStack.
 
     Where the plugin lives is `plugin_paths`' one answer — dev checkout first
     on the machine that maintains it (answering from a stale cache there would

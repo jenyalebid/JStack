@@ -1,4 +1,4 @@
-"""The package's day feed — six sources off a JStack machine's own stores.
+"""The package's day feed — six sources off a jStack machine's own stores.
 
 Pins that each producer reads the store it is given (through `hostenv`, never
 a path of its own), that the merge is newest-first with the facets off the
@@ -23,7 +23,7 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 
 @pytest.fixture
 def machine(tmp_path, monkeypatch):
-    """A JStack machine in a temp dir: agents + registry, timeline store,
+    """A jStack machine in a temp dir: agents + registry, timeline store,
     scheduler journal, one checkout with one commit, and the host's own
     session store."""
     agents = tmp_path / "Agents"
@@ -35,7 +35,7 @@ def machine(tmp_path, monkeypatch):
     monkeypatch.delenv("JSTACK_AGENT_REGISTRY", raising=False)
     monkeypatch.delenv("JSTACK_REPO_ROOT", raising=False)
 
-    # JStack's timeline, with the two tables the feed reads.
+    # jStack's timeline, with the two tables the feed reads.
     tl = tmp_path / "Timeline"
     tl.mkdir()
     monkeypatch.setenv("JSTACK_TIMELINE_DIR", str(tl))
@@ -56,7 +56,7 @@ def machine(tmp_path, monkeypatch):
                (f"{TODAY}T10:00:00",))
     db.commit(); db.close()
 
-    # JStack's scheduler: a registry naming the job, and a journal line.
+    # jStack's scheduler: a registry naming the job, and a journal line.
     sched = tmp_path / "scheduler"
     (sched / "config").mkdir(parents=True)
     runs = sched / "state" / "scheduler" / "runs"

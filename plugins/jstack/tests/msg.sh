@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — bin/msg, the addressed agent-to-agent inbox.
+# jStack live test — bin/msg, the addressed agent-to-agent inbox.
 #
 # Runs the real shipped script against a temp JSTACK_TIMELINE_DIR and a temp
 # agent tree (hermetic — never touches the real timeline or ~/Agents).

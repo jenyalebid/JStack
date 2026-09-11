@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — hooks/stop-timeline-remind.py (auto-session timeline reminder).
+# jStack live test — hooks/stop-timeline-remind.py (auto-session timeline reminder).
 #
 # Pipes fixture Stop-hook JSON through the real hook and checks the decision:
 #   - auto session (cron transcript, big enough) → block ONCE with a log_event

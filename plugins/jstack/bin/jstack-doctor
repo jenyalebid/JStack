@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""jstack-doctor — does this machine have a working JStack, and if not, which part?
+"""jstack-doctor — does this machine have a working jStack, and if not, which part?
 
 A fresh install is six steps across two surfaces: a marketplace install, plugin
 config, an agent workspace, `/jstack:install-rules`, `jstack-scheduler install`,
@@ -11,7 +11,7 @@ that was reaped seven days later. Each is observable in well under a second, and
 without this tool the only way to find one is to hit it.
 
 Three grades, because two would collapse the distinction that matters most on a
-fresh install. **fail** is something JStack cannot work without. **warn** is a
+fresh install. **fail** is something jStack cannot work without. **warn** is a
 capability that will be honestly absent until the thing arrives — no rules
 installed yet, no scheduler daemon, no timeline rows. **ok** is ok. The exit
 status is the worst grade: 0 / 1 / 2, so a script can gate on it and a person can
@@ -446,7 +446,7 @@ def report(as_json: bool = False, out=None) -> int:
     summary = {
         OK: "every check passed",
         WARN: "working; the warnings above are capabilities that stay absent until fixed",
-        FAIL: "JStack will not work correctly until the failures above are fixed",
+        FAIL: "jStack will not work correctly until the failures above are fixed",
     }
     print(f"\n{summary[grade]}", file=out)
     return _RANK[grade]

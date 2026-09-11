@@ -34,10 +34,10 @@ Rescanning every transcript costs seconds and grows without bound, so results
 are cached per file, keyed on (size, mtime). A live session's file changes and
 is re-read; a finished one is read exactly once, ever.
 
-**Categories.** JStack's scheduler opens every run with a `[cron:…]` marker
+**Categories.** jStack's scheduler opens every run with a `[cron:…]` marker
 and a self-booked wake with `[wake…]` / `[scheduled…]`; anything else was
 typed by a person. That split — autonomous against interactive — is the one
-the Spend screen draws, and it is the same on every JStack machine, which is
+the Spend screen draws, and it is the same on every jStack machine, which is
 why it is code rather than a file. A host that wants finer buckets puts a
 `token_categories.json` where `hostenv.spend_categories_path()` answers (the
 state dir by default; a profile may pin it elsewhere), shaped

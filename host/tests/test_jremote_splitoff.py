@@ -3,7 +3,7 @@
 Pins the contract the app leans on: the copy is a real dub (new id, sessionId
 rewritten, title suffixed " - copy"), the source is untouched, the copy opens
 managed with resume, and a failed window rolls the dub back so nothing is left
-behind. The dub runs the real JStack `dub-session` adapter against a tmp HOME;
+behind. The dub runs the real jStack `dub-session` adapter against a tmp HOME;
 tmux is never touched.
 """
 

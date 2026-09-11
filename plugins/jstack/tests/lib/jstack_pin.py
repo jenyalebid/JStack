@@ -1,9 +1,9 @@
 """Make `import root` mean the tree THIS file ships in, whatever the interpreter prefers.
 
-The pre-push gate runs JStack's own suite with JSTACK_PYTHON pointed at the
+The pre-push gate runs jStack's own suite with JSTACK_PYTHON pointed at the
 host's Infrastructure venv, and that venv carries a .pth:
 
-    import os, sys; _p = os.path.expanduser("~/JStack/plugins/jstack")
+    import os, sys; _p = os.path.expanduser("~/jStack/plugins/jstack")
     (_p in sys.path) or sys.path.insert(0, _p)
 
 which is how the host's scheduler finds the plugin, and is not wrong. But

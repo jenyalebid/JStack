@@ -1,5 +1,5 @@
 #!/bin/bash
-# JStack SessionEnd hook — hand the ended session to the session-end engine, detached.
+# jStack SessionEnd hook — hand the ended session to the session-end engine, detached.
 #
 # Reads the hook's stdin JSON ({session_id, transcript_path, ...}) and hands
 # both to bin/session-review-spawn, which does all gating (agent resolution,

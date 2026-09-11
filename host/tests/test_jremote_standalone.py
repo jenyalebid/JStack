@@ -175,7 +175,7 @@ print("OK")
 #: empty, `available: false` — rather than 500.
 # The screens a host without the embedding tree genuinely cannot have. The feed,
 # spend and allowance used to sit here too; they are served by the package's
-# own readers now (`feed`, `spend`, `allowance`), off what any JStack machine
+# own readers now (`feed`, `spend`, `allowance`), off what any jStack machine
 # records — see `test_the_portable_screens_answer_on_a_tree_less_host`.
 OPTIONAL_SCREENS = [
     ("context", "skills"),
@@ -253,7 +253,7 @@ assert d["{key}"] == [] or d["{key}"] == {{}}, ("{path} must be empty", d["{key}
 
 def test_the_portable_screens_answer_on_a_tree_less_host():
     """The feed and the spend scanner are the package's own, so a host with
-    nothing but Claude Code and JStack serves them — with their real shape,
+    nothing but Claude Code and jStack serves them — with their real shape,
     `available` absent or true, and never the dashboard's reason string. An
     empty day is a fine answer here; a greyed-out screen is the bug."""
     r = _serve_standalone('''
@@ -511,9 +511,9 @@ assert d["profile"] == "default", d
 
 # What a host with no tree has and has not. `context` and `control` are the
 # dashboard's own and must read absent. The feed and the spend scanner are
-# the package's now, drawing on Claude Code's files and JStack's stores, so
+# the package's now, drawing on Claude Code's files and jStack's stores, so
 # a tree-less host HAS them. The allowance depends on whether Claude Code has
-# cached a reading on this machine, and `tags` on whether JStack's log_event
+# cached a reading on this machine, and `tags` on whether jStack's log_event
 # is installed — both are probed off the filesystem, so they are asserted
 # present in the map and consistent with their routes below, never as a
 # fixed value the machine running this test would make a lie.

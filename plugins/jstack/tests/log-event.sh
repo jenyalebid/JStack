@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — bin/log_event timeline writer.
+# jStack live test — bin/log_event timeline writer.
 #
 # Runs the real shipped script against a temp JSTACK_TIMELINE_DIR (hermetic —
 # never touches the real timeline). Verifies the full CLI contract:

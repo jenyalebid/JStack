@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import plugin_paths
 
-# The JStack renderer — the one implementation of "what is this directory's
+# The jStack renderer — the one implementation of "what is this directory's
 # injection". Resolved at import like the dub adapter, so a test pointing HOME
 # elsewhere still finds the binary while the render reads the test tree, and
 # resolved by `jstack_bin` rather than spelled out, because the plugin lives

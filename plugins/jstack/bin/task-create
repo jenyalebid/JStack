@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack adapter — file a task issue and hand it to the executor account.
+# jStack adapter — file a task issue and hand it to the executor account.
 #
 # Contract:
 #   task-create --title <t> (--body <text> | --body-file <p>)

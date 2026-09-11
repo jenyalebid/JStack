@@ -1,6 +1,6 @@
 ---
 name: tag
-description: Use only if /tag was typed and the JStack hook did not answer it.
+description: Use only if /tag was typed and the jStack hook did not answer it.
 argument-hint: "[name] | [name <description, to mint>] | -[name]"
 ---
 

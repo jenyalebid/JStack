@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack adapter — put an issue on a work board and set its column.
+# jStack adapter — put an issue on a work board and set its column.
 #
 # Contract:
 #   place-issue --repo <owner/name> --issue <N> --status <column>

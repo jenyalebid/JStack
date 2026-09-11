@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/jremote/v1", dependencies=[Depends(require_token
 
 _SID_RE = re.compile(r"^[0-9a-f-]{32,40}$")
 
-# The JStack dub adapter — the one implementation of "verbatim-fork a session's
+# The jStack dub adapter — the one implementation of "verbatim-fork a session's
 # transcript"; the splitoff endpoint shells out to it rather than porting the
 # logic. Resolved at import, so a test pointing HOME elsewhere still finds it
 # while the dub itself (which reads $HOME) operates on the test tree.
@@ -85,7 +85,7 @@ def _unavailable(feature: str, **shape) -> dict:
 #: into disagreeing about what this machine can do.
 _FEATURES = {
     "context": "dashboard.shared.context_inventory",
-    # These three are this package's own readers, drawing on what a JStack
+    # These three are this package's own readers, drawing on what a jStack
     # machine already records — Claude Code's own files, the timeline store,
     # the scheduler journal, the checkouts. Import answers only "is the
     # package intact"; whether there is anything to show is each reader's own
@@ -119,7 +119,7 @@ def _usage_caps_available() -> bool:
 
 
 #: Features backed by something other than an importable module, probed the way
-#: they are actually used. Tags come from JStack's `log_event` binary, so
+#: they are actually used. Tags come from jStack's `log_event` binary, so
 #: `_optional()` — which asks the import system — could only ever answer for the
 #: wrong thing. Merged into the same `/host` summary so a client still reads one
 #: capability map, and each probe stays the same call the route itself makes.
@@ -268,7 +268,7 @@ def get_tags():
     means something, and alphabetical order would bury the four tags that
     carry the work under whatever starts with 'a'.
 
-    Absent, not empty, on a host with no JStack: "nobody has minted a tag" and
+    Absent, not empty, on a host with no jStack: "nobody has minted a tag" and
     "this machine cannot see tags" are different answers, and a picker that
     drew zero rows for the second would be a dead screen with nothing saying
     why."""
@@ -2167,7 +2167,7 @@ def splitoff_session(sid: str):
     """Verbatim-fork this session into a fresh id and open the copy in its own
     managed terminal — the phone face of /jstack:splitoff.
 
-    The dub is the JStack adapter (`dub-session`): the transcript copied to a
+    The dub is the jStack adapter (`dub-session`): the transcript copied to a
     new UUID in the same project dir, its internal sessionId rewritten, the
     picker title suffixed " - copy". The source session is untouched — live or
     not — and the copy diverges forward once resumed. A transcript flushes in
@@ -2228,7 +2228,7 @@ def pict_session(sid: str, full: bool = False):
 
     `404` = a session no longer placeable, or one running outside an agent
     workspace — there is no pad to write into, and a render behind the fence
-    would open onto a refusal. `501` = a host without JStack's renderer."""
+    would open onto a refusal. `501` = a host without jStack's renderer."""
     _check_sid(sid)
     from . import open_path, pict
     from .scratchpad import session_pad

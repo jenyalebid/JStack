@@ -944,7 +944,7 @@ final class StatusController: NSObject {
     }
 
     private static func glyph(_ name: String) -> NSImage? {
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: "JStack host")
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "jStack host")
         image?.isTemplate = true
         return image
     }
@@ -1693,7 +1693,7 @@ final class StatusController: NSObject {
     /// value: this goes to a clipboard, and a clipboard goes anywhere.
     @objc private func doCopyDiagnostics() {
         var lines = [
-            "JStack host — \(Machine.name)",
+            "jStack host — \(Machine.name)",
             "hub        \(state.headline)",
             "agent      \(HostAgent.label)"
                 + (HostAgent.isInstalled ? "" : " (no plist)"),

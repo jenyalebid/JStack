@@ -177,7 +177,7 @@ def build_feed() -> str:
     lines: list[str] = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//JStack//Scheduler//EN",
+        "PRODID:-//jStack//Scheduler//EN",
         "CALSCALE:GREGORIAN",
         # Subscribers see this as the calendar's name, so it is the install's
         # to choose — renaming it renames an already-subscribed calendar.

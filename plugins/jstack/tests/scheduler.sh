@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — the scheduler package and its install seam.
+# jStack live test — the scheduler package and its install seam.
 #
 # Runs the real shipped package against a hermetic temp SCHEDULER_HOME (never
 # touches a real registry, state dir, or running daemon). Verifies the contract

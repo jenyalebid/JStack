@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — SessionStart timeline injection hook.
+# jStack live test — SessionStart timeline injection hook.
 #
 # Calls the real hook (hooks/session-start-inject.py) with the real SessionStart
 # JSON stdin contract against a hermetic fixture: a temp agents tree + temp

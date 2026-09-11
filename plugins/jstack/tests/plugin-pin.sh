@@ -1,9 +1,9 @@
 #!/bin/bash
 # Does the suite report on the tree it is standing in?
 #
-# The pre-push gate runs JStack's own tests with JSTACK_PYTHON pointed at the
+# The pre-push gate runs jStack's own tests with JSTACK_PYTHON pointed at the
 # host's Infrastructure venv, because the scheduler suite needs dateutil. That
-# venv carries a .pth — `sys.path.insert(0, ~/JStack/plugins/jstack)`, how the
+# venv carries a .pth — `sys.path.insert(0, ~/jStack/plugins/jstack)`, how the
 # host's daemon finds the plugin — and position 0 outranks PYTHONPATH. Every
 # issue is worked in a worktree by mandate, so that was the normal path: the
 # gate imported MAIN's root.py, repo_seat.py and scheduler/* while claiming to

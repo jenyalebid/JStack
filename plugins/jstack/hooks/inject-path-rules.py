@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-JStack: inject-path-rules
+jStack: inject-path-rules
 =========================
 
 PreToolUse hook for Claude Code. When the model is about to mutate a file

@@ -1,5 +1,5 @@
 #!/bin/sh
-# JStack pre-commit — the identity gate.
+# jStack pre-commit — the identity gate.
 #
 # This repository is PUBLIC. A commit made with the wrong local git identity
 # once put a private employer email address into its history, and the only

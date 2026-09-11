@@ -1,12 +1,12 @@
 {
   "name": "jstack",
-  "version": "0.59.2",
+  "version": "0.60.0",
   "description": "Cross-machine agent workflow skills, timeline, inbox, rules, audits, handoffs, and delivery tools.",
   "author": {
     "name": "jenyalebid",
-    "url": "https://github.com/jenyalebid/JStack"
+    "url": "https://github.com/jenyalebid/jStack"
   },
-  "repository": "https://github.com/jenyalebid/JStack",
+  "repository": "https://github.com/jenyalebid/jStack",
   "license": "MIT",
   "keywords": [
     "agents",
@@ -17,7 +17,7 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "JStack",
+    "displayName": "jStack",
     "shortDescription": "Agent workflows, timeline, audits, and handoffs",
     "longDescription": "Portable agent workflow skills for loading context, auditing work, handing off sessions, recalling timeline history, showing results, committing verified changes, and closing out a task so every finding leaves as a commit or a filed issue.",
     "developerName": "jenyalebid",
@@ -26,7 +26,7 @@
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/jenyalebid/JStack",
+    "websiteURL": "https://github.com/jenyalebid/jStack",
     "defaultPrompt": [
       "Audit the work completed in this session.",
       "Recall the recent timeline for this seat.",

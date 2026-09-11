@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — hooks/print-command.py (`/print` answered without a turn).
+# jStack live test — hooks/print-command.py (`/print` answered without a turn).
 #
 # Pipes fixture UserPromptSubmit JSON through the real hook against a temp tree.
 # Exit 2 IS the feature: a branch that answers on exit 0 has printed its answer

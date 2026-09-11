@@ -30,7 +30,7 @@ from . import hostenv, plugin_paths
 HOME = Path.home()
 
 # Past this, a client is scrolling a file nobody reads on a phone. No rule,
-# skill or SYSTEM.md on a JStack machine is within an order of magnitude of it.
+# skill or SYSTEM.md on a jStack machine is within an order of magnitude of it.
 MAX_READ_BYTES = 400_000
 
 

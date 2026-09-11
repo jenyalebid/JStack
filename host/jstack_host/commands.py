@@ -39,7 +39,7 @@ from .hostenv import split_id, workspace
 _USER = Path.home() / ".claude"
 _INSTALLED_PLUGINS = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 
-# JStack caps a skill description at 140 chars, so a conformant one arrives whole
+# jStack caps a skill description at 140 chars, so a conformant one arrives whole
 # rather than cut mid-word — the old 120 truncated /jstack:recall and /jstack:task.
 _DESC_MAX = 140
 

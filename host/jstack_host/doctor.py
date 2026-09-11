@@ -8,7 +8,7 @@ install to be diagnosed screen by screen from a phone.
 
 Three grades. **fail** is something the host cannot serve without: no
 `claude`, no `tmux`, no WebSocket server, no token. **warn** is a screen that
-will be honest about being absent until the thing arrives: no JStack timeline
+will be honest about being absent until the thing arrives: no jStack timeline
 yet, no registry, an allowance nobody has sampled. **ok** is ok. The exit
 status is the worst grade — a script can gate on it, a person can read it.
 
@@ -163,8 +163,8 @@ def check_timeline() -> dict:
     db = hostenv.timeline_db()
     binary = timeline.log_event_bin()
     if binary is None:
-        return _check("timeline", WARN, "JStack's log_event not installed",
-                      "install the JStack plugin — the Timeline tab and tags "
+        return _check("timeline", WARN, "jStack's log_event not installed",
+                      "install the jStack plugin — the Timeline tab and tags "
                       "read its store")
     if not db.exists():
         return _check("timeline", OK, f"log_event at {binary}, no store yet at "

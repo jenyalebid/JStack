@@ -1,4 +1,4 @@
-# JStack
+# jStack
 
 One Mac runs your AI coding sessions. Every device you own can see them and
 drive them.
@@ -7,7 +7,7 @@ drive them.
 
 The stack is the **host**: the `jstack-host` process plus its menu-bar app.
 Sessions, the scheduler, the integrations, the base commands — that is
-JStack, and all of it must work on its own. **jRemote** (iOS/macOS) is a
+jStack, and all of it must work on its own. **jRemote** (iOS/macOS) is a
 client for it, not the product: use it, use iTerm, or build your own UI
 against the same host.
 

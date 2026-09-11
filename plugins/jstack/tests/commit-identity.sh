@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — the pre-commit identity gate.
+# jStack live test — the pre-commit identity gate.
 #
 # This repo is public; githooks/pre-commit is what keeps a wrong local git
 # identity (the way a private employer address once entered history) from
@@ -7,7 +7,7 @@
 #   - an off-list author email is BLOCKED, with the fix in the message
 #   - an off-list committer email is BLOCKED even under a good author
 #   - both identities on-list → the commit lands
-# Runs against a throwaway fixture repo; never touches JStack's own index.
+# Runs against a throwaway fixture repo; never touches jStack's own index.
 #
 # Exit 0 = all pass, exit 1 = any fail.
 
@@ -17,7 +17,7 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$PLUGIN_ROOT/githooks/pre-commit"
 
 # A hook inherits git's own env when run under a real commit; this fixture
-# must not inherit JStack's (same reasoning as the pre-push gate's tests).
+# must not inherit jStack's (same reasoning as the pre-push gate's tests).
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY \
       GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_CONFIG_PARAMETERS
 

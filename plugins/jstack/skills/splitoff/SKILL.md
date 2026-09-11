@@ -1,6 +1,6 @@
 ---
 name: splitoff
-description: Use only when the user asks to fork or copy this session into a new terminal and the JStack hook did not answer it.
+description: Use only when the user asks to fork or copy this session into a new terminal and the jStack hook did not answer it.
 argument-hint: "[name for the copy]"
 ---
 

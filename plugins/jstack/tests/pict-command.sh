@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — hooks/pict-command.py (`/pict` answered without a turn).
+# jStack live test — hooks/pict-command.py (`/pict` answered without a turn).
 #
 # Pipes fixture UserPromptSubmit JSON through the real hook against a temp tree,
 # with a fake renderer and fake openers on PATH — this test is about placement,
@@ -12,7 +12,7 @@
 #   - a leading directory argument renders that instead; flags pass through
 #   - --full is the hook's flag: it drops --bare and is never passed on
 #   - the render lands in the workspace's pad when there is one, and in the
-#     JStack directory under CLAUDE_CONFIG_DIR when there isn't
+#     jStack directory under CLAUDE_CONFIG_DIR when there isn't
 #   - the name is stable, so a second ask refreshes one document
 #   - a failed render leaves nothing behind and does not replace a good one
 #   - the host's own document router wins over the generic opener
@@ -106,10 +106,10 @@ OTHER_DOC="$SEAT/pad/pict-other.md"
 [[ "$(dirname "$OTHER_DOC")" == "$SEAT/pad" ]] \
   && pass "a render of elsewhere lands in this seat's pad" || fail "pad of record"
 
-# 6. A workspace with no pad falls back to the JStack directory
+# 6. A workspace with no pad falls back to the jStack directory
 run "/pict" "$BARE"
 [[ -f "$CFG/jstack/pict/pict-bare.md" ]] \
-  && pass "no pad → the JStack directory under the config" \
+  && pass "no pad → the jStack directory under the config" \
   || fail "fallback ($(ls -R "$CFG"))"
 
 # 7. The host's own document router wins — it knows which screen is driving

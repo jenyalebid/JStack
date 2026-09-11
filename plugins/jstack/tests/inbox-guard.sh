@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — hooks/stop-inbox-guard.py, "a task handed to THIS session
+# jStack live test — hooks/stop-inbox-guard.py, "a task handed to THIS session
 # gets its answer".
 #
 # Hermetic: temp timeline dir, temp agent tree, temp review state. Verifies:

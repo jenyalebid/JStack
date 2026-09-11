@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JStack Stop hook — auto sessions append their OWN timeline line before dying.
+"""jStack Stop hook — auto sessions append their OWN timeline line before dying.
 
 Auto work (cron/gateway/--print sessions nobody typed into) gets no post-session
 review (by design) — but its work must still land on the daily timeline,

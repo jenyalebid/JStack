@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack live test — can the change that just landed actually reach an install?
+# jStack live test — can the change that just landed actually reach an install?
 #
 # A plugin is installed by version. The CLI caches the tree under
 # ~/.claude/plugins/cache/<market>/<plugin>/<version>/ and `plugin update`

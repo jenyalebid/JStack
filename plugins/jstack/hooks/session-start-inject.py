@@ -380,7 +380,7 @@ def build_context(agent: str, submode: str, entries: str, n: int,
                   note: str = "") -> str:
     seat = f"{agent}/{submode}"
     head = (
-        f"Injected on entry by JStack — everything {seat} (your seat) wrote across "
+        f"Injected on entry by jStack — everything {seat} (your seat) wrote across "
         f"its last {n} sessions, oldest first. This is your own recent history: "
         "you are not starting "
         "cold. Build on it — don't re-discover, re-propose, or re-litigate what's "
@@ -404,7 +404,7 @@ def build_tag_context(tag: str, seat: str, entries: str, n: int) -> str:
     one agent's — the seat here is only where the terminal happens to run."""
     return (
         "<jstack-timeline>\n"
-        f"Injected on entry by JStack — this session is pinned to **{tag}**, so "
+        f"Injected on entry by jStack — this session is pinned to **{tag}**, so "
         f"what follows is the last {n} sittings ANY seat had on that subject, "
         f"oldest first, each line naming who worked it. It is not "
         f"{seat}'s own history: you are opening a subject, not a seat. Build on "
@@ -459,7 +459,7 @@ def build_identity(agent: str, submode: str, root: Path, registry: dict) -> str:
     body = "\n\n".join(parts)
     return (
         "<jstack-identity>\n"
-        f"Injected on entry by JStack. Your working directory is a repo that "
+        f"Injected on entry by jStack. Your working directory is a repo that "
         f"{agent} owns, so you are the {agent} agent working in it — the seat is "
         f"{agent}/{submode}. Your role files are below: CLAUDE.md walk-up climbs "
         "from the working directory and your workspace is a sibling of this "

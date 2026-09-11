@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# JStack adapter — dub (verbatim-fork) a Claude Code session into a new id.
+# jStack adapter — dub (verbatim-fork) a Claude Code session into a new id.
 #
 # Contract:  dub-session [src-session-id | src-transcript-path] [project-key] [title-suffix]
 # Behavior:  copies the source session's .jsonl to a fresh UUID in the same

@@ -1,7 +1,7 @@
 {
   "name": "jstack",
   "interface": {
-    "displayName": "JStack"
+    "displayName": "jStack"
   },
   "plugins": [
     {

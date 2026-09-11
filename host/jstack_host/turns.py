@@ -80,7 +80,7 @@ def _env() -> dict:
     env["PATH"] = spawn_path(inherit=env.get("PATH", ""))
     # Don't spawn a post-session review for each jRemote turn.
     env["SKIP_SESSION_HOOK"] = "1"
-    # Timeline injection needs no opt-in here — the JStack SessionStart hook
+    # Timeline injection needs no opt-in here — the jStack SessionStart hook
     # injects it regardless of SKIP_SESSION_HOOK (it fires on resume too).
     return env
 

@@ -18,7 +18,7 @@ in a throwaway VM.
 and revokes devices. `_guard_against_the_operators_mac` refuses a base URL
 that resolves to this machine's own host unless `JREMOTE_LIVE_I_MEAN_IT=1`,
 because the first accident anyone has here is running it against production
-and wiping the board Boss is looking at.
+and wiping the board someone is actually looking at.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def _is_this_mac(base_url: str) -> bool:
     """Whether `base_url` points at the host running the tests.
 
     Compared by resolved address, not by string: `localhost`, `127.0.0.1`,
-    `jarvis.local` and this Mac's LAN address are four spellings of the one
+    this Mac's `.local` name and its LAN address are four spellings of the one
     machine, and a guard that only knew the first spelling is a guard that
     passes right up until it matters.
     """

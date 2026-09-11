@@ -847,7 +847,8 @@ def grant_host_access(key: str, body: HostGrantRequest,
     if not name:
         # The row the leaf will show is named after the device that asked, so
         # revoking it there is legible. Falling back to this host's own name for
-        # the row would put "jarvis" in the leaf's roster for every device.
+        # the row would put this host's own name in the leaf's roster, for
+        # every device, however many asked.
         asker = devices.row(device_id) or {}
         name = _device_name(asker.get("name") or "a device")
     try:

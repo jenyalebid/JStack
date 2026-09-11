@@ -23,7 +23,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOST_DIR="$REPO_ROOT/host"
-VM_SH="${VM_SH:-$HOME/Operations/Infrastructure/scripts/vm.sh}"
+# No hard-coded default. The VM driver lives wherever the machine running this
+# keeps it, and baking one installation's tree into a published script both
+# names that installation and sends every other one to a path that does not
+# exist. PATH first, then say plainly what to set.
+VM_SH="${VM_SH:-$(command -v vm.sh 2>/dev/null || true)}"
+: "${VM_SH:?set VM_SH to the vm.sh that boots your test VM}"
 
 VM_NAME="live-actions"
 GIT_REF=""

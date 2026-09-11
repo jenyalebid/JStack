@@ -47,7 +47,7 @@ route remembering to check a flag. A separate gate cannot be forgotten into.
 ## The trade, stated
 
 A hub holding grants means **compromising the hub is minting rights on every
-machine attached to it**. Boss ruled yes on that on 2026-09-02 (decision 1 in
+machine attached to it**. That was ruled yes on 2026-09-02 (decision 1 in
 docs/multi-host-access.md) with the trade named: the hub is the machine that
 already holds every credential on it, so this widens the blast radius on paper
 and not in fact. The fallback if that ever stops being true is in the same

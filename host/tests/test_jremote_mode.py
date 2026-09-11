@@ -81,6 +81,28 @@ def test_a_hub_is_never_read_as_managed_even_with_a_stray_leaf_plist():
     assert v["mode"] == "open"
 
 
+def test_holding_the_mesh_gateway_proves_a_hub_when_can_pair_says_no():
+    # The regression this exists for: a hub that administers its tunnel outside
+    # the package tree fails can_pair (no wg0.conf where the package looks) and
+    # was told it was "managed" — a leaf of a parent it does not have.
+    v = mode.classify(leaf_installed=False, on_mesh=True,
+                      is_hub=False, endpoint=False, owns_mesh_gateway=True)
+    assert v["mode"] == "local"
+    assert "managed" not in v["note"]
+
+
+def test_the_gateway_holder_with_an_endpoint_is_open_not_managed():
+    v = mode.classify(leaf_installed=False, on_mesh=True,
+                      is_hub=False, endpoint=True, owns_mesh_gateway=True)
+    assert v["mode"] == "open"
+
+
+def test_a_stray_leaf_plist_never_demotes_the_gateway_holder():
+    v = mode.classify(leaf_installed=True, on_mesh=True,
+                      is_hub=False, endpoint=False, owns_mesh_gateway=True)
+    assert v["mode"] != "managed"
+
+
 # ── the seams: reading this machine's own state ──
 
 def test_leaf_installed_reflects_the_plist(tmp_path, monkeypatch):
@@ -95,6 +117,32 @@ def test_on_mesh_finds_a_mesh_address_and_ignores_the_rest():
     assert mode._on_mesh(["192.168.1.5", "10.66.0.7", "fe80::1"]) is True
     assert mode._on_mesh(["192.168.1.5", "not-an-ip", ""]) is False
     assert mode._on_mesh([]) is False
+
+
+def test_owns_mesh_gateway_is_the_gateway_alone_not_any_mesh_address():
+    # A leaf sits on the mesh at .2 and up; only the hub holds .1.
+    assert mode._owns_mesh_gateway(["192.168.1.5", "10.66.0.1"]) is True
+    assert mode._owns_mesh_gateway(["10.66.0.7"]) is False
+    assert mode._owns_mesh_gateway(["not-an-ip", ""]) is False
+    assert mode._owns_mesh_gateway([]) is False
+
+
+def test_the_mesh_gateway_is_derived_from_the_subnet_not_restated():
+    # Moving MESH_SUBNET must move the gateway with it — a second hardcoded
+    # 10.66.0.1 would keep passing after the real subnet changed.
+    assert mode._mesh_gateway() == ipaddress.ip_address("10.66.0.1")
+    assert mode._mesh_gateway() in mode.addresses.MESH_SUBNET
+
+
+def test_current_reads_the_gateway_as_hub_when_can_pair_says_no(monkeypatch):
+    # The live shape of this bug: can_pair False because wg0.conf is not in the
+    # package tree, gateway held on utun0. The verdict must not be "managed".
+    monkeypatch.setattr(mode, "_leaf_installed", lambda: False)
+    monkeypatch.setattr(mode.addresses, "_inet_addrs",
+                        lambda: ["192.168.0.106", "10.66.0.1"])
+    monkeypatch.setattr(mode.tunnel, "can_pair", lambda: False)
+    monkeypatch.setattr(mode, "_endpoint_declared", lambda: False)
+    assert mode.current()["mode"] == "local"
 
 
 def test_endpoint_declared_honours_the_env_first(monkeypatch):

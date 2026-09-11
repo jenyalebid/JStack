@@ -25,6 +25,16 @@ it was told to believe about itself:
   · it is **open** when it owns the mesh AND publishes an endpoint to dial.
   · it is **local** otherwise.
 
+**Owning the mesh is read from the interface, not only from a file.** A hub
+holds the mesh subnet's *gateway* address — `10.66.0.1` — and a leaf never
+does; leaves are handed `.2` upward. That is a fact about the running machine,
+which is why it outranks `tunnel.can_pair()`: can_pair answers "can I mint a
+peer", and it answers no whenever `wg0.conf` is not where *this package*
+expects it. A host whose tunnel is administered from outside the package tree
+is the ordinary case of that, and reading can_pair as the hub test demoted such
+a machine to "managed" — the mode telling the owner of the mesh it was a leaf
+of somebody else. Both facts are consulted now, and either one proves a hub.
+
 **Configured shape, not proven reachability.** Two honest limits are baked in
 here, both of them the difference between a check and a claim:
 
@@ -83,6 +93,34 @@ def _on_mesh(inets: list[str]) -> bool:
     return False
 
 
+def _mesh_gateway() -> ipaddress.IPv4Address:
+    """The mesh subnet's gateway — the address the hub itself holds.
+
+    Derived from `addresses.MESH_SUBNET` rather than written out, so moving the
+    subnet moves this with it. A second literal `10.66.0.1` in this file would
+    keep passing after the real one moved, which is the failure the check
+    exists to prevent."""
+    return next(addresses.MESH_SUBNET.hosts())
+
+
+def _owns_mesh_gateway(inets: list[str]) -> bool:
+    """Whether this machine holds the mesh gateway address — proof it *is* the
+    hub, not a machine dialled into one.
+
+    The interface half of the hub question. `tunnel.can_pair()` is the other
+    half and answers a narrower one: whether this package can find the peer
+    list well enough to edit it. A hub whose wireguard state lives outside the
+    package tree fails that and still owns the mesh."""
+    gateway = _mesh_gateway()
+    for raw in inets:
+        try:
+            if ipaddress.ip_address(raw) == gateway:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _endpoint_declared() -> bool:
     """Whether this host publishes a dial-in endpoint, read the same two places
     `wg_peer.py._endpoint()` reads — the env first, then `<WG_DIR>/endpoint`.
@@ -96,14 +134,21 @@ def _endpoint_declared() -> bool:
 
 
 def classify(*, leaf_installed: bool, on_mesh: bool,
-             is_hub: bool, endpoint: bool, off_net_verified: bool = False) -> dict:
+             is_hub: bool, endpoint: bool, off_net_verified: bool = False,
+             owns_mesh_gateway: bool = False) -> dict:
     """The taxonomy, from a handful of facts and nothing else. Pure on purpose.
 
     `off_net_verified` is the one that turns open mode's declaration into a
     claim: it is True only when an off-network handshake has actually been
     observed (open_mode.verify). An open host without it publishes an endpoint
     but has not been shown to be reachable through it, and says exactly that.
+
+    `owns_mesh_gateway` is the second, independent proof of a hub — holding
+    `10.66.0.1` on an interface. Either it or `is_hub` settles the question, so
+    a hub is never demoted to a leaf of itself because this package could not
+    find the peer list it does not administer.
     """
+    is_hub = is_hub or owns_mesh_gateway
     if leaf_installed and not is_hub:
         return {
             "mode": "managed",
@@ -144,7 +189,9 @@ def current() -> dict:
     The off-network verification is only consulted for a host that could be open
     — a hub with an endpoint — because reading it shells out to `wg`, and a
     local or managed host has no open claim to verify."""
-    is_hub = tunnel.can_pair()
+    inets = addresses._inet_addrs()
+    owns_gateway = _owns_mesh_gateway(inets)
+    is_hub = tunnel.can_pair() or owns_gateway
     endpoint = _endpoint_declared()
     verified = False
     if is_hub and endpoint:
@@ -152,8 +199,9 @@ def current() -> dict:
         verified = open_mode.verify()["verified"]
     return classify(
         leaf_installed=_leaf_installed(),
-        on_mesh=_on_mesh(addresses._inet_addrs()),
+        on_mesh=_on_mesh(inets),
         is_hub=is_hub,
         endpoint=endpoint,
         off_net_verified=verified,
+        owns_mesh_gateway=owns_gateway,
     )

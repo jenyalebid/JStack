@@ -2194,6 +2194,18 @@ def splitoff_session(sid: str):
             break
     if not key:
         raise HTTPException(status_code=404, detail="no transcript to fork")
+    # The dub is a jStack plugin binary, and `host/install.sh` installs the
+    # host without the plugins tree — so a standalone host does not have one.
+    # Asked for it anyway, `subprocess.run` raised FileNotFoundError straight
+    # out of the route and the phone got a bare 500 for a feature the machine
+    # simply does not carry. Every other optional tier here answers honestly
+    # instead (control 503, pict 501, review 503), and this one now says the
+    # same thing in the same shape.
+    if not _DUB_SESSION or not Path(_DUB_SESSION).exists():
+        raise HTTPException(
+            status_code=501,
+            detail="splitoff needs jStack's dub-session, which this host does "
+                   "not have installed")
     out = subprocess.run([str(_DUB_SESSION), sid, key],
                          capture_output=True, text=True)
     new_sid = out.stdout.strip()

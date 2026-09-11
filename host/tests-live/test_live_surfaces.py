@@ -112,14 +112,25 @@ def test_a_tag_is_minted_edited_and_deleted(api, scratch_name):
     timeline — tags come from jStack's `log_event` binary, so a host without
     one has no vocabulary to mint into, and that is a configuration rather
     than a fault."""
-    listing = api.ok("GET", "/tags")
-    if not _available(listing):
-        pytest.skip(f"host has no timeline, so no tag vocabulary: {listing}")
-
     name = scratch_name.replace("-", "")
+
+    # Called before the availability branch, never skipped around it. A skip
+    # here left `POST /tags` and `DELETE /tags/{name}` as the last two routes
+    # in the whole suite that no live test had ever called — a host without a
+    # timeline still has to refuse cleanly, and that refusal is the only
+    # behaviour those routes have on such a host. Skipping it tested nothing
+    # and reported the surface as covered.
     made = api.post("/tags", json={"name": name, "description": "live suite"})
+
     if made.status_code == 503:
-        pytest.skip("host serves tags read-only")
+        removed = api.delete("/tags/{name}", fmt={"name": name},
+                             **{"params": {"force": True}})
+        assert removed.status_code == 503, (
+            f"host refuses to mint a tag but accepts deleting one: "
+            f"{removed.status_code}")
+        pytest.skip("host has no timeline, so the vocabulary is refused "
+                    "end to end — both routes were still exercised")
+
     assert made.status_code < 300, f"{made.status_code}: {made.text[:300]}"
 
     edited = api.patch("/tags/{name}", fmt={"name": name},

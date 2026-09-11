@@ -339,4 +339,12 @@ def attach(code: str, parent_url: str, *, host_key: str,
         # must not tell its owner their devices get in by themselves when that
         # parent has no idea how to let them.
         "delegated": bool(result.get("delegated")),
+        # Whether the token above is worth anything. A parent with reachback
+        # switched off mints the row and revokes it in the same breath, so
+        # this machine holds a credential that authenticates nothing. Read
+        # from the parent's answer and defaulted TRUE, because a parent on an
+        # older build does not send the field and its tokens do work — the
+        # absent case has to mean "yes" or every existing parent starts
+        # reporting a restriction it does not impose.
+        "reachback": bool(result.get("reachback", True)),
     }

@@ -363,6 +363,23 @@ def redeem(raw_code: str, client_ip: str, host_key: str = "",
     device_row["revoked"] = False
     store.note_enrolment_device(code_hash, f"{device_row['id']} from {client_ip}")
 
+    # The direction nobody asked for, gated. Attach establishes trust both
+    # ways at once: the grant below is what the adopter wanted, and this token
+    # is the machine's credential back to THIS hub, which it gets as a side
+    # effect. On a Mac whose disk this hub's owner cannot vouch for — a work
+    # laptop, a box somebody else administers — that is the half worth
+    # refusing, and refusing it costs the adoption nothing.
+    #
+    # Revoked rather than never minted: the row is the record that the machine
+    # enrolled at all, and a leaf with no row is a leaf no surface can show.
+    reachback = True
+    if kind == KIND_HOST:
+        from . import hub_prefs
+        reachback = hub_prefs.get("leaf_reachback")
+        if not reachback:
+            devices.revoke(device_row["id"])
+            device_row["revoked"] = True
+
     peer, note = _tunnel_for(row["name"], leaf=kind == KIND_HOST)
     host_row = None
     if kind == KIND_HOST:
@@ -390,6 +407,10 @@ def redeem(raw_code: str, client_ip: str, host_key: str = "",
     return {"device": device_row, "token": token,
             "tunnel": peer, "tunnel_note": note,
             "kind": kind, "host": host_row,
+            # Said out loud, because the machine reading this just received a
+            # token it cannot use and would otherwise discover that as an
+            # authentication failure days later, against a hub that looks up.
+            "reachback": reachback,
             # Whether this host can now hand devices access to that machine
             # without anybody typing a second code. The attaching machine prints
             # it, because "you are on the mesh" and "your devices get in by

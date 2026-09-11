@@ -333,6 +333,17 @@ def _cmd_attach(args) -> int:
           "hub now.")
     print(f"\nmode  {m['mode']}{'' if m['live'] else '  (not live)'}")
     print(f"      {m['note']}")
+    if not result.get("reachback", True):
+        # Not an error and not hidden. The attach did everything it was asked
+        # to; the parent simply does not let machines it adopts reach back
+        # into it. Unsaid, this becomes an authentication failure discovered
+        # days later against a parent that looks perfectly healthy.
+        print("\n  That hub does not let the machines it adopts reach back "
+              "into it, so the\n  credential this Mac just received is "
+              "already revoked. Nothing is wrong:\n  that hub administers "
+              "this Mac, and devices paired there reach it. This Mac\n  just "
+              "cannot drive that hub. Its owner can change it with "
+              "`jstack-host\n  reachback on` and a fresh attach.")
     if m["mode"] != "managed":
         # The installer returned success but the machine does not read as
         # managed — say so instead of letting the mode line be the only tell.
@@ -528,6 +539,65 @@ def _cmd_adopt(args) -> int:
         return 1
     print("\nThat Mac joins this mesh and hands back a grant, so every device "
           "already paired\nhere gets into it without a second code.")
+    return 0
+
+
+def _cmd_reachback(args) -> int:
+    """Read or set whether an adopted machine holds a credential back to here.
+
+    Adopting establishes trust in both directions in one request, and only one
+    of them is ever the thing somebody meant. The grant this hub receives is
+    the point — it is what lets a phone paired here reach the office Mac. The
+    token that machine receives is the side effect, and on hardware whose disk
+    this hub's owner cannot vouch for it is the half worth refusing.
+
+    Turning it off does not touch machines already adopted unless asked:
+    `--existing` is a separate word because it ends access that is live right
+    now, and a flag that quietly cut a running machine off would be the same
+    class of surprise this setting exists to prevent.
+    """
+    _adopt(args)
+    from . import hub_prefs
+
+    if args.state is None:
+        on = hub_prefs.get("leaf_reachback")
+        print(f"reachback: {'on' if on else 'off'}")
+        print("\nMachines this hub adopts " + (
+            "hold a credential back to this hub — they can drive it as an "
+            "ordinary device." if on else
+            "get no working credential back to this hub. Adoption still works "
+            "in the direction\nyou asked for: this hub administers them, and "
+            "devices paired here reach them."))
+        return 0
+
+    want = args.state == "on"
+    hub_prefs.set("leaf_reachback", want)
+    print(f"reachback: {'on' if want else 'off'}")
+
+    if want:
+        print("\nMachines adopted from now on will hold a credential back to "
+              "this hub.\nMachines whose credential was already revoked do "
+              "NOT get it back — their row is\ndead, and only attaching again "
+              "mints a live one.")
+        return 0
+
+    print("\nMachines adopted from now on get no working credential back here.")
+    if not args.existing:
+        print("Machines already adopted keep theirs — re-run with `--existing` "
+              "to revoke those\ntoo, which ends access they are using right "
+              "now.")
+        return 0
+
+    revoked = hub_prefs.revoke_existing_reachback()
+    if revoked:
+        print(f"\nRevoked what {len(revoked)} already-adopted machine"
+              f"{'' if len(revoked) == 1 else 's'} held back to this hub:")
+        for name in revoked:
+            print(f"    {name}")
+        print("\nEach can still be administered from here. To give one its "
+              "credential back it\nhas to attach again.")
+    else:
+        print("\nNo already-adopted machine held a live credential back here.")
     return 0
 
 
@@ -845,6 +915,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print the code and addresses as JSON")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_adopt)
+
+    p = sub.add_parser("reachback",
+                       help="may machines this hub adopts reach back INTO it")
+    p.add_argument("state", nargs="?", choices=("on", "off"),
+                   help="omit to read the current setting")
+    p.add_argument("--existing", action="store_true",
+                   help="with `off`, also revoke what already-adopted "
+                        "machines hold — this ends live access")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_reachback)
 
     p = sub.add_parser("detach",
                        help="leave the parent hub — the reverse of attach")

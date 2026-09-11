@@ -77,6 +77,42 @@ enum HostAgent {
         return plist
     }
 
+    /// The record an embedded host leaves behind — `embed.declare()` on the
+    /// Python side, written by the server that mounts the host as it starts.
+    ///
+    /// A host embedded in another application has no LaunchAgent of its own, by
+    /// design, so `job()` above answers nothing about it and every resolver
+    /// below fell through to the package defaults. The defaults name
+    /// `~/.local/state/jremote`, which on such a machine is a directory the
+    /// live host has never read: this bar presented a credential minted into it
+    /// and the hub answered `wrong secret for host-internal`, which the menu
+    /// then drew, accurately and uselessly, as "the token on disk was refused
+    /// by the hub".
+    ///
+    /// Read fresh, never cached: the marker is rewritten every time the
+    /// embedding server starts, and a bar that cached it across a server that
+    /// moved its state dir would go on reporting the old one until someone
+    /// restarted the menu.
+    private static func marker() -> [String: Any] {
+        let env = ProcessInfo.processInfo.environment["JREMOTE_EMBED_MARKER"] ?? ""
+        let path = env.isEmpty
+            ? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".local/state/jremote/embedded.json")
+            : URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+        guard let data = try? Data(contentsOf: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return json
+    }
+
+    /// One string off the marker, or nil where it says nothing. Empty is nil:
+    /// a key present and blank is a marker that failed to record an answer,
+    /// and taking it would resolve every path against `/`.
+    private static func marked(_ key: String) -> String? {
+        guard let value = marker()[key] as? String, !value.isEmpty else { return nil }
+        return value
+    }
+
     /// The port to look on: this app's own `--port` if it was given one,
     /// otherwise the port the installed agent serves on — taken from the argv
     /// launchd execs, which is the same string the host is running with.
@@ -84,12 +120,16 @@ enum HostAgent {
         let mine = ProcessInfo.processInfo.arguments
         if let i = mine.firstIndex(of: "--port"), i + 1 < mine.count,
            let p = Int(mine[i + 1]) { return p }
-        guard let args = job()?["ProgramArguments"] as? [String],
-              let i = args.firstIndex(of: "--port"),
-              i + 1 < args.count,
-              let p = Int(args[i + 1])
-        else { return defaultPort }
-        return p
+        if let args = job()?["ProgramArguments"] as? [String],
+           let i = args.firstIndex(of: "--port"),
+           i + 1 < args.count,
+           let p = Int(args[i + 1]) { return p }
+        // The embedded host's own answer, which is the only record of it: the
+        // port is the embedding server's, and nothing in this app's argv or in
+        // that server's plist has to mention it. `defaultPort` being right here
+        // today is luck, not a reading.
+        if let p = marker()["port"] as? Int, (1...65535).contains(p) { return p }
+        return defaultPort
     }
 
     /// The address the host was installed to bind, or nil where nothing on
@@ -116,6 +156,9 @@ enum HostAgent {
     static func stateDir() -> URL {
         if let state = environment()["JREMOTE_STATE_DIR"], !state.isEmpty {
             return URL(fileURLWithPath: (state as NSString).expandingTildeInPath)
+        }
+        if let marked = marked("state_dir") {
+            return URL(fileURLWithPath: (marked as NSString).expandingTildeInPath)
         }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/state/jremote")
@@ -155,23 +198,90 @@ enum HostAgent {
     }
 
     /// The bearer token file, resolved the way the host resolves it:
-    /// `JREMOTE_TOKEN_PATH` wins outright, otherwise `api-token` inside the
-    /// state dir.
+    /// `JREMOTE_TOKEN_PATH` wins outright, then the embedded host's marker,
+    /// otherwise `api-token` inside the state dir.
     static func tokenPath() -> URL {
         if let explicit = environment()["JREMOTE_TOKEN_PATH"], !explicit.isEmpty {
             return URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath)
         }
+        if let marked = marked("token_path") {
+            return URL(fileURLWithPath: (marked as NSString).expandingTildeInPath)
+        }
         return stateDir().appendingPathComponent("api-token")
+    }
+
+    /// The host's own local credential — `devices.internal_token()`, kept in
+    /// plaintext beside the table that validates it.
+    ///
+    /// The fallback and never the first answer: `tokenPath()` is what the host
+    /// says it expects, and this is what it mints for callers on its own
+    /// machine when nobody handed it a token file. On an embedded host that is
+    /// the usual case — the marker records a `token_path` under `Credentials/`
+    /// that the migration to per-device rows left behind, and the file the hub
+    /// actually accepts is this one. Read only, never minted here: minting is
+    /// a read-compare-write across a sqlite row and a file, serialized by a
+    /// flock this process has no business taking, and the losers of that race
+    /// corrupt the credential for everything on the machine.
+    static func internalTokenPath() -> URL {
+        stateDir().appendingPathComponent("internal-token")
+    }
+
+    /// Tokens this host has answered 401 to, by value.
+    ///
+    /// **A token file existing says nothing about the credential being live.**
+    /// That is the whole reason this exists. `tokenPath()` on an embedded host
+    /// names `Credentials/jremote-api-token`, which holds the pre-per-device
+    /// shared bearer; the `legacy` row behind it was revoked on 2026-09-03 and
+    /// the file was left on disk. A reader that picks the first candidate that
+    /// *exists* therefore picks a revoked credential, for ever, on the one Mac
+    /// that runs the hub — the menu bar has read "No Access · refused this
+    /// Mac's token" since that revocation while the host beside it was up and
+    /// holding a perfectly good credential one path over.
+    ///
+    /// Only the host can say which token is live, and it says it by answering.
+    /// So a 401 retires the exact string that earned it and the next poll — ten
+    /// seconds later — advances to the next candidate. Keyed on the value, not
+    /// the path, so rewriting a file with a good token clears it with no
+    /// restart: the new string was never refused.
+    private static let refusedLock = NSLock()
+    private static var refusedTokens: Set<String> = []
+
+    /// Called with whatever was sent on any request the host answered 401 or
+    /// 403 to. Idempotent, and safe from URLSession's callback queues.
+    static func refuse(_ token: String?) {
+        guard let token, !token.isEmpty else { return }
+        refusedLock.lock()
+        defer { refusedLock.unlock() }
+        refusedTokens.insert(token)
+    }
+
+    private static func refused(_ token: String) -> Bool {
+        refusedLock.lock()
+        defer { refusedLock.unlock() }
+        return refusedTokens.contains(token)
     }
 
     /// Read fresh every poll, never cached. A host provisioned after this app
     /// launched — the ordinary first-install order — would otherwise stay
     /// tokenless in the menu until someone thought to restart the menu bar.
+    ///
+    /// Candidates in order, skipping any the host has already refused. When
+    /// every candidate has been refused we hand back the last one anyway rather
+    /// than nil: nil reads as "this Mac has no token", and "the hub refused the
+    /// token this Mac has" is a different fault with a different fix. The menu
+    /// has separate words for each and picking the wrong one sends the reader
+    /// after the wrong problem.
     static func token() -> String? {
-        guard let raw = try? String(contentsOf: tokenPath(), encoding: .utf8)
-        else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        var last: String? = nil
+        for path in [tokenPath(), internalTokenPath()] {
+            guard let raw = try? String(contentsOf: path, encoding: .utf8)
+            else { continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            if !refused(trimmed) { return trimmed }
+            last = trimmed
+        }
+        return last
     }
 
     static func logDirectory() -> URL {
@@ -496,7 +606,10 @@ final class HostProbe {
             let loadSessions = {
                 guard let token else { return finish() }
                 self.get("\(base)\(Self.apiPrefix)/sessions/active", token: token) { data, status in
-                    if status == 401 || status == 403 { state.unauthorized = true }
+                    if status == 401 || status == 403 {
+                        state.unauthorized = true
+                        HostAgent.refuse(token)
+                    }
                     if let data,
                        let active = try? Self.decoder.decode(ActiveSessions.self, from: data) {
                         state.sessions = active.sessions ?? []
@@ -559,7 +672,10 @@ final class HostProbe {
                 // indistinguishable from a hub that was never installed — which
                 // is what the menu said on this Mac, over a host that was up and
                 // answering, while `/hosts` held a live leaf.
-                if status == 401 || status == 403 { state.unauthorized = true }
+                if status == 401 || status == 403 {
+                    state.unauthorized = true
+                    HostAgent.refuse(token)
+                }
                 guard status == 200, let data,
                       let identity = try? Self.decoder.decode(HostIdentity.self, from: data)
                 else { return finish() }
@@ -875,7 +991,18 @@ struct MintedPairing {
     let code: String
     let expiresIn: Int
     let port: Int
+    /// Every address the host named, in its own order — for `pair`, where a
+    /// phone genuinely may be on this Wi-Fi or on the mesh and choosing is
+    /// the point.
+    let allAddresses: [String]
     let firstAddress: String?
+    /// The one address on a real network, or nil. The answer for a machine
+    /// that does not hold the tunnel yet — its only first-contact address.
+    let lanAddress: String?
+    /// This hub's own mesh address, or nil if it runs no mesh. The address
+    /// every device uses once it holds the tunnel — which, after the first
+    /// pairing, is every device, from anywhere in the world.
+    let meshAddress: String?
     let link: String?
 
     init?(json: String) {
@@ -889,18 +1016,42 @@ struct MintedPairing {
         expiresIn = top["expires_in"] as? Int ?? 600
         port = top["port"] as? Int ?? 9090
         let addresses = top["addresses"] as? [[String: Any]] ?? []
-        firstAddress = addresses.first?["url"] as? String
+        allAddresses = addresses.compactMap { $0["url"] as? String }
+        firstAddress = allAddresses.first
+        lanAddress = addresses.first { $0["kind"] as? String == "lan" }?["url"] as? String
+        meshAddress = addresses.first { $0["kind"] as? String == "mesh" }?["url"] as? String
         link = top["link"] as? String
     }
 
-    /// The line to run on the machine being adopted — the whole command, not
-    /// the parts to assemble one from, which is the same thing `jstack-host
-    /// adopt` prints in a terminal. Where this Mac could not name an address
-    /// the placeholder stays in, visibly, rather than the command quietly
-    /// naming somewhere that is not here.
+    /// The line to run on the machine being adopted, against `parent`.
+    func attachCommand(_ parent: String) -> String {
+        "jstack-host attach \(code) --parent \(parent)"
+    }
+
+    /// The command to lead with — mesh first, because that is the one that
+    /// works from where the machine usually *is*.
+    ///
+    /// This dialog used to print the LAN address alone, under the flat claim
+    /// that the machine "has to be on this network". Both were wrong, and they
+    /// were wrong in the direction that costs the most: the reader who is *not*
+    /// on this network — the only reader who needs the dialog — was handed the
+    /// one address that cannot reach the hub for them, and told the failure was
+    /// their fault for being elsewhere.
+    ///
+    /// Redeeming is an HTTP call, and the redeem endpoint applies no locational
+    /// rule at all — `tunnel.issue` drops it deliberately, because the code is
+    /// the authorization that a LAN source address merely stands in for. So the
+    /// real precondition is not *where the machine is*, it is *whether it holds
+    /// the tunnel*: a machine already on the mesh adopts from anywhere in the
+    /// world, and 3150 mesh requests have reached this hub's HTTP that way.
+    /// Only a machine with nothing on it yet has to be on this network once,
+    /// because the first tunnel is precisely what `attach` hands back.
+    ///
+    /// `.local` stays out of both branches: it needs the same LAN as the
+    /// numeric address while resolving less reliably on it, so it is never
+    /// right when the number is available and never available when it is not.
     var attachCommand: String {
-        "jstack-host attach \(code) --parent "
-            + (firstAddress ?? "http://<this-mac>:\(port)")
+        attachCommand(meshAddress ?? lanAddress ?? "http://<this-mac>:\(port)")
     }
 
     /// "10 minutes", from seconds — the dialog says how long the code lives,
@@ -2054,15 +2205,36 @@ final class StatusController: NSObject {
 
         let shown = NSAlert()
         shown.messageText = "Adopt \(minted.name)"
-        shown.informativeText = minted.firstAddress != nil
-            ? "Run this on that Mac, where jStack is installed. The code is "
-            + "good for \(minted.validFor).\n\nIt joins this hub's mesh and "
-            + "hands back a grant, so every device already paired here gets "
-            + "into it without a second code."
-            : "This Mac could not work out an address the other machine can "
-            + "reach, so the command below has a blank to fill in — check "
-            + "`jstack-host where` and your network. The code is good for "
-            + "\(minted.validFor)."
+        // Two conditions, because there are two, and the reader knows which
+        // one they are in. The dialog used to state one flat precondition —
+        // "that Mac has to be on this network" — which is false for every
+        // machine that already holds the tunnel, i.e. the common case, and it
+        // sent exactly the person it was written for to an address that could
+        // not answer them. See `attachCommand` for why the mesh branch is real.
+        if minted.meshAddress != nil {
+            shown.informativeText =
+                "Run this on that Mac, where jStack is installed. The code is "
+                + "good for \(minted.validFor).\n\n"
+                + "That address is this hub on the mesh — it reaches here from "
+                + "anywhere in the world, and it is the answer for any Mac "
+                + "that has been on this mesh even once."
+                + (minted.lanAddress != nil
+                   ? "\n\nOnly a Mac that has NEVER been on this mesh needs a "
+                   + "different address, and it has to be on this network for "
+                   + "it — `jstack-host where` prints that one."
+                   : "")
+        } else if minted.lanAddress != nil {
+            shown.informativeText =
+                "Run this on that Mac, where jStack is installed. It has to be "
+                + "on this network — this hub runs no mesh, so there is no "
+                + "address that reaches it from anywhere else. The code is "
+                + "good for \(minted.validFor)."
+        } else {
+            shown.informativeText =
+                "This Mac has no address another machine can redeem against — "
+                + "only loopback, and it runs no mesh. Put it on a real "
+                + "network, then mint a new code."
+        }
         shown.accessoryView = Self.commandAccessory(minted.attachCommand)
         shown.addButton(withTitle: "Done")
         shown.addButton(withTitle: "Copy Command")

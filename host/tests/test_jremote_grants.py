@@ -22,7 +22,7 @@ def client(app):
 def paired():
     """A live device row on this host, and its token — the caller that has
     already proved itself to the hub."""
-    row, token = devices.mint("boss-iphone")
+    row, token = devices.mint("a-phone")
     return row, token
 
 
@@ -68,12 +68,12 @@ def test_a_host_that_never_attached_authenticates_nobody():
 
 def test_the_mint_route_mints_an_ordinary_device_row(client):
     grant = grants.issue("http://studio.local:9090")
-    resp = client.post("/api/jremote/v1/delegate/mint", json={"name": "boss-iphone"},
+    resp = client.post("/api/jremote/v1/delegate/mint", json={"name": "a-phone"},
                        headers={"Authorization": f"Bearer {grant}"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["token"].startswith("jr1.")
-    assert body["device"]["name"] == "boss-iphone"
+    assert body["device"]["name"] == "a-phone"
     # Ordinary: it is in the roster, and it drives the API like any other.
     assert devices.authenticate(body["token"]) == body["device"]["id"]
     assert any(d["id"] == body["device"]["id"] for d in devices.list_all())
@@ -161,7 +161,7 @@ def test_a_device_asks_the_hub_and_gets_a_token_minted_on_the_leaf(client, paire
     assert sent["url"] == "http://10.66.0.7:9090/api/jremote/v1/delegate/mint"
     # The row on the leaf is named after the device that asked, so revoking it
     # there is legible.
-    assert sent["payload"]["name"] == "boss-iphone"
+    assert sent["payload"]["name"] == "a-phone"
 
 
 def test_asking_for_a_machine_this_hub_never_adopted_is_404(client, paired):

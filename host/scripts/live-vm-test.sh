@@ -78,7 +78,12 @@ vssh '/opt/homebrew/bin/brew list python@3.12 >/dev/null 2>&1 || /opt/homebrew/b
 # instead would be the worst kind of green.
 if [ -n "$GIT_REF" ]; then
     say "guest clones $GIT_REF from the public repo"
-    vssh "rm -rf ~/jStack && git clone --depth 1 -b '$GIT_REF' https://github.com/jenyalebid/jStack.git ~/jStack" || \
+    # The URL comes from this checkout's own origin, not a literal. A published
+    # script that hard-codes one account's remote names that account, and sends
+    # every fork's guest to clone somebody else's tree.
+    CLONE_URL="${JSTACK_REPO:-$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)}"
+    : "${CLONE_URL:?no origin remote here — set JSTACK_REPO to the repo the guest should clone}"
+    vssh "rm -rf ~/jStack && git clone --depth 1 -b '$GIT_REF' '$CLONE_URL' ~/jStack" || \
         die "clone failed"
 else
     # Staged through a clean copy rather than sent straight from the tree. A

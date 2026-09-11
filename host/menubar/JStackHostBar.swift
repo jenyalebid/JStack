@@ -121,9 +121,20 @@ enum HostAgent {
             .appendingPathComponent(".local/state/jremote")
     }
 
-    /// The `JREMOTE_*` overrides the host runs under. `install_host` always
-    /// pins `JREMOTE_STATE_DIR` in the plist, even when nobody passed
-    /// `--state-dir`, so this is never empty for an installed host.
+    /// The variables that say which host this is — the ones a command has to
+    /// take on to answer about the installed host rather than about whatever a
+    /// shell implied. Mirrors `install_host.MESH_VARS` and the `JREMOTE_`
+    /// prefix beside it, and for the same reason: `WG_PEER_DIR` carries no
+    /// prefix and is the variable that decides whether this Mac owns a mesh at
+    /// all, so a filter that takes only the prefix drops the one fact a hub
+    /// cannot be read without (#42).
+    static func carries(_ key: String) -> Bool {
+        key.hasPrefix("JREMOTE_") || key == "WG_PEER_DIR" || key == "WG_ENDPOINT"
+    }
+
+    /// The overrides the host runs under. `install_host` always pins
+    /// `JREMOTE_STATE_DIR` in the plist, even when nobody passed `--state-dir`,
+    /// so this is never empty for an installed host.
     ///
     /// An explicit export in this process's own environment wins over the
     /// plist — the same precedence `adopt_installed_environment` applies on the
@@ -133,11 +144,11 @@ enum HostAgent {
     static func environment() -> [String: String] {
         var out: [String: String] = [:]
         if let env = job()?["EnvironmentVariables"] as? [String: Any] {
-            for (k, v) in env where k.hasPrefix("JREMOTE_") {
+            for (k, v) in env where carries(k) {
                 out[k] = String(describing: v)
             }
         }
-        for (k, v) in ProcessInfo.processInfo.environment where k.hasPrefix("JREMOTE_") {
+        for (k, v) in ProcessInfo.processInfo.environment where carries(k) {
             out[k] = v
         }
         return out
@@ -293,7 +304,58 @@ struct HostMode: Decodable {
     var mode: String?
     var note: String?
     var live: Bool?
+    /// The hub this machine dialled out to, on the managed answers and empty
+    /// everywhere else. A URL and nothing more — the record it is read from
+    /// (`parent.json`) also holds this machine's credential on that hub, and
+    /// `/host` is served to every device that can reach it.
+    var parent: String?
+
+    var isManaged: Bool { mode == "managed" }
+
+    /// "studio.local", from "http://studio.local:9090" — the machine, without
+    /// the scheme and port nobody reads it for. The whole URL is what Copy
+    /// Diagnostics carries and what the detach confirmation spells out.
+    var parentHost: String? {
+        guard let parent, !parent.isEmpty else { return nil }
+        return URL(string: parent)?.host ?? parent
+    }
 }
+
+/// One row of `GET /hosts` — a machine this hub adopted, as every device on
+/// this hub sees it.
+///
+/// `delegated` is the fact the tile cannot carry on its own, and the reason
+/// this row is drawn at all: a machine enrolled by a build that predates
+/// delegated minting shows up on every device identically to one that works,
+/// and 502s the moment somebody taps it. Optional rather than defaulted false,
+/// because a host too old to answer the field has not said "no" — it has said
+/// nothing, and a row claiming "pair by hand" on no evidence is the kind of
+/// check that is worse than no check.
+struct AdoptedHost: Decodable {
+    var key: String
+    var name: String?
+    var address: String?
+    var port: Int?
+    var enrolledAt: Int?
+    var delegated: Bool?
+
+    /// What to call it: the name given at adoption, else the key, which is the
+    /// machine's own host id and always there.
+    var title: String {
+        let named = (name ?? "").trimmingCharacters(in: .whitespaces)
+        return named.isEmpty ? key : named
+    }
+
+    /// Where it is on the mesh. Empty where the row was written without a peer
+    /// — a real state, and one the grant route refuses before it dials.
+    var route: String {
+        let addr = (address ?? "").trimmingCharacters(in: .whitespaces)
+        guard !addr.isEmpty else { return "" }
+        return "\(addr):\(port ?? 9090)"
+    }
+}
+
+struct AdoptedHostList: Decodable { var hosts: [AdoptedHost] }
 
 /// One snapshot of the machine, as the menu will render it.
 struct HostState {
@@ -303,6 +365,9 @@ struct HostState {
     /// The host's roster of paired devices, revoked ones included — the same
     /// list the client app shows, because #27 is the menu bar owning it too.
     var devices: [Device] = []
+    /// The machines this hub adopted. Empty on a machine that adopted none,
+    /// which is most of them — the section it feeds is hidden then.
+    var leaves: [AdoptedHost] = []
     /// The token exists but the board refused it — worth its own state, because
     /// it is the one failure that looks identical to "nothing is running".
     var unauthorized = false
@@ -349,7 +414,16 @@ struct HostState {
             // A managed host whose tunnel is down still says "managed", and adds
             // that it is not reachable through its parent right now, because the
             // attachment stands while the path is out.
-            parts.append(m)
+            //
+            // And *which* hub, where there is one. "managed" alone is the half
+            // of the truth that cannot be acted on: a machine administered from
+            // somewhere else is only a useful thing to know once you know from
+            // where, and this row is the one place a person looks for it.
+            if let parent = identity?.mode?.parentHost {
+                parts.append("managed by \(parent)")
+            } else {
+                parts.append(m)
+            }
             if identity?.mode?.live == false { parts.append("offline") }
         } else {
             // Older host with no mode field: the coarser hub/leaf read.
@@ -427,7 +501,18 @@ final class HostProbe {
                            let list = try? Self.decoder.decode(DeviceList.self, from: data) {
                             state.devices = list.devices
                         }
-                        finish()
+                        // The adopted machines, last and on the same terms: an
+                        // empty answer is the common one (most hubs adopted
+                        // nobody) and a failure here must not cost the roster
+                        // above it.
+                        self.get("\(base)\(Self.apiPrefix)/hosts", token: token) { data, _ in
+                            if let data,
+                               let list = try? Self.decoder.decode(AdoptedHostList.self,
+                                                                   from: data) {
+                                state.leaves = list.hosts
+                            }
+                            finish()
+                        }
                     }
                 }
             }
@@ -488,25 +573,10 @@ final class HostProbe {
     /// tolerates a truncated tail, so the work is still there.
     func kill(sid: String, token: String,
               _ done: @escaping (Bool, String) -> Void) {
-        let port = HostAgent.port()
-        guard let url = URL(string:
-            "http://127.0.0.1:\(port)\(Self.apiPrefix)/sessions/\(sid)/close?review=false")
-        else { return done(false, "could not build the request") }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         // The teardown waits on `claude` to exit, up to ten seconds — well past
         // the three the polls are configured for.
-        req.timeoutInterval = 20
-        session.dataTask(with: req) { data, response, error in
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let detail: String
-            if let error { detail = error.localizedDescription }
-            else if let data, let text = String(data: data, encoding: .utf8), !text.isEmpty {
-                detail = text
-            } else { detail = "the hub answered \(status)" }
-            DispatchQueue.main.async { done(status == 200, detail) }
-        }.resume()
+        post("/sessions/\(escaped(sid))/close?review=false",
+             token: token, timeout: 20, done)
     }
 
     /// Revoke a device through the host's own `/devices/{id}/revoke` — the same
@@ -515,16 +585,40 @@ final class HostProbe {
     /// token opens nothing and any live connection it held is already cut.
     func revoke(deviceId: String, token: String,
                 _ done: @escaping (Bool, String) -> Void) {
+        post("/devices/\(escaped(deviceId))/revoke", token: token, timeout: 10, done)
+    }
+
+    /// Drop an adopted machine from the grid, through the host's own route.
+    ///
+    /// Forgetting is not revoking, and the confirmation says so: it takes the
+    /// tile off every device and drops the grant this hub held, so nobody here
+    /// can mint on that machine any more. The credentials already minted over
+    /// there are that machine's own rows and stay live until it revokes them —
+    /// which is a thing only it can do, so this must not claim to have done it.
+    func forget(hostKey: String, token: String,
+                _ done: @escaping (Bool, String) -> Void) {
+        post("/hosts/\(escaped(hostKey))/forget", token: token, timeout: 10, done)
+    }
+
+    private func escaped(_ component: String) -> String {
+        component.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            ?? component
+    }
+
+    /// One POST, one verdict, one line of detail — what all three verbs above
+    /// need and the only thing that differs between them is the path. Written
+    /// once because the interesting part is the failure text: a menu that says
+    /// "could not remove" and nothing else is a menu that sends its user to the
+    /// logs, so whatever the host actually answered is carried up verbatim.
+    private func post(_ path: String, token: String, timeout: TimeInterval,
+                      _ done: @escaping (Bool, String) -> Void) {
         let port = HostAgent.port()
-        let id = deviceId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-            ?? deviceId
-        guard let url = URL(string:
-            "http://127.0.0.1:\(port)\(Self.apiPrefix)/devices/\(id)/revoke")
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(Self.apiPrefix)\(path)")
         else { return done(false, "could not build the request") }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.timeoutInterval = 10
+        req.timeoutInterval = timeout
         session.dataTask(with: req) { data, response, error in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let detail: String
@@ -751,10 +845,17 @@ enum JRemoteGlyph {
 /// draws, instead of the paragraph it used to echo. `link` is the same
 /// `jremote://pair` URL the installer fires at a local app; here it goes into
 /// a QR so a *remote* device's camera can be the thing that fires it.
+/// `jstack-host adopt --json` answers in this same shape — a code, a name, a
+/// life and the addresses the far end can send it to — so it is parsed by this
+/// same type rather than a near-copy of it. The one difference is `link`, which
+/// adopt does not mint: a host code is redeemed by a command on another Mac's
+/// terminal, not by a camera, and a QR that opens the client app would be the
+/// wrong instruction in a prettier form.
 struct MintedPairing {
     let name: String
     let code: String
     let expiresIn: Int
+    let port: Int
     let firstAddress: String?
     let link: String?
 
@@ -767,9 +868,20 @@ struct MintedPairing {
         self.code = code
         name = (top["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "a device"
         expiresIn = top["expires_in"] as? Int ?? 600
+        port = top["port"] as? Int ?? 9090
         let addresses = top["addresses"] as? [[String: Any]] ?? []
         firstAddress = addresses.first?["url"] as? String
         link = top["link"] as? String
+    }
+
+    /// The line to run on the machine being adopted — the whole command, not
+    /// the parts to assemble one from, which is the same thing `jstack-host
+    /// adopt` prints in a terminal. Where this Mac could not name an address
+    /// the placeholder stays in, visibly, rather than the command quietly
+    /// naming somewhere that is not here.
+    var attachCommand: String {
+        "jstack-host attach \(code) --parent "
+            + (firstAddress ?? "http://<this-mac>:\(port)")
     }
 
     /// "10 minutes", from seconds — the dialog says how long the code lives,
@@ -777,6 +889,51 @@ struct MintedPairing {
     var validFor: String {
         let mins = max(1, expiresIn / 60)
         return mins == 1 ? "1 minute" : "\(mins) minutes"
+    }
+}
+
+/// What `jstack-host detach --json` answers: every step by name, whether this
+/// machine is actually out, and the mode it landed in.
+///
+/// Steps rather than a verdict, because they fail independently and mean
+/// different things — the grants are the authority, the calls to the parent are
+/// courtesy over a mesh that is coming down, and the tunnel is the transport.
+/// The mode is read as well as `detached`: the steps can all pass on a machine
+/// that still dials out from a second leaf install somewhere, and the mode is
+/// the only thing that would say so.
+struct DetachOutcome {
+    let steps: [(ok: Bool, note: String)]
+    let detached: Bool
+    let mode: String
+    let note: String
+
+    var isManaged: Bool { mode == "managed" }
+
+    init?(json: String) {
+        // The whole output first, then its last line — a stray warning ahead of
+        // the payload must not turn a detach that reported itself fully into
+        // "did not report an outcome".
+        let whole = json.data(using: .utf8)
+        let tail = json.split(separator: "\n").last.flatMap { $0.data(using: .utf8) }
+        let parsed = [whole, tail].compactMap { $0 }
+            .compactMap { try? JSONSerialization.jsonObject(with: $0) }
+            .compactMap { $0 as? [String: Any] }
+        guard let top = parsed.first else { return nil }
+        let rows = top["steps"] as? [[String: Any]] ?? []
+        steps = rows.map { (ok: $0["ok"] as? Bool ?? false,
+                            note: $0["note"] as? String ?? "") }
+        detached = top["detached"] as? Bool ?? false
+        let landed = top["mode"] as? [String: Any] ?? [:]
+        mode = landed["mode"] as? String ?? ""
+        note = landed["note"] as? String ?? ""
+    }
+
+    /// The steps the way the command prints them in a terminal, and the mode
+    /// underneath — the same report, in the place the person actually ran it.
+    var report: String {
+        var lines = steps.map { "\($0.ok ? "✓" : "✗")  \($0.note)" }
+        if !mode.isEmpty { lines.append("\nmode  \(mode) — \(note)") }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -790,6 +947,18 @@ enum HostControl {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: launchPath)
         task.arguments = args
+        // The installed host's own variables, handed to every tool this app
+        // runs. Without them `jstack-host` answers about whatever a launched
+        // GUI process happens to have inherited — which on this app is nothing
+        // — and that is not a smaller answer, it is a different machine's: a
+        // Mac holding 10.66.0.1 with five peers reports `mode local` because
+        // the process was never told where its mesh is. The app is the one
+        // thing that knows which agent serves the host, so it is the one thing
+        // that can say. Whatever was exported to this app wins, so a menu bar
+        // launched by hand against a second host still talks to that one.
+        var env = ProcessInfo.processInfo.environment
+        env.merge(HostAgent.environment()) { mine, _ in mine }
+        task.environment = env
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
@@ -1014,6 +1183,11 @@ final class StatusController: NSObject {
         // shape as "what is running", and pairing a new one already lives on
         // the machine's controls where the rest of the do-something rows are.
         if let devices = devicesItem() { menu.addItem(devices) }
+        // And the machines this hub took responsibility for, on the same
+        // footing: a hub that adopted Macs is administering them, and a menu
+        // about this hub that shows its devices but not its machines is a menu
+        // that stops just short of what the hub actually is.
+        if let machines = machinesItem() { menu.addItem(machines) }
 
         // ── The app ─────────────────────────────────────────────────────────
         menu.addItem(.separator())
@@ -1077,6 +1251,36 @@ final class StatusController: NSObject {
         if state.isUp, HostControl.hostBinary != nil {
             sub.addItem(Self.action("Pair a Device…", #selector(doPair), self,
                                     symbol: "plus.circle"))
+            // Adopt and Detach are the two directions of the same relationship,
+            // and a machine is only ever in one of them: a managed Mac rides
+            // another hub's mesh and has no peers of its own to hand out, so
+            // offering it Adopt is offering a button whose only outcome is the
+            // refusal underneath it.
+            //
+            // The gate is the mode and NOT `features.tunnel_pairing`. That flag
+            // is `can_pair()`, which answers whether *this process* can find the
+            // peer table — false on a hub whose mesh predates the package, which
+            // is exactly the machine that most needs this item (#42). A mode of
+            // `local` or `open` is a hub either way; where the peer table is
+            // genuinely unreachable the CLI says so in its own words, which are
+            // better than anything this menu could guess.
+            if state.identity?.mode?.isManaged == true {
+                let parent = state.identity?.mode?.parentHost
+                let detach = Self.action(
+                    parent.map { "Detach from \($0)…" } ?? "Detach from Parent Hub…",
+                    #selector(doDetach), self, symbol: "eject")
+                detach.toolTip = "Stop being administered from "
+                    + "\(state.identity?.mode?.parent ?? "the parent hub")"
+                    + " and leave its mesh."
+                sub.addItem(detach)
+            } else {
+                let adopt = Self.action("Adopt a Mac…", #selector(doAdopt), self,
+                                        symbol: "plus.rectangle.on.rectangle")
+                adopt.toolTip = "Join another Mac to this hub's mesh. Every "
+                    + "device already paired here gets into it without a "
+                    + "second code."
+                sub.addItem(adopt)
+            }
         }
         if sub.items.isEmpty {
             sub.addItem(Self.caption("No agent to operate this hub."))
@@ -1293,6 +1497,84 @@ final class StatusController: NSObject {
         item.attributedTitle = Self.twoLine(title, subtitle)
         item.image = Self.glyph("laptopcomputer.and.iphone", size: 26)
         return item
+    }
+
+    /// The adopted-machines row: the Macs this hub joined to its own mesh, and
+    /// whether a device paired here actually gets into each one.
+    ///
+    /// Hidden entirely on a hub that adopted nobody, which is most of them —
+    /// the same rule the roster follows, and for the same reason: a permanent
+    /// row that can only ever say "none" is furniture, and adopting a first one
+    /// lives on the machine's controls with the other verbs.
+    ///
+    /// The second line is the access, not the address, because the access is
+    /// the thing that is ever wrong. A machine adopted by a build that predates
+    /// delegated minting sits in this list looking identical to a working one
+    /// and refuses the moment a device asks — so the row says which it is,
+    /// out loud, and the fix is one item away.
+    private func machinesItem() -> NSMenuItem? {
+        guard state.isUp, state.isProvisioned, !state.unauthorized else { return nil }
+        let machines = state.leaves.sorted { $0.title < $1.title }
+        guard !machines.isEmpty else { return nil }
+
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        for machine in machines {
+            let row = NSMenuItem(title: machine.title, action: nil, keyEquivalent: "")
+            // Filled where a device here can be let in without pairing to that
+            // machine, hollow where it cannot — the same two dots the process
+            // and device lists use, carrying the one difference that matters.
+            // Neither where the host never answered the question: an empty
+            // column is the only honest mark for an answer nobody gave.
+            row.image = Self.dot(live: machine.delegated == true,
+                                 idle: machine.delegated != nil)
+            row.attributedTitle = Self.twoLine(machine.title, Self.access(machine))
+
+            let actions = NSMenu()
+            actions.autoenablesItems = false
+            let forget = Self.action("Forget", #selector(doForgetMachine), self,
+                                     symbol: "minus.circle")
+            forget.representedObject = machine
+            actions.addItem(forget)
+            row.submenu = actions
+            sub.addItem(row)
+        }
+
+        // Counted off what the host actually said. A machine whose row carries
+        // no `delegated` is neither in nor out of the count — the summary line
+        // would otherwise report "1 needs pairing by hand" about a machine
+        // nobody has established anything about.
+        let answered = machines.filter { $0.delegated != nil }.count
+        let pending = machines.filter { $0.delegated == false }.count
+        let title = "\(machines.count) "
+            + (machines.count == 1 ? "Managed Mac" : "Managed Macs")
+        let subtitle: String
+        switch (pending, answered == machines.count) {
+        case (0, true):  subtitle = "devices get into all of them"
+        case (0, false): subtitle = "\(machines.count) adopted"
+        default:         subtitle = "\(pending) need pairing by hand"
+        }
+        let item = Self.opener(title, symbol: "macpro.gen3", submenu: sub)
+        item.attributedTitle = Self.twoLine(title, subtitle)
+        item.image = Self.glyph("point.3.connected.trianglepath.dotted", size: 26)
+        return item
+    }
+
+    /// One adopted machine's second line: where it is, and whether a device
+    /// paired to this hub can actually reach it.
+    private static func access(_ machine: AdoptedHost) -> String {
+        let route = machine.route
+        switch machine.delegated {
+        case true:  return route.isEmpty ? "no address on the mesh" : route
+        case false:
+            return route.isEmpty
+                ? "no address — re-adopt this machine"
+                : "\(route) · pair by hand"
+        // The host did not answer the field: too old to know, so the row says
+        // where the machine is and claims nothing about getting into it.
+        case nil:   return route.isEmpty ? "no address on the mesh" : route
+        }
     }
 
     /// "last seen 3h ago", or that it has never connected. Unix seconds in —
@@ -1647,6 +1929,236 @@ final class StatusController: NSObject {
         return image
     }
 
+    // MARK: Managed hubs
+
+    /// Mint a host code and show the command that redeems it.
+    ///
+    /// A code for a *machine*, which is not the same kind as a device's and is
+    /// refused outright where the two are crossed — `attach` given a device
+    /// code would be handed a client conf where a leaf bundle was needed. So
+    /// this is its own item rather than a checkbox on Pair a Device.
+    ///
+    /// And a command rather than the QR the pairing dialog earns: the far end
+    /// of an adoption is a terminal on another Mac, so the thing to hand over
+    /// is the line to run there. A QR would be a prettier form of the wrong
+    /// instruction.
+    @objc private func doAdopt() {
+        guard let binary = HostControl.hostBinary else { return }
+        NSApp.activate(ignoringOtherApps: true)
+
+        let ask = NSAlert()
+        ask.messageText = "Adopt a Mac"
+        ask.informativeText = "What should this hub call it?"
+        ask.addButton(withTitle: "Get a Code")
+        ask.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = "New Mac"
+        ask.accessoryView = field
+        ask.window.initialFirstResponder = field
+        guard ask.runModal() == .alertFirstButtonReturn else { return }
+
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        let result = HostControl.run(
+            binary, ["adopt", name.isEmpty ? "New Mac" : name, "--json"])
+
+        guard result.code == 0, let minted = MintedPairing(json: result.out) else {
+            // Verbatim, and this is the path that matters most here: `adopt`
+            // refuses on a Mac that cannot mint a mesh peer, and names the
+            // directory it looked in. Paraphrasing that would throw away the
+            // one thing in the message that says what to fix.
+            let failed = NSAlert()
+            failed.alertStyle = .warning
+            failed.messageText = "Could not mint a code"
+            failed.informativeText = result.out
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            failed.runModal()
+            return
+        }
+
+        let shown = NSAlert()
+        shown.messageText = "Adopt \(minted.name)"
+        shown.informativeText = minted.firstAddress != nil
+            ? "Run this on that Mac, where jStack is installed. The code is "
+            + "good for \(minted.validFor).\n\nIt joins this hub's mesh and "
+            + "hands back a grant, so every device already paired here gets "
+            + "into it without a second code."
+            : "This Mac could not work out an address the other machine can "
+            + "reach, so the command below has a blank to fill in — check "
+            + "`jstack-host where` and your network. The code is good for "
+            + "\(minted.validFor)."
+        shown.accessoryView = Self.commandAccessory(minted.attachCommand)
+        shown.addButton(withTitle: "Done")
+        shown.addButton(withTitle: "Copy Command")
+        if shown.runModal() == .alertSecondButtonReturn {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(minted.attachCommand, forType: .string)
+        }
+        refresh()
+    }
+
+    /// Leave the parent hub. Confirmed first, then run off the main thread.
+    ///
+    /// Off it because the steps talk to the parent, and the parent is
+    /// occasionally the thing that went away — two calls that each wait out a
+    /// timeout would freeze the menu bar for half a minute, which is this app
+    /// looking like the casualty of its own button.
+    @objc private func doDetach() {
+        guard let binary = HostControl.hostBinary else { return }
+        let mode = state.identity?.mode
+        let named = mode?.parentHost ?? "the parent hub"
+        let url = mode?.parent ?? ""
+        NSApp.activate(ignoringOtherApps: true)
+
+        let ask = NSAlert()
+        ask.alertStyle = .critical
+        ask.messageText = "Detach from \(named)?"
+        ask.informativeText = "This Mac stops being administered from "
+            + "\(url.isEmpty ? named : url). The grants it issued are revoked, "
+            + "so nothing there can mint credentials here; that hub is asked to "
+            + "drop this machine from its grid; and the leaf tunnel comes down, "
+            + "so this Mac leaves the mesh.\n\nDevices paired directly to this "
+            + "Mac keep working. Rejoining needs a fresh code from that hub."
+        ask.addButton(withTitle: "Detach")
+        ask.addButton(withTitle: "Cancel")
+        guard ask.runModal() == .alertFirstButtonReturn else { return }
+
+        let panel = Self.workingPanel("Detaching from \(named)…")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = HostControl.run(binary, ["detach", "--json"])
+            DispatchQueue.main.async { [weak self] in
+                panel.close()
+                self?.showDetachOutcome(result)
+                self?.refresh()
+            }
+        }
+    }
+
+    /// Every step detach reported, in its own words, and what to do about the
+    /// half this app cannot perform.
+    ///
+    /// The tunnel lives under `root` — two LaunchDaemons and a `/etc/wireguard`
+    /// conf — and this app runs as the user, with no terminal to put a password
+    /// into. So that half can fail while everything else succeeded, and the
+    /// result is a machine that revoked its grants and is still on the mesh.
+    /// Saying "detached" there would be the menu lying about the one state that
+    /// matters; instead it says which half did not happen and hands over the
+    /// command that finishes it.
+    private func showDetachOutcome(_ result: (out: String, code: Int32)) {
+        let alert = NSAlert()
+        guard let outcome = DetachOutcome(json: result.out) else {
+            alert.alertStyle = .warning
+            alert.messageText = "Detach did not report an outcome"
+            alert.informativeText = result.out
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+            return
+        }
+
+        let finished = outcome.detached && !outcome.isManaged
+        alert.alertStyle = finished ? .informational : .warning
+        alert.messageText = finished ? "Detached" : "Partly detached"
+        var body = outcome.report
+        if !finished {
+            body += "\n\nThe tunnel is installed under root and this app runs "
+                + "as you, with nowhere to put a password. Finish in a "
+                + "terminal:"
+        }
+        alert.informativeText = body
+        if !finished {
+            alert.accessoryView = Self.commandAccessory("sudo jstack-host detach")
+            alert.addButton(withTitle: "Copy Command")
+            alert.addButton(withTitle: "Done")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("sudo jstack-host detach",
+                                               forType: .string)
+            }
+            return
+        }
+        alert.addButton(withTitle: "Done")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    /// Drop an adopted machine from the grid, after asking.
+    ///
+    /// The confirmation draws the line the route itself draws: forgetting takes
+    /// the tile off every device and drops the grant, and it does not touch the
+    /// credentials that machine already holds or the tunnel it dialled out on.
+    /// Claiming a lockout this hub cannot perform would be the more comforting
+    /// sentence and the false one.
+    @objc private func doForgetMachine(_ sender: NSMenuItem) {
+        guard let machine = sender.representedObject as? AdoptedHost,
+              !machine.key.isEmpty, let token = HostAgent.token() else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Forget \(machine.title)?"
+        alert.informativeText = "The tile comes off every device paired to this "
+            + "hub, and the grant held for that machine is dropped — nothing "
+            + "here can mint access to it any more.\n\nIt is not a lockout: "
+            + "credentials already minted over there stay live until that "
+            + "machine revokes them, and its tunnel stays up until it detaches. "
+            + "Adopting it again takes a fresh code."
+        alert.addButton(withTitle: "Forget")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        probe.forget(hostKey: machine.key, token: token) { [weak self] ok, detail in
+            if !ok {
+                let failed = NSAlert()
+                failed.alertStyle = .warning
+                failed.messageText = "Could not forget \(machine.title)"
+                failed.informativeText = detail
+                failed.runModal()
+            }
+            self?.refresh()
+        }
+    }
+
+    /// A command, selectable and wrapping, in the face it will be typed in.
+    ///
+    /// Selectable as well as copyable: Copy Command is a button somebody may
+    /// have already walked past, and a command you cannot select is one you
+    /// retype by eye.
+    private static func commandAccessory(_ command: String) -> NSView {
+        let field = NSTextField(wrappingLabelWithString: command)
+        field.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        field.isSelectable = true
+        field.preferredMaxLayoutWidth = 260
+        field.frame = NSRect(x: 0, y: 0, width: 260,
+                             height: max(20, field.fittingSize.height))
+        return field
+    }
+
+    /// A window that says something is happening and offers nothing to answer.
+    ///
+    /// Not an NSAlert: `runModal()` blocks the main thread, and the whole point
+    /// here is that the work is on another one — a modal loop would be a
+    /// spinner turning over an application that has stopped. Not cancellable
+    /// either, because a Cancel that cannot recall a `launchctl bootout`
+    /// already in flight is the one control in this menu that would lie.
+    private static func workingPanel(_ text: String) -> NSWindow {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 92),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "jStack"
+        let spinner = NSProgressIndicator(
+            frame: NSRect(x: 22, y: 36, width: 20, height: 20))
+        spinner.style = .spinning
+        spinner.startAnimation(nil)
+        let label = NSTextField(labelWithString: text)
+        label.frame = NSRect(x: 54, y: 34, width: 264, height: 24)
+        panel.contentView?.addSubview(spinner)
+        panel.contentView?.addSubview(label)
+        panel.center()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        return panel
+    }
+
     // MARK: Settings
 
     @objc private func doToggleHubLogin(_ sender: NSMenuItem) {
@@ -1708,8 +2220,30 @@ final class StatusController: NSObject {
             lines.append("host_id    \(identity.hostId ?? "?")")
             lines.append("profile    \(identity.profile ?? "?")")
         }
+        if let mode = state.identity?.mode {
+            // The parent's URL in full here, where the menu row shows only the
+            // host: this is the paste that goes to whoever is working out why
+            // the two machines cannot see each other, and the port is half of
+            // that answer. It is the address, never the credential — the token
+            // beside it in `parent.json` is not on this route at all.
+            lines.append("mode       \(mode.mode ?? "?")"
+                         + (mode.live == false ? " (tunnel down)" : "")
+                         + (mode.parent.map { $0.isEmpty ? "" : " ← \($0)" } ?? ""))
+        }
         lines.append("sessions   \(state.sessions.count) "
                      + "(\(state.liveCount) working)")
+        if !state.leaves.isEmpty {
+            let delegated = state.leaves.filter { $0.delegated == true }.count
+            lines.append("machines   \(state.leaves.count) adopted "
+                         + "(\(delegated) delegated)")
+            for machine in state.leaves.sorted(by: { $0.title < $1.title }) {
+                let access = machine.delegated.map { $0 ? "delegated" : "pair-by-hand" }
+                    ?? "access not reported"
+                lines.append("           \(machine.title) — "
+                             + "\(machine.route.isEmpty ? "no address" : machine.route)"
+                             + " — \(access)")
+            }
+        }
         if state.unauthorized { lines.append("auth       token refused by the hub") }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)

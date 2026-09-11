@@ -233,10 +233,17 @@ fi
 # that session's id into a permanent LaunchAgent, and the indicator outlives
 # the session it was pinned to. This list mirrors the seam in `hostenv.py`;
 # extend it there and here together.
+#
+# The two mesh variables carry no prefix and are here for the same reason
+# `install_host.MESH_VARS` exists: they are what says whether this Mac owns a
+# WireGuard mesh, and a host whose mesh predates the package is read as having
+# none without them. The app normally takes them off the host agent's own
+# plist; this is the path for a host that has no agent to read.
 ENV_VARS="JREMOTE_STATE_DIR JREMOTE_TOKEN_PATH JREMOTE_CREDENTIALS_DIR
           JREMOTE_RELEASES_DIR JREMOTE_INSTANCE_ROOT JREMOTE_PROFILE_MODULE
           JREMOTE_HOST_ID JREMOTE_HOST_NAME JREMOTE_HOST_PROFILE
-          JREMOTE_PEER_SCRIPT JREMOTE_AGENT_LABEL JREMOTE_MENUBAR_QUIT"
+          JREMOTE_PEER_SCRIPT JREMOTE_AGENT_LABEL JREMOTE_MENUBAR_QUIT
+          WG_PEER_DIR WG_ENDPOINT"
 ENV_XML=""
 for var in $ENV_VARS; do
     eval "val=\${$var:-}"

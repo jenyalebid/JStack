@@ -256,6 +256,40 @@ CREATE TABLE IF NOT EXISTS enrolment_codes (
   used_by TEXT
 );
 CREATE INDEX IF NOT EXISTS enrolment_expiry ON enrolment_codes(expires_at);
+-- Delegated minting, the two halves of it (grants.py, docs/multi-host-access.md).
+-- Both are host-only and NEITHER syncs, for the reason `devices` does not: these
+-- are credentials, and a table of them riding MetaSync would pool every machine's
+-- authority in one store.
+--
+-- `host_grants` is what a PARENT holds — one credential per machine it adopted,
+-- issued by that machine at attach. It is the only table in this file that stores
+-- a token in the clear, and it has to: a digest cannot be presented, and
+-- presenting it is the entire job. The row is what makes a leaf reachable to
+-- every device the parent already trusts; revoking it un-delegates that machine
+-- without touching the mesh or any device row.
+CREATE TABLE IF NOT EXISTS host_grants (
+  host_key TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  parent_url TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER,
+  revoked_at INTEGER
+);
+-- `parent_grants` is the reciprocal, on the LEAF — the credentials this machine
+-- ISSUED to a parent, hashed like every other credential this host holds the
+-- verifying end of. A grant authenticates exactly one route (`/delegate/mint`)
+-- and nothing else: it is not a device row, cannot drive an agent, and cannot
+-- read a session. That narrowness is the whole reason it is its own table rather
+-- than a `devices` row with a flag — a flag is a thing a future route forgets to
+-- check, and a separate gate cannot be forgotten into.
+CREATE TABLE IF NOT EXISTS parent_grants (
+  token_hash TEXT PRIMARY KEY,
+  parent TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER,
+  minted INTEGER NOT NULL DEFAULT 0,
+  revoked_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS session_closes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL DEFAULT '',
@@ -1169,6 +1203,107 @@ class SessionStore:
                 "UPDATE hosts SET deleted=1, updated_at=?, seq=? "
                 "WHERE key=? AND deleted=0", (time.time(), seq, key))
             return cur.rowcount > 0
+
+    # ── grants: the two ends of delegated minting ──
+    #
+    # Neither table is in `changes_since` and neither may ever be. `hosts` tells
+    # a device a machine EXISTS; these two are what let it get in, and the split
+    # is the point (see the schema comments).
+
+    def put_host_grant(self, host_key: str, token: str,
+                       parent_url: str = "") -> None:
+        """Hold the credential a machine issued this one at attach.
+
+        Replaces on conflict rather than accumulating: a machine re-attaching
+        issues a fresh grant and the old one is dead the moment it does, so a
+        second row could only ever be a credential nothing can spend.
+        """
+        now = int(time.time())
+        with self._write_lock, self._conn() as db:
+            db.execute(
+                "INSERT INTO host_grants (host_key, token, parent_url, "
+                "created_at, revoked_at) VALUES (?,?,?,?,NULL) "
+                "ON CONFLICT(host_key) DO UPDATE SET "
+                "token=excluded.token, parent_url=excluded.parent_url, "
+                "created_at=excluded.created_at, revoked_at=NULL",
+                (host_key, token, parent_url, now))
+
+    def host_grant(self, host_key: str) -> dict | None:
+        """The live grant for `host_key`, or None. Revoked reads as absent —
+        every caller wants "can I mint there", and a revoked row cannot."""
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT * FROM host_grants WHERE host_key=? AND revoked_at IS NULL",
+                (host_key,)).fetchone()
+        return dict(row) if row else None
+
+    def list_host_grants(self) -> list[dict]:
+        """Every grant this host holds, revoked ones included — the roster a
+        person reads to see which machines it can hand out access to. The token
+        is dropped here: nothing that lists needs it, and a listing that carries
+        credentials is one log line from leaking them."""
+        with self._conn() as db:
+            rows = db.execute(
+                "SELECT host_key, parent_url, created_at, last_used_at, "
+                "revoked_at FROM host_grants ORDER BY host_key").fetchall()
+        return [dict(r) for r in rows]
+
+    def note_host_grant_used(self, host_key: str) -> None:
+        with self._write_lock, self._conn() as db:
+            db.execute("UPDATE host_grants SET last_used_at=? WHERE host_key=?",
+                       (int(time.time()), host_key))
+
+    def revoke_host_grant(self, host_key: str) -> bool:
+        """Stop being able to mint on that machine. Local only — the credential
+        stays live on the machine that issued it until IT revokes, which is the
+        honest shape: authority is revoked where it is verified."""
+        with self._write_lock, self._conn() as db:
+            cur = db.execute(
+                "UPDATE host_grants SET revoked_at=? "
+                "WHERE host_key=? AND revoked_at IS NULL",
+                (int(time.time()), host_key))
+            return cur.rowcount > 0
+
+    def put_parent_grant(self, token_hash: str, parent: str) -> None:
+        """Record a credential this machine just issued to a parent."""
+        with self._write_lock, self._conn() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO parent_grants (token_hash, parent, "
+                "created_at, minted, revoked_at) VALUES (?,?,?,0,NULL)",
+                (token_hash, parent, int(time.time())))
+
+    def parent_grant(self, token_hash: str) -> dict | None:
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT * FROM parent_grants WHERE token_hash=? "
+                "AND revoked_at IS NULL", (token_hash,)).fetchone()
+        return dict(row) if row else None
+
+    def note_parent_grant_used(self, token_hash: str) -> None:
+        """Stamp a use and count the mint. `minted` is the number that makes an
+        abused grant visible — a parent legitimately mints once per device, so a
+        row in the hundreds is a fact worth being able to read."""
+        with self._write_lock, self._conn() as db:
+            db.execute(
+                "UPDATE parent_grants SET last_used_at=?, minted=minted+1 "
+                "WHERE token_hash=?", (int(time.time()), token_hash))
+
+    def list_parent_grants(self) -> list[dict]:
+        with self._conn() as db:
+            rows = db.execute(
+                "SELECT token_hash, parent, created_at, last_used_at, minted, "
+                "revoked_at FROM parent_grants ORDER BY created_at").fetchall()
+        return [dict(r) for r in rows]
+
+    def revoke_parent_grants(self, parent: str = "") -> int:
+        """Revoke the grants this machine issued — one parent's, or all of them
+        when `parent` is empty. Detaching takes the second form: a machine that
+        left a mesh has not authorized anybody there to mint on it."""
+        sql = ("UPDATE parent_grants SET revoked_at=? WHERE revoked_at IS NULL"
+               + (" AND parent=?" if parent else ""))
+        params = (int(time.time()),) + ((parent,) if parent else ())
+        with self._write_lock, self._conn() as db:
+            return db.execute(sql, params).rowcount
 
     def shortcuts(self) -> list[dict]:
         """The live shortcuts, in the order they are drawn. Tombstones stay in

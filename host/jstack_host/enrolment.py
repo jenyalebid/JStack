@@ -297,13 +297,23 @@ def _check_host_claim(host_key: str, port: int) -> int:
 
 
 def redeem(raw_code: str, client_ip: str, host_key: str = "",
-           port: int = DEFAULT_PORT, device_token: str = "") -> dict:
+           port: int = DEFAULT_PORT, device_token: str = "",
+           grant_token: str = "") -> dict:
     """Spend a code: a device token, and a peer config where one applies.
 
     `device_token` is the credential the redeemer already holds on this host,
     when it has one. It re-keys that row rather than adding a second — see
     RE-PAIRING above — and it is read only after the consume, with everything
     else in this function unchanged whether it was sent or not.
+
+    `grant_token` is the reciprocal: a credential the joining MACHINE minted on
+    itself and is handing to this host, so this host can later mint device
+    tokens there on behalf of devices it already trusts (grants.py). It is kept
+    only for a host code with a valid key — a device sending one is sending
+    something this host has no machine to attach it to — and it is never
+    required: a leaf running an older build sends none and simply joins the mesh
+    without delegating, which is a machine that works and a tile that asks for a
+    code, not a failure.
 
     Order is deliberate. A declared host key is checked first, before this host
     has looked at the code at all — that is what lets its refusal be specific.
@@ -362,10 +372,29 @@ def redeem(raw_code: str, client_ip: str, host_key: str = "",
         # record of an enrolment whose code is already spent.
         host_row = _register_host(row["name"], host_key,
                                   mesh_address(peer), port)
+        # After the row, because the grant is keyed by the machine and a grant
+        # held for a machine that is not in the registry is a credential no
+        # surface can ever reach. Degrades like everything else past the
+        # consume: a store that refuses this write costs delegated access, not
+        # the enrolment the caller already paid its code for.
+        if grant_token:
+            from . import grants
+            try:
+                grants.remember(host_key, grant_token, f"{client_ip}")
+            except Exception as exc:  # noqa: BLE001 — never lose the token
+                note = (note + "; " if note else "") + (
+                    f"the machine's delegation grant could not be stored "
+                    f"({type(exc).__name__}) — devices will have to pair with "
+                    f"it directly")
     _announce(row, device_row, client_ip, kind, rekeyed is not None)
     return {"device": device_row, "token": token,
             "tunnel": peer, "tunnel_note": note,
             "kind": kind, "host": host_row,
+            # Whether this host can now hand devices access to that machine
+            # without anybody typing a second code. The attaching machine prints
+            # it, because "you are on the mesh" and "your devices get in by
+            # themselves" are two different outcomes and it just chose one.
+            "delegated": bool(grant_token) and kind == KIND_HOST,
             # Which of the two happened, said out loud. The app can tell from
             # the id, but only if it kept one; a caller pairing by hand cannot
             # tell a fresh credential from a replaced one at all, and "your old

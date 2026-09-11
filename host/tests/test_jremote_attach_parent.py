@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from jstack_host import attach_parent, hostenv, tunnel
+from jstack_host import attach_parent, grants, hostenv, tunnel
 
 
 @pytest.fixture(autouse=True)
@@ -117,6 +117,12 @@ def test_attach_redeems_writes_the_bundle_and_runs_the_installer(tmp_path):
     # It POSTed to the parent's one redeem path, carrying this machine's key.
     url, payload = posts[0]
     assert url == "http://studio.local:9090/api/jremote/v1/enrolment/redeem"
+    # …and the grant it minted on itself, so the parent can let devices in here
+    # without a second code (grants.py). Checked by shape, not by value: the
+    # secret is fresh every attach and the point is that one was sent.
+    grant = payload.pop("grant_token")
+    assert grant.startswith("jrg1.") and len(grant.split(".")) == 3
+    assert grants.authenticate(grant) == "http://studio.local:9090"
     assert payload == {"code": "ABCD-1234", "host_key": GOOD_KEY, "port": 9090}
 
     # Every leaf file landed, with the mode its job needs.

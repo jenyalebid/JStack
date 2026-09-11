@@ -222,6 +222,19 @@ def attach(code: str, parent_url: str, *, host_key: str,
     if prior:
         payload["device_token"] = prior
 
+    # The reciprocal half of the handshake (grants.py). Minted BEFORE the
+    # redemption and sent with it, because the parent has exactly one moment
+    # where it is talking to this machine and knows which machine it is — asking
+    # for it afterwards would need the parent to authenticate to a host it has no
+    # credential for yet, which is the chicken and egg this solves.
+    #
+    # Every grant this machine issued is revoked first. Attaching is a statement
+    # about who administers this Mac, and a grant from a previous parent
+    # surviving it would leave a machine that left a mesh still mintable from it.
+    from . import grants
+    grants.revoke_issued()
+    payload["grant_token"] = grants.issue(parent_url)
+
     result = _redeem(parent_url, payload, poster)
 
     if result.get("kind") != "host":
@@ -264,4 +277,10 @@ def attach(code: str, parent_url: str, *, host_key: str,
         "bundle_dir": str(dest),
         "parent_url": parent_url,
         "installer_output": (proc.stdout or "").strip(),
+        # Whether the parent kept the grant — read from the parent's own answer,
+        # never from the fact that one was sent. A parent running a build from
+        # before delegated minting ignores the field entirely, and this machine
+        # must not tell its owner their devices get in by themselves when that
+        # parent has no idea how to let them.
+        "delegated": bool(result.get("delegated")),
     }

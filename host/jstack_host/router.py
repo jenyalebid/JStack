@@ -668,6 +668,10 @@ class EnrolmentRedeemRequest(BaseModel):
     #: and must stay that way to a reader, and a bearer header on it would read
     #: like auth that had been added.
     device_token: str = ""
+    #: A credential the redeeming MACHINE minted on itself and is handing over,
+    #: so this host can mint device tokens there for devices it already trusts
+    #: (grants.py). Only meaningful alongside a host code; optional always.
+    grant_token: str = ""
 
 
 class EnrolmentRevokeRequest(BaseModel):
@@ -734,7 +738,8 @@ def redeem_enrolment_code(body: EnrolmentRedeemRequest, request: Request):
     client_ip = request.client.host if request.client else ""
     try:
         return enrolment.redeem(body.code, client_ip,
-                                body.host_key, body.port, body.device_token)
+                                body.host_key, body.port, body.device_token,
+                                body.grant_token)
     except enrolment.HostKeyRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except enrolment.EnrolmentLockedOut as exc:
@@ -780,12 +785,127 @@ def forget_host(key: str, device_id: str = Depends(current_device)):
     exists; the credentials that machine holds on this host are `devices` rows
     and stay live until they are revoked there. Two separate acts, because a
     machine you no longer want listed is not always one you want locked out.
+
+    The **grant** is the one thing that does go with the tile, and it goes
+    because of what forgetting means: a machine nobody can see is a machine
+    nobody will ask for access to, and a stored credential that no surface can
+    reach is a secret kept for no reason. It is also local — the leaf's own row
+    stays live until the leaf revokes it (grants.py), so this is this host
+    declining to delegate, not a lockout it cannot actually perform.
     """
+    from . import grants
     from .store import get_store
     if not get_store().forget_host(key):
         raise HTTPException(status_code=404,
                             detail="unknown or already forgotten host")
-    return {"forgotten": key}
+    return {"forgotten": key, "grant_dropped": grants.forget(key)}
+
+
+class HostGrantRequest(BaseModel):
+    #: What the credential will be called in the LEAF's device roster — the
+    #: name the user will later read when revoking it there. Defaulted, never
+    #: required: a device asking for access should not have to also name itself.
+    name: str = ""
+
+
+@router.post("/hosts/{key}/grant")
+def grant_host_access(key: str, body: HostGrantRequest,
+                      device_id: str = Depends(current_device)):
+    """Get this caller a credential for a machine THIS host adopted.
+
+    The whole point of a managed hub, and the route that makes "every device
+    paired to the parent reaches this machine with no per-device setup" true
+    instead of aspirational. The caller proved a token here; it never sees the
+    grant, never names an address, and gets back a token minted on the other
+    machine and revocable there.
+
+    404 for a machine not in the registry — including a forgotten one, which is
+    the same answer `list_hosts` gives, so a device cannot learn about a tile it
+    was not shown. 502 when the machine is reachable-in-principle but did not
+    mint: that is a fact about the other end, not a bad request from this one.
+    """
+    from . import grants
+    from .store import get_store
+    row = get_store().host_row(key)
+    if row is None or row["deleted"]:
+        raise HTTPException(status_code=404, detail="unknown machine")
+    name = _device_name(body.name) if body.name else ""
+    if not name:
+        # The row the leaf will show is named after the device that asked, so
+        # revoking it there is legible. Falling back to this host's own name for
+        # the row would put "jarvis" in the leaf's roster for every device.
+        asker = devices.row(device_id) or {}
+        name = _device_name(asker.get("name") or "a device")
+    try:
+        return grants.mint_on(dict(row), name)
+    except grants.GrantError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+# ── the grant gate: one route, its own credential ──
+#
+# `grant_router` is the third router in this package and the second one outside
+# the bearer gate, and like `unauthenticated_router` it carries exactly one
+# route. It is not unauthenticated — it authenticates a *grant* (grants.py), a
+# credential that exists to do this and nothing else. Mounting `/delegate/mint`
+# on `router` would have meant a device token could mint on a parent's behalf;
+# leaving it on `unauthenticated_router` would have meant anybody could. It
+# needs its own gate because it is its own kind of caller.
+#
+# Nothing else goes here either. A second route on this router is a route a
+# parent hub can reach with a credential the user believes only mints.
+grant_router = APIRouter(prefix="/api/jremote/v1")
+
+
+class DelegateMintRequest(BaseModel):
+    name: str = ""
+
+
+@grant_router.post("/delegate/mint")
+def delegate_mint(body: DelegateMintRequest, request: Request):
+    """Mint a device token for a parent hub that holds a grant on this machine.
+
+    This is the leaf end of delegated minting. What comes back is an ORDINARY
+    device row — it appears in this host's roster under the name the parent
+    sent, it is revoked here like any other, and it carries no mark of how it
+    was created. That is deliberate: the user revoking access to a phone should
+    not have to know or care whether the phone was paired at the machine or
+    delegated from a hub.
+
+    The gate is the grant and only the grant. A device token presented here
+    fails, because `grants.authenticate` will not parse it (`jr1.` is not
+    `jrg1.`) — two credential formats, two namespaces, no overlap to be confused
+    across.
+
+    Unlike `POST /devices` this is deliberately NOT LAN-gated, and the reason is
+    the point of the whole mechanism: the parent reaches this machine over the
+    mesh, which is exactly the source `mint_allowed_from` refuses. The gate that
+    replaces locality here is possession of a credential this machine issued, by
+    hand, to one named parent, revocable here alone. That is a stronger claim
+    than "arrived from a private address", which is all the LAN rule ever meant.
+    """
+    from . import grants
+    header = request.headers.get("authorization", "")
+    presented = header[7:] if header.startswith("Bearer ") else ""
+    parent = grants.authenticate(presented)
+    if parent is None:
+        client_ip = request.client.host if request.client else ""
+        print(f"jremote grant: 401 from {client_ip or 'local'} — "
+              "no live grant matches that credential", flush=True)
+        raise HTTPException(status_code=401,
+                            detail="invalid or missing grant")
+    row, token = devices.mint(_device_name(body.name or parent))
+    grants.note_used(presented)
+    print(f"jremote grant: minted {row['id']} ({row['name']}) for {parent}",
+          flush=True)
+    # `token_hash` is dropped, and only here. On `/devices` it travels to the
+    # user's own app on the machine that owns the table — the registry is the
+    # audit surface and nothing in it is hidden from its owner. This response
+    # crosses the mesh to a DIFFERENT machine, which has no use for the digest
+    # of a secret it is being handed in full one field over. Giving it away is
+    # free and getting it back is not.
+    served = {k: v for k, v in row.items() if k != "token_hash"}
+    return {"device": {**served, "revoked": False}, "token": token}
 
 
 @router.get("/sessions/history")

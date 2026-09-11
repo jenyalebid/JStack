@@ -319,6 +319,141 @@ def _cmd_attach(args) -> int:
     return 0
 
 
+def _cmd_adopt(args) -> int:
+    """Mint a host code — the hub's half of assigning a leaf to itself.
+
+    `pair` mints a code for a *device*; this mints one for a *machine*, and the
+    kinds are not interchangeable (a device code redeemed by `attach` hands back
+    a client conf where a leaf bundle was needed, which is why `attach` refuses
+    one outright). Until now the only way to mint a host code was a hand-rolled
+    POST to `/enrolment/codes` with `kind=host` — the joining end had a front
+    door and the adopting end had none, so the feature was unusable by anyone who
+    was not reading the router source.
+
+    What it prints is the exact command to run on the other Mac, not the parts to
+    assemble one from. The address comes from `addresses.reachable` — the same
+    answer `pair` prints — because a code beside a blank is half an enrolment,
+    and the machine being adopted cannot work out where to send it.
+    """
+    _adopt(args)
+    from . import addresses, devices, enrolment
+    if not devices.provisioned():
+        print("this host has no token yet — run `jstack-host install` first.",
+              file=sys.stderr)
+        return 1
+    row = enrolment.mint_code(args.name, created_by="", ttl=args.ttl,
+                              kind=enrolment.KIND_HOST)
+    port = getattr(args, "port", None) or addresses.DEFAULT_PORT
+    found = addresses.reachable(port)
+
+    if getattr(args, "json", False):
+        import json
+        print(json.dumps({"name": row["name"], "code": row["code"],
+                          "kind": row["kind"], "expires_in": row["expires_in"],
+                          "port": port, "addresses": found}))
+        return 0
+
+    mins = row["expires_in"] // 60
+    print(f"\n    {row['code']}\n")
+    print(f"for the machine you are adopting as {row['name']} — good for "
+          f"{mins} minute{'' if mins == 1 else 's'}.")
+    if found:
+        print("\nOn that Mac, with jStack installed:\n")
+        print(f"    jstack-host attach {row['code']} --parent {found[0]['url']}")
+        if len(found) > 1:
+            print("\nIf that address does not reach this Mac from there, use "
+                  "one of:\n")
+            for a in found[1:]:
+                print(f"    {a['url']:<34}  {a['note']}")
+    else:
+        # Never silence — same rule as `pair`. A host that cannot name its own
+        # address is a host somebody has to go find one for.
+        print("\n  This Mac could not work out its own address — check "
+              "`jstack-host where` and your network, then run:\n")
+        print(f"    jstack-host attach {row['code']} --parent http://<this-mac>:{port}")
+    print("\nThat Mac joins this mesh and hands back a grant, so every device "
+          "already paired\nhere gets into it without a second code.")
+    return 0
+
+
+def _cmd_detach(args) -> int:
+    """Leave the parent hub — the reverse of `attach`, at both ends.
+
+    Prints every step by name rather than one verdict, because the steps fail
+    independently and mean different things: the grants are the authority, the
+    parent calls are best-effort courtesy over a mesh that is coming down, and
+    the tunnel is the transport. A person who ran this needs to know which of
+    those did not happen, in the words of the thing they would have to go fix.
+    """
+    _adopt(args)
+    from . import detach_parent, hostenv, mode
+    try:
+        result = detach_parent.detach(
+            host_key=hostenv.host_id(),
+            keep_tunnel=getattr(args, "keep_tunnel", False),
+            tell_parent=not getattr(args, "local_only", False))
+    except detach_parent.DetachError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    m = mode.current()
+    if getattr(args, "json", False):
+        import json
+        print(json.dumps({**result, "mode": m}))
+        return 0
+
+    for step in result["steps"]:
+        print(f"  {'✓' if step['ok'] else '✗'}  {step['note']}")
+    print(f"\nmode  {m['mode']}")
+    print(f"      {m['note']}")
+    if m["mode"] == "managed":
+        # The steps may all have passed and the machine still read as attached —
+        # a second leaf install, a plist somewhere else. Say it rather than let
+        # the mode line be the only tell, the same way `attach` does.
+        print("\n  This machine still reads as managed — something is still "
+              "dialling out. Check `jstack-host doctor` and "
+              "/Library/LaunchDaemons/com.jremote.leaf*.", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_leaves(args) -> int:
+    """The machines this hub adopted, and whether it can let devices into them.
+
+    Two facts per row and they are genuinely different: the registry row is what
+    every device sees (the tile), and the grant is whether asking for access
+    works. A machine with a tile and no grant is exactly the state that looks
+    fine on a phone and fails when tapped, so it is printed, not inferred.
+    """
+    _adopt(args)
+    from . import grants
+    from .store import get_store
+    rows = get_store().list_hosts()
+    holdings = {h["host_key"]: h for h in grants.holdings()}
+
+    if getattr(args, "json", False):
+        import json
+        print(json.dumps([
+            {**r, "delegated": bool(holdings.get(r["key"], {}).get("revoked_at") is None
+                                    and r["key"] in holdings)}
+            for r in rows]))
+        return 0
+
+    if not rows:
+        print("no machines adopted — `jstack-host adopt <name>` mints a code "
+              "for one.")
+        return 0
+    print(f"{'MACHINE':<20} {'ADDRESS':<18} {'ACCESS':<10} ADOPTED")
+    for r in rows:
+        held = holdings.get(r["key"])
+        access = ("delegated" if held and held["revoked_at"] is None
+                  else "pair-by-hand")
+        addr = f"{r['address'] or '—'}:{r['port']}" if r["address"] else "—"
+        print(f"{(r['name'] or r['key'])[:19]:<20} {addr:<18} {access:<10} "
+              f"{grants.stamp(r['enrolled_at'])}")
+    return 0
+
+
 def _cmd_token(args) -> int:
     _adopt(args)
     path = hostenv.token_path()
@@ -540,6 +675,37 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print the outcome and resulting mode as JSON")
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=_cmd_attach)
+
+    p = sub.add_parser("adopt",
+                       help="mint a code that joins another Mac to this hub")
+    p.add_argument("name", help="what to call that machine in this hub's grid")
+    p.add_argument("--ttl", type=int, default=600,
+                   help="seconds the code stays good (default 600)")
+    p.add_argument("--port", type=int, default=None,
+                   help="the port THIS Mac serves on, for the address printed")
+    p.add_argument("--json", action="store_true",
+                   help="print the code and addresses as JSON")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_adopt)
+
+    p = sub.add_parser("detach",
+                       help="leave the parent hub — the reverse of attach")
+    p.add_argument("--keep-tunnel", action="store_true",
+                   help="stay on the parent's mesh, but stop being "
+                        "administered from it (revokes the grants only)")
+    p.add_argument("--local-only", action="store_true",
+                   help="do not tell the parent — leave its tile and this "
+                        "machine's credential there for someone to clean up")
+    p.add_argument("--json", action="store_true",
+                   help="print every step and the resulting mode as JSON")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_detach)
+
+    p = sub.add_parser("leaves",
+                       help="the machines this hub adopted, and their access")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--state-dir", default=None)
+    p.set_defaults(fn=_cmd_leaves)
 
     p = sub.add_parser("welcome",
                        help="open the app on a session that checks this install")

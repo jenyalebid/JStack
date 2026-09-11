@@ -342,6 +342,18 @@ def mint_allowed_from(client_ip: str) -> bool:
 
 # ── registry surface ──
 
+def row(device_id: str) -> dict | None:
+    """One device's row, or None.
+
+    Read through *this* module's store, not `get_store()` directly, so a caller
+    asking "who is making this request" reads the same table `authenticate`
+    just decided against. The two resolve to one store on a real host and to two
+    under the test fixtures, and a lookup that silently misses is how a route
+    ends up naming every device "a device".
+    """
+    return _store().device(device_id)
+
+
 def list_all() -> list[dict]:
     rows = _store().list_devices()
     for r in rows:

@@ -322,6 +322,31 @@ def health(port: int, timeout: float = 1.0) -> dict | None:
         return None
 
 
+def api_answers(port: int, timeout: float = 1.0) -> bool:
+    """Is the jRemote API mounted on this port at all — standalone or embedded.
+
+    `/api/jremote/v1/host` and deliberately not `/api/health`. The health route
+    belongs to the host's OWN FastAPI app, and an embedded host contributes only
+    its *routers* to somebody else's app — so on an embedded machine
+    `/api/health` is answered by the host server (the dashboard, here) and says
+    nothing whatever about jRemote, while the prefixed route is mounted wherever
+    the API really is.
+
+    A 401 is the positive answer, not a failure: the bearer gate replying is
+    proof the router is there. This exists because `health()` returning the
+    dashboard's service map was read as "some other program holds the port" on a
+    machine whose host was embedded, up, and serving.
+    """
+    url = f"http://127.0.0.1:{port}/api/jremote/v1/host"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):
+            return True
+    except urllib.error.HTTPError as exc:
+        return exc.code in (401, 403)
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def wait_for_health(port: int, seconds: float = 20.0) -> dict | None:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -485,13 +510,34 @@ def status(*, port: int | None = None, label: str = LABEL, out=None) -> int:
     path = plist_path(label)
     probed = port if port is not None else (installed_port(path) or DEFAULT_PORT)
     served = health(probed)
-    print(f"agent      {'installed' if path.exists() else 'not installed'} "
-          f"({path})", file=out)
-    print(f"loaded     {'yes' if is_loaded(label) else 'no'}", file=out)
+    # A host embedded in another server has no LaunchAgent by design, and
+    # `doctor` has always known that while this did not. Printing
+    # `not installed` about it is the lie that cost a session: it reads as "the
+    # host is gone" on a machine where the host is up and serving.
+    embedded = getattr(hostenv.profile(), "embedded_in", "")
+    if embedded:
+        print(f"agent      embedded in {embedded} — no LaunchAgent of its own",
+              file=out)
+    else:
+        print(f"agent      {'installed' if path.exists() else 'not installed'} "
+              f"({path})", file=out)
+        print(f"loaded     {'yes' if is_loaded(label) else 'no'}", file=out)
     if served and served.get("service") == "jremote-host":
         print(f"serving    {probed} — profile {served.get('profile')}, "
               f"{'provisioned' if served.get('provisioned') else 'NO TOKEN'}",
               file=out)
+    elif api_answers(probed):
+        # The API is mounted here even though `/api/health` is somebody else's.
+        # That is an embedded host, and saying so beats both alternatives below
+        # — it is neither absent nor a stranger.
+        where = f"embedded in {embedded}" if embedded else \
+            "embedded in another server, or started by hand"
+        print(f"serving    {probed} — the jRemote API answers here ({where})",
+              file=out)
+        if not embedded:
+            print("           this shell cannot see that host's profile, so "
+                  "the paths below are\n           defaults, not what it is "
+                  "running with", file=out)
     elif served:
         # Answering, but not ours. Naming it as the host is the failure this
         # line exists to prevent: a port is a default, and some other program

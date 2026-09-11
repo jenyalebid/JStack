@@ -499,6 +499,9 @@ def test_status_refuses_to_call_a_stranger_on_the_port_this_host(
     """
     monkeypatch.setattr(install_host, "health",
                         lambda *a, **k: {"error": "unauthorized"})
+    # No jRemote router on the port either — without this the test reaches the
+    # real loopback and an embedded host on the developer's own machine answers.
+    monkeypatch.setattr(install_host, "api_answers", lambda *a, **k: False)
     monkeypatch.setattr(install_host, "is_loaded", lambda *a, **k: True)
 
     install_host.status(port=9090)
@@ -572,3 +575,45 @@ def test_the_wait_gives_up_rather_than_hanging(monkeypatch):
     monkeypatch.setattr(install_host, "is_loaded", lambda *a, **k: True)
     monkeypatch.setattr(install_host.time, "sleep", lambda *_: None)
     assert install_host.wait_unloaded("com.jremote.host", seconds=0.0) is False
+
+
+def test_status_names_an_embedded_host_instead_of_calling_it_absent(
+        home, standalone, monkeypatch, capsys):
+    """A host embedded in another server has no LaunchAgent by design.
+
+    `status` used to print `not installed` and `nothing answered` about exactly
+    that machine — read as "the host is gone" on a Mac whose host was up and
+    serving all day. `/api/health` belongs to the embedding app there, so the
+    bearer-gated router path is the only honest evidence.
+    """
+    monkeypatch.setattr(install_host, "health",
+                        lambda *a, **k: {"dashboard": {"status": "up"}})
+    monkeypatch.setattr(install_host, "api_answers", lambda *a, **k: True)
+    monkeypatch.setattr(install_host, "is_loaded", lambda *a, **k: False)
+
+    install_host.status(port=9090)
+    out = capsys.readouterr().out
+    assert "the jRemote API answers here" in out
+    assert "NOT THIS HOST" not in out
+    assert "nothing answered" not in out
+
+
+def test_api_answers_reads_a_401_as_proof_the_router_is_mounted(monkeypatch):
+    """The bearer gate replying IS the positive answer.
+
+    Treating 401 as a failure is what made an embedded host look like an
+    unrelated program holding the port.
+    """
+    import urllib.error
+
+    def _raise(*a, **k):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(install_host.urllib.request, "urlopen", _raise)
+    assert install_host.api_answers(9090) is True
+
+    def _raise_404(*a, **k):
+        raise urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(install_host.urllib.request, "urlopen", _raise_404)
+    assert install_host.api_answers(9090) is False

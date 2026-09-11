@@ -105,6 +105,16 @@ ok()    { printf '  %sok%s   %s\n' "$GRN" "$Z" "$1"; }
 warn()  { printf '  %swarn%s %s\n' "$YEL" "$Z" "$1"; }
 die()   { printf '  %sfail%s %s\n' "$RED" "$Z" "$1" >&2; exit 1; }
 note()  { printf '  %s%s%s\n' "$DIM" "$1" "$Z"; }
+
+# The last meaningful line of the menu bar build log, fit to sit inside a
+# `note`. Blank lines dropped so a trailing newline does not become the
+# "reason", and the colour escapes stripped: that text was written for a
+# terminal of its own, and pasted into a line that adds its own dim/reset the
+# raw escapes garble the rest of the output.
+_menubar_reason() {
+    sed $'s/\033\\[[0-9;]*m//g' "$MENUBAR_LOG" 2>/dev/null \
+        | grep -v '^[[:space:]]*$' | tail -n 1
+}
 would() { printf '  %swould%s %s\n' "$DIM" "$Z" "$1"; }
 
 run() {
@@ -388,10 +398,46 @@ fi
 
 if [ "$WANT_MENUBAR" = "1" ] && [ -x "$HOST_DIR/menubar/install.sh" ]; then
     step "Menu bar"
-    if "$HOST_DIR/menubar/install.sh" >/dev/null 2>&1; then
+
+    # Read BEFORE the attempt: whether an icon was already there is what decides
+    # what a failed build means, and after the attempt it is too late to ask.
+    MENUBAR_APP="${JSTACK_APPS_DIR:-$HOME/Library/Application Support/jStack}/JStack Host.app"
+    HAD_MENUBAR=0
+    [ -d "$MENUBAR_APP" ] && HAD_MENUBAR=1
+
+    # Kept, not discarded. The menu bar installer's own failure message is
+    # "the build failed — the compiler output above says why", and sending that
+    # output to /dev/null made the sentence a lie: there was nothing above, so
+    # the one machine-specific reason was destroyed at the moment it was needed.
+    MENUBAR_LOG="$(mktemp -t jstack-menubar)"
+
+    if "$HOST_DIR/menubar/install.sh" >"$MENUBAR_LOG" 2>&1; then
         ok "icon installed — it shows whether this host is up and what is running"
+        rm -f "$MENUBAR_LOG"
+    elif [ "$HAD_MENUBAR" = "1" ]; then
+        # The dangerous case, and the one that used to print as the harmless one.
+        #
+        # An icon is already in the menu bar, running the binary the last
+        # SUCCESSFUL build left there. This run upgraded the host underneath it
+        # and could not rebuild it, so what is on screen is now older than the
+        # host it reports on — and it will keep showing whatever it showed
+        # before, "No Access" included, through any number of reinstalls. The
+        # old text ("add the icon later") was false twice: there is an icon, and
+        # later is not optional. A stale indicator is worse than an absent one,
+        # because an absent one cannot be believed.
+        warn "the menu bar app could NOT be rebuilt — the icon already on your menu"
+        warn "bar is now STALE: older than the host it reports on"
+        note "what it shows may be wrong, \"No Access\" included. It will not fix"
+        note "itself, and re-running this installer will not fix it either — the"
+        note "icon can only change when it rebuilds."
+        note "reason: $(_menubar_reason)"
+        note "full output: $MENUBAR_LOG"
+        note "fix the toolchain, then rebuild the icon with:"
+        note "  $HOST_DIR/menubar/install.sh"
     else
         warn "the menu bar app did not build (a Swift compiler is needed)"
+        note "reason: $(_menubar_reason)"
+        note "full output: $MENUBAR_LOG"
         note "the host is up regardless; add the icon later with:"
         note "  $HOST_DIR/menubar/install.sh"
     fi

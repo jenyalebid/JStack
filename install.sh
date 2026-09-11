@@ -24,6 +24,8 @@ MIN_PY_MINOR=9
 
 ASSUME_YES=0
 DRY_RUN=0
+DO_UNINSTALL=0
+DO_PURGE=0
 AGENT_NAME=""
 WANT_SCHEDULER=1
 WANT_CLAUDE=1
@@ -46,6 +48,8 @@ usage: install.sh [options]
 
   --yes, -y           don't ask; accept every default
   --dry-run           print what would happen and change nothing
+  --uninstall         take jStack back off; leave your data and dependencies
+  --purge             uninstall AND delete the host's state, token and root decl
   --root DIR          root for Agents, Logs, Config, State, Credentials
   --agent NAME        create this agent workspace (default: ask, or "Jarvis" with --yes)
   --agent-root DIR    where agent workspaces live (default: <root>/Agents)
@@ -72,6 +76,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -y|--yes)      ASSUME_YES=1 ;;
         --dry-run)     DRY_RUN=1 ;;
+        --uninstall)   DO_UNINSTALL=1 ;;
+        --purge)       DO_UNINSTALL=1; DO_PURGE=1 ;;
         --agent)       AGENT_NAME="${2:-}"; shift ;;
         --agent-root)  AGENT_ROOT="${2:-}"; shift ;;
         --checkout)    CHECKOUT="${2:-}"; shift ;;
@@ -149,6 +155,124 @@ run() {
     if [ "$DRY_RUN" = "1" ]; then would "$*"; return 0; fi
     "$@"
 }
+
+# ── uninstall ────────────────────────────────────────────────────────────────
+# Take jStack back off without touching anything it merely used. THE RULE that
+# makes this safe: a dependency the installer SKIPS when it is already present —
+# Claude Code, git, Python, python-dateutil, the WireGuard tools — is never
+# removed here. Only what jStack itself wrote comes off. The destructive halves
+# (the signed app bundle, the host's state and token) are delegated to the
+# sub-installers that placed them, so this orchestrates rather than reimplements.
+# --uninstall leaves your data (agent workspaces, host state, token); --purge
+# also takes the host state/token/credentials and the root declaration.
+uninstall() {
+    local purge="$1"
+    PLUGIN="$CHECKOUT/plugins/jstack"
+    BIN="$PLUGIN/bin"
+    PROFILE="$(profile_path)"
+    local CLAUDE; CLAUDE="$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")"
+
+    step "Uninstalling jStack${purge:+ (purge)}"
+    note "dependencies are left untouched: Claude Code, git, Python, python-dateutil, WireGuard"
+
+    # 1. the Mac app — its own installer knows the signed bundle it placed.
+    if [ -f "$CHECKOUT/app/install.sh" ]; then
+        run bash "$CHECKOUT/app/install.sh" --uninstall || warn "app uninstall reported a problem"
+    else
+        note "no app installer in the checkout — skipping the Mac app"
+    fi
+
+    # 2. the host LaunchAgent; the menu bar icon comes off with it. --purge also
+    #    deletes the state, token and credentials it keeps.
+    if [ -f "$CHECKOUT/host/install.sh" ]; then
+        if [ -n "$purge" ]; then
+            run bash "$CHECKOUT/host/install.sh" --purge || warn "host purge reported a problem"
+        else
+            run bash "$CHECKOUT/host/install.sh" --uninstall || warn "host uninstall reported a problem"
+        fi
+    else
+        note "no host installer in the checkout — skipping the host"
+    fi
+
+    # 3. the scheduler daemon.
+    if command -v jstack-scheduler >/dev/null 2>&1; then
+        run jstack-scheduler uninstall || warn "scheduler uninstall reported a problem"
+    elif [ -x "$BIN/jstack-scheduler" ]; then
+        run "$BIN/jstack-scheduler" uninstall || warn "scheduler uninstall reported a problem"
+    else
+        note "no scheduler on PATH or in the checkout — skipping the daemon"
+    fi
+
+    # 4. the Claude Code plugin and its marketplace entry.
+    if [ -x "$CLAUDE" ] || command -v claude >/dev/null 2>&1; then
+        run "$CLAUDE" plugin uninstall jstack >/dev/null 2>&1 && ok "plugin removed" || note "plugin was not installed"
+        run "$CLAUDE" plugin marketplace remove jStack >/dev/null 2>&1 && ok "marketplace jStack removed" || note "marketplace jStack was not registered"
+    else
+        note "Claude Code not found — skipping the plugin"
+    fi
+
+    # 5. the rule and command symlinks — only the ones pointing back into this
+    #    checkout, so a symlink you made yourself is never touched.
+    local removed=0 d f tgt
+    for d in "$HOME/.claude/rules" "$HOME/.claude/commands"; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*; do
+            [ -L "$f" ] || continue
+            tgt="$(readlink "$f" 2>/dev/null)"
+            case "$tgt" in
+                "$CHECKOUT"/*|*/rules-stage/*|*/commands-stage/*)
+                    run rm -f "$f" && removed=$((removed+1)) ;;
+            esac
+        done
+    done
+    ok "removed $removed rule/command symlink(s)"
+
+    # 6. the profile lines the installer appended: the `# jstack` PATH line
+    #    always, the root declaration only on --purge (it names a tree that
+    #    survives an --uninstall).
+    if [ -f "$PROFILE" ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            would "strip the '# jstack' PATH line from $PROFILE"
+            [ -n "$purge" ] && would "strip the JSTACK_ROOT declaration from $PROFILE"
+        else
+            # grep -v exits 1 when it prints nothing — the case where the last
+            # line is the one being stripped — so never gate the rewrite on its
+            # exit, or removing the final line becomes a silent no-op.
+            local tmp; tmp="$(mktemp)"
+            grep -vE '^[[:space:]]*export[[:space:]]+PATH=.*# jstack[[:space:]]*$' "$PROFILE" > "$tmp" || true
+            if [ -n "$purge" ]; then
+                grep -vE '^[[:space:]]*export[[:space:]]+JSTACK_ROOT=' "$tmp" > "$tmp.2" || true
+                mv "$tmp.2" "$tmp"
+            fi
+            cat "$tmp" > "$PROFILE"; rm -f "$tmp"
+            ok "cleaned $PROFILE"
+        fi
+    fi
+
+    # 7. your data is yours, not ours to delete — name what was left behind.
+    if declared_root >/dev/null 2>&1; then
+        note "your JSTACK_ROOT tree at $(declared_root) was left in place"
+    fi
+    [ -d "$AGENT_ROOT" ] && note "agent workspaces under $AGENT_ROOT were left in place — remove by hand if you want them gone"
+
+    # 8. the checkout itself, last, from outside it. Guarded so a blank or
+    #    home-valued CHECKOUT can never expand into rm -rf $HOME or rm -rf /.
+    case "$CHECKOUT" in
+        ""|"/"|"$HOME") warn "refusing to remove CHECKOUT=$CHECKOUT — remove it by hand if that is right" ;;
+        *)
+            if [ -d "$CHECKOUT" ]; then
+                cd "$HOME" 2>/dev/null || cd /
+                run rm -rf "$CHECKOUT" && ok "removed $CHECKOUT"
+            fi ;;
+    esac
+
+    step "jStack is off this Mac"
+    exit 0
+}
+
+if [ "$DO_UNINSTALL" = "1" ]; then
+    if [ "$DO_PURGE" = "1" ]; then uninstall purge; else uninstall ""; fi
+fi
 
 # Is there a human at a terminal to answer a question?
 #

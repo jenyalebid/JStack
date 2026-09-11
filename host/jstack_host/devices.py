@@ -307,11 +307,16 @@ def note_build(device_id: str, build: str) -> None:
     with _build_lock:
         if _build_seen.get(device_id) == build:
             return
-        _build_seen[device_id] = build
     row = _store().device(device_id)
-    if row is None or row.get("client_build") == build:
+    if row is None:
         return
-    _store().note_device_build(device_id, build)
+    if row.get("client_build") != build:
+        # If this throws it propagates (the auth caller swallows it) and the
+        # cache below is never reached — so a failed write is retried next
+        # request instead of being stranded as "done" until the build changes.
+        _store().note_device_build(device_id, build)
+    with _build_lock:
+        _build_seen[device_id] = build
 
 
 # ── minting ──

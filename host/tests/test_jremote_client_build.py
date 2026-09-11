@@ -73,6 +73,28 @@ def test_an_unknown_device_is_a_no_op_not_an_error(store):
     devices.note_build("nobody", "1.0 (62)")  # must not raise
 
 
+def test_a_failed_write_does_not_poison_the_cache(store, monkeypatch):
+    """A throwing UPDATE must leave the cache clean so the next request retries;
+    caching before the write strands a failed row as 'done' until the build
+    string next changes."""
+    row, _ = devices.mint("my-iphone")
+    boom = {"raise": True}
+    real = store.note_device_build
+
+    def flaky(device_id, build):
+        if boom["raise"]:
+            raise RuntimeError("write failed")
+        real(device_id, build)
+
+    monkeypatch.setattr(store, "note_device_build", flaky)
+    with pytest.raises(RuntimeError):
+        devices.note_build(row["id"], "1.0 (62)")
+    # The retry succeeds and lands the value — proof the cache didn't swallow it.
+    boom["raise"] = False
+    devices.note_build(row["id"], "1.0 (62)")
+    assert store.device(row["id"])["client_build"] == "1.0 (62)"
+
+
 # ── the header rides ordinary authenticated requests ─────────────────────────
 
 def test_the_header_on_an_authenticated_request_is_recorded(store, app):

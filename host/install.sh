@@ -227,8 +227,32 @@ fi
 step "Building the environment"
 
 VENV="$HOST_DIR/.venv"
-if [ -x "$VENV/bin/python3" ]; then
+
+# `-x` proves a file is there and executable. It does not prove it RUNS, and a
+# venv is a set of symlinks into the interpreter that built it: upgrade
+# Homebrew's python and every venv on the machine still passes `-x` while its
+# python3 aborts with a dyld error naming a Cellar path that no longer exists.
+# So the interpreter is asked to execute, which is the thing actually being
+# claimed — a reused venv that cannot run is rebuilt rather than reported `ok`
+# and handed to the next pip, which is where it used to fail.
+# The subshell is load-bearing: a dyld failure kills the interpreter with
+# SIGABRT, and bash reports a signalled *direct* child itself ("Abort trap: 6")
+# on its own stderr, which no redirection on the command can reach. Run inside
+# `( )` the notice belongs to the subshell and goes with its stderr — otherwise
+# every rebuild prints a crash trace above the line explaining the rebuild.
+venv_runs() { [ -x "$1/bin/python3" ] && ( "$1/bin/python3" -c pass ) >/dev/null 2>&1; }
+
+if venv_runs "$VENV"; then
     ok "virtualenv already at $VENV"
+elif [ -e "$VENV" ]; then
+    # Nothing is recoverable from a venv whose base interpreter is gone — it
+    # holds symlinks and compiled artifacts of an interpreter that no longer
+    # exists — and it is a directory this script created. Scoped to that one
+    # path, never to $HOST_DIR.
+    warn "the virtualenv at $VENV cannot run (its base python moved) — rebuilding"
+    run rm -rf "$VENV" || die "could not remove the broken virtualenv at $VENV"
+    run "$PY" -m venv "$VENV" || die "could not create a virtualenv at $VENV"
+    did "virtualenv rebuilt at $VENV"
 else
     run "$PY" -m venv "$VENV" || die "could not create a virtualenv at $VENV"
     did "virtualenv at $VENV"

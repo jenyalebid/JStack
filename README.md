@@ -1,385 +1,153 @@
 # jStack
 
-Cross-machine Claude Code skills for agent workflows. Built around the `{agent_root}/{Name}/` workspace convention, where `agent_root` is **configured per machine** (no hardcoded paths). Adapters ship inside the plugin and self-detect the environment, so the same plugin behaves richly everywhere with zero per-machine scripting.
+jStack is two things that install together:
 
-**This repo ships two halves, and they are installed separately:**
+- **A Claude Code plugin** — slash commands, rules and self-running systems for
+  agent workflows, built around a simple convention: an agent is a directory
+  with a `CLAUDE.md`, and everything else (timeline, scheduler, inbox) hangs off
+  that. No paths are hardcoded; it works on any machine once you say where your
+  workspaces live.
+- **A way to reach that Mac from your phone, iPad, or another Mac** — a small
+  token-authed host that serves your terminal sessions (what's running, what
+  each one said, a live PTY you can type into), and a Mac app that connects to
+  it from anywhere.
 
-| | What it is | Start at |
-|---|---|---|
-| **The plugin** | The skills, rules, hooks and systems above — what a Claude Code session gets. | [Setup](#setup), below |
-| **The host** | A small API that makes this Mac reachable from a phone, an iPad or another Mac: your terminal sessions, what each one said, and a live PTY you can type into from anywhere. | **[host/README.md](host/README.md)** |
+Neither half needs the other. You can run the plugin and never install the host,
+or install the host on a headless Mac with no agent workspaces at all.
 
-Neither needs the other. A machine can run the plugin and never install the host, or install the host on a Mac that has no agent workspaces at all.
+## Install
 
-**On a fresh machine, run `./install.sh` at the repo root** — it does both halves and the client app in one pass, and ends on `jstack-doctor` rather than an assumption. The per-half installers below are for leaving a piece out.
-
-## What this gives you
-
-Slash commands, namespaced as `/jstack:*`:
-
-| Command | What it does |
-|---|---|
-| `/work` | Get battle-ready on a topic — orient, load every relevant skill, survey recent changes, read the core files, report a grounded lay of the land. `[@project] <topic>` |
-| `/handoff` | Hand off the session to a fresh terminal with context preserved |
-| `/splitoff` † | Dub the session into a new terminal — a verbatim copy under a fresh id, diverging forward. Words name the copy; it never narrows |
-| `/audit` | Spawn a trust-nothing auditor in a fresh terminal to verify this session's work from source |
-| `/push` | Commit + push this session's edits (default), or `all` pending changes grouped by unit of work |
-| `/report` | Close out a task: settle every finding as its own commit or a filed GitHub issue, then report |
-| `/issue` | Work a GitHub issue end to end — read it, board it, build the fix in a worktree, open the PR, answer on the issue |
-| `/task` | Hand a unit of work to an agent — files a task issue, spawns the executor on it, keeps the conversation in this CLI. The issue is the task, its PR is the delivery |
-| `/day-audit` | Reverify a day's shipped work across every repo against the timeline — did the commits (esp. fixes) improve each app without regressing something? |
-| `/recall` | Replay what was done on a day or period, scoped to an agent or the whole op |
-| `/tag` † | File this session under a timeline subject — list, attach, mint, detach |
-| `/pict` † | Render everything a session started in a directory is injected with, in wire order, and put it on screen |
-| `/showme` | Surface the result of the current topic in its real viewer instead of describing it |
-| `/print` † | Print the absolute path of this session's JSONL transcript |
-| `/install-rules` | Symlink the 17 bundled rules into `~/.claude/rules/`, and the bare `/tag`, `/pict`, `/print`, `/splitoff` stubs into `~/.claude/commands/` |
-| `/post-session-review` | Review playbook the SessionEnd engine runs after every session (also manually invocable with a session id) |
-
-**†  Zero-turn commands.** A `UserPromptSubmit` hook intercepts these four, does the work in-process and blocks the prompt — the answer lands on screen without a model call, the way Claude Code's own `/color` does. Bookkeeping, a path lookup, a render and a file copy have no judgement in them, and routing them through the model bought a turn to reach a foregone conclusion. After `/install-rules` they also answer to the bare `/tag`, `/pict`, `/print`, `/splitoff`. Each keeps a `SKILL.md` carrying the same work by hand, for a harness that does not fire hooks on slash commands.
-
-Plus four **whole systems** that run themselves once installed:
-
-- **Session-end self-write** — a SessionEnd hook resumes every session that ends inside an agent workspace for one turn so it writes its own seat-tagged timeline entry (the cheapest, best-informed writer); a full validated multi-phase review remains available as the `review` action. See **Session-end engine + timeline** below.
-- **Timeline** — the single running memory: `bin/log_event` writes a sqlite store (`timeline.db`; daily `{YYYY-MM-DD}.md` files are a one-way rendered view) with seat-tagged sources (`agent/submode`), session-id linkage, chronological rendering, pipeline-task consolidation, seat queries (`log_event tail`), and review verdict stamps (`log_event verdict`). A SessionStart hook injects each seat's last N entries into its next session (`timeline_inject` config), so sessions start sighted.
-- **Agent inbox** — addressed seat-to-seat messaging with a tracked outcome: `bin/msg` sends `@agent` / `@agent-seat` a message that lands in a `messages` table beside the timeline, injects at the top of that seat's next session, and cannot be walked past — a Stop hook blocks the first stop that would leave it open, and closing it requires recording what was done. Optional rungs type into a live session or wake the receiver outright. Where the timeline answers *what did this seat do*, the inbox answers *what is it being asked to do, by whom, and what came of it*. Full contract: **[docs/systems/agent-inbox.md](plugins/jstack/docs/systems/agent-inbox.md)**.
-- **Scheduler** — the piece that *starts* a session rather than reviewing or remembering one: a daemon firing one-time and recurring agent runs on RRULE schedules, with the timeout counted from spawn, TTFT/stall watchdogs on hung turns, authoritative process-group kills, catch-up after downtime, per-job concurrency policy, and rate-limit deferral. One package, every machine — a host declares its timezone, spawn environment, and workspace resolution in `config/scheduler.json` and nothing host-specific lives in the code. Needs `python-dateutil`. Setup and the full contract: **[docs/systems/scheduler.md](plugins/jstack/docs/systems/scheduler.md)**.
-
-And the supporting machinery: 17 path-scoped rule files (auto-load by glob after install), a **PreToolUse hook** that re-injects path-matched rules at edit time even when the file lives outside the session's launch tree, 18 bundled `bin/` adapters (`open-terminal-here`, `file-followup`, `file-issue`, `place-issue`, `task-create`, `log_event`, `msg`, `schedule-self`, `jstack-scheduler`, `jstack-doctor`, `session-review-spawn`, `session-files`, `dub-session`, `open-artifact`, `pict`, `repo-seat`, `ide-bridge`, `acp-agent`), a `systems.json` registry where every bundled system declares a runnable test (`plugins/jstack/tests/*.sh` — run them any time), and per-system deep docs under `plugins/jstack/docs/systems/`.
-
----
-
-## Setup
-
-### 1. Verify prerequisites
-
-```bash
-claude --version          # need 2.x or later
-which git
-```
-
-If `claude` is missing, install Claude Code first (`brew install --cask claude-code` on macOS).
-
-### 2. Register the marketplace and install the plugin
-
-```bash
-claude plugin marketplace add jenyalebid/jStack
-claude plugin install jstack@jStack
-```
-
-Verify:
-
-```bash
-claude plugin list   # should show jstack@jStack as enabled
-```
-
-### 3. Configure the agent root (and optional follow-up backend)
-
-jStack reads its paths from **plugin config** — no path is hardcoded. Three options (declared in `plugin.json` `userConfig`):
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `agent_root` | directory | `~/Agents` | Directory that contains your per-agent workspaces (`{Name}/CLAUDE.md`, `{Name}/active/`). |
-| `followup_backend` | string | `none` | How the review skill files a follow-up reminder: `none` \| `todo` \| `reminders` \| `slack`. |
-| `followup_target` | string | _(empty)_ | For `todo`: a file path (default `<agent_root>/followups.md`). For `reminders`: the macOS Reminders list name (default `Follow-ups`). |
-
-Set them in Claude Code's plugin config UI, or directly in `settings.json`:
-
-```jsonc
-// ~/.claude/settings.json  (or .claude/settings.json for a project)
-{
-  "pluginConfigs": {
-    "jstack@jStack": {
-      "options": {
-        "agent_root": "/Users/you/Desktop/MyStuff/Agents",
-        "followup_backend": "reminders",
-        "followup_target": "Follow-ups"
-      }
-    }
-  }
-}
-```
-
-If you leave `agent_root` at the default, jStack uses `~/Agents/`.
-
-#### Declaring a root (optional — skip it and everything still works)
-
-`agent_root` names one directory. A host that keeps its whole stack together can
-instead declare **one** root and let the rest derive by structure:
-
-```bash
-export JSTACK_ROOT=/Users/you/Stack      # in your shell profile, and in any
-                                         # launchd/systemd unit that spawns sessions
-```
-
-```
-$JSTACK_ROOT/
-├── Agents/   workspaces      ├── State/   runtime state, runs, locks
-├── Systems/  Systems/<slug>/ ├── Logs/    timeline db (Logs/Timeline/timeline.db)
-├── Config/   *.json          └── Credentials/  tokens (never in the checkout)
-```
-
-Declaring nothing is a supported install: with no `JSTACK_ROOT` the root is
-`$HOME` and every derived path equals the literal the tools shipped with
-(`~/Agents`, `~/Logs/Timeline`, …). Any single directory can still be pinned
-independently — `JSTACK_LOGS_DIR`, `JSTACK_STATE_DIR`, `JSTACK_CREDENTIALS_DIR`
-and friends outrank the derivation, so an install that already names its paths is
-untouched. `Config/`, `State/`, `Logs/` and `Credentials/` refuse to resolve
-inside the git checkout that ships the plugin — this is a public repo, and a
-token there is one `git add -A` from being published.
-
-Full contract, including what counts as an agent: **[docs/systems/root-derivation.md](plugins/jstack/docs/systems/root-derivation.md)**.
-
-### 4. Create at least one agent workspace
-
-```bash
-mkdir -p "$AGENT_ROOT"/{YourAgentName}     # $AGENT_ROOT = whatever you set above
-cat > "$AGENT_ROOT"/{YourAgentName}/CLAUDE.md <<'EOF'
-# {YourAgentName}
-
-(your agent identity here — what this agent does, voice, durable rules)
-EOF
-```
-
-The walk-up auto-loads this CLAUDE.md whenever a session runs inside that agent dir or any subdirectory.
-
-### 5. (Optional) Install the bundled rules
-
-After restarting Claude Code so the plugin loads:
-
-```
-/install-rules
-```
-
-Confirms and symlinks 17 rules into `~/.claude/rules/` (canvas, claude-md-editing, claude-sessions, code-review, execution-gates, ios-charts, ios-design-ethos, ios-forms, ios-lists, ios-modifiers, ios-screens, ios-services, ios-sheets, ios-style, rules, timeline, visual-assets). Skips files that already exist; pass `--force` to overwrite. The source is `${CLAUDE_PLUGIN_ROOT}/rules-stage/` — resolved automatically.
-
-### 6. Verify end-to-end
-
-Every step above fails in a way that is invisible from inside a session, so check
-them from outside first:
-
-```bash
-jstack-doctor          # or: <plugin>/bin/jstack-doctor if bin/ isn't on PATH yet
-```
-
-Thirteen checks, each reading the same seam the tools read at runtime — where the
-root resolves, which agents the resolver actually finds, whether `claude` is on
-the spawn path (not just your shell's), whether the rules symlinks still point at
-something, whether the daemon is running. Graded `ok` / `warn` / `fail`, worst
-grade is the exit status: **0** all good, **1** working with capabilities still
-absent, **2** something is broken. `--json` for a script. It reports; it never
-changes anything.
-
-`warn` on a fresh install is normal — no timeline rows yet, no scheduler daemon.
-`fail` names the step to go back to.
-
-Then, in a session inside an agent directory:
-
-```bash
-cd "$AGENT_ROOT"/{YourAgentName}
-claude
-```
-
-Run `/jstack:work <any topic>`. If it reports you're not inside an agent tree,
-check that `agent_root` is set correctly and the agent's `CLAUDE.md` exists —
-`jstack-doctor`'s `agents` line tells you which of the two it is.
-
----
-
-## The host — reaching this Mac from somewhere else
-
-The second half of the repo, installed on its own and useful without the plugin.
-`host/` is a small token-authed HTTP/SSE API that serves your terminal sessions:
-what is running, what each one said, and a live PTY you can type into from a
-phone, an iPad or another Mac.
-
-### Which installer to run
-
-There are three, and picking the wrong one is the easy mistake — `host/install.sh`
-installs **the host only**. It does not install the client app. Its last step
-pairs an app that is *already on the machine*; where there is none it prints a
-code and says so.
-
-| Run | When |
-|---|---|
-| **`./install.sh`** (repo root) | **The usual one.** Plugin + host + menu bar + the Mac app, then `jstack-doctor` for a verdict. `--no-app`, `--no-host`, `--no-menubar` to leave a piece out. |
-| `host/install.sh` | You want the host and nothing else — a headless Mac, or a machine whose app you install another way. |
-| `app/install.sh` | You want the Mac app only, against a host that already exists elsewhere. |
+One command on a fresh Mac. It installs the plugin, the host, the menu bar item
+and the Mac app, then runs `jstack-doctor` so it ends on a verdict, not an
+assumption:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jenyalebid/jStack/main/install.sh | bash
-./install.sh --dry-run           # print the plan, touch nothing
-./install.sh --yes --agent Ada   # unattended, everything
 ```
 
-It refuses to run as root, never overwrites a file it did not write, and touches
-nothing outside the checkout, `~/.claude`, `~/Agents`, `~/Applications` and one
-appended shell-profile line. Every step is idempotent, so running it twice is an
-upgrade — which is what makes it usable as the updater.
-
-### The host on its own
+It asks two things — where your stack lives and what to name your first agent —
+and runs to the end. Everything else has one sensible answer and is a flag:
 
 ```bash
-cd host
-./install.sh              # from a clone of this repo
-./install.sh --dry-run    # print the plan, change nothing
-./install.sh --update     # pull, reinstall, restart
+./install.sh --dry-run            # print the plan, change nothing
+./install.sh --yes --agent Ada    # unattended, everything
+./install.sh --no-app             # skip a piece: --no-app --no-host --no-menubar --no-scheduler
 ```
 
-It builds a virtualenv beside the package, registers a **user** LaunchAgent so
-the host survives a logout and a reboot, and prints a pairing code for the app.
-No `sudo`, and nothing written outside your home directory — an install that
-needs an admin password is one you have to trust rather than read, and this is a
-program that watches your terminal sessions. Every step is idempotent, so running
-it twice is an upgrade.
+It refuses to run as root, never overwrites a file it didn't write, and touches
+nothing outside the checkout, `~/.claude`, your agent root, `~/Applications` and
+one appended shell-profile line. Every step is idempotent, so re-running it is
+how you update.
 
-`jstack-host` is the CLI it installs — `pair`, `status`, `doctor`, `where`,
-`serve`, `uninstall`. A menu bar item (`host/menubar/`) is built from source on
-your machine unless you pass `--no-menubar`; the host installs fine without it.
+**Dependencies are installed only if missing and never removed** — Claude Code,
+git, Python, `python-dateutil`. An install that finds them present leaves them
+exactly as they were.
 
-The client app is closed source, and `app/install.sh` is not — it verifies the
-download's SHA-256 against the published manifest, checks the code signature,
-asks Gatekeeper the same question macOS asks on first launch, and pins the
-signing team, before anything lands in `/Applications`. There is no
-`--skip-verify`.
+The Mac app is closed source; its installer is not. Before anything lands in
+`/Applications` it verifies the download's SHA-256 against the signed manifest,
+checks the code signature, asks Gatekeeper the same question macOS asks on first
+launch, and pins the signing team. There is no skip-verify.
 
-**Full contract — profiles, the state-dir seam, what a host without this tree
-still answers, and the security model: [host/README.md](host/README.md).**
+### Just one piece
 
----
+- **Plugin only** — `claude plugin marketplace add jenyalebid/jStack` then
+  `claude plugin install jstack@jStack`.
+- **Host only** (a headless Mac) — `host/install.sh`.
+- **App only** (against a host that already exists) — `app/install.sh`.
 
-## Session-end engine + timeline (the self-running systems)
+## What you get
 
-Once the plugin is installed, the SessionEnd hook is live — but it only does anything when a session ends inside a reviewable agent workspace, so installing the plugin never spawns surprise reviews on a machine that isn't set up for it.
+### Slash commands, namespaced `/jstack:*`
 
-### What makes an agent reviewable
+| Command | What it does |
+|---|---|
+| `/work` | Get battle-ready on a topic — load the relevant skills, read the core files, report a grounded lay of the land |
+| `/handoff` | Hand this session to a fresh terminal with context preserved |
+| `/splitoff` | Copy this session into a new terminal under a fresh id, diverging forward |
+| `/audit` | Spawn a trust-nothing auditor that re-verifies this session's work from source |
+| `/push` | Commit and push this session's edits, grouped by unit of work |
+| `/report` | Close out a task — settle every finding as a commit or a filed issue, then report |
+| `/issue` | Work a GitHub issue end to end — read it, build the fix in a worktree, open the PR |
+| `/task` | Hand a unit of work to an agent — files the task issue, spawns the executor |
+| `/recall` | Replay what was done on a day or period, by agent or across the whole op |
+| `/day-audit` | Re-verify a day's shipped work across every repo against the timeline |
+| `/tag` · `/pict` · `/print` · `/showme` | Timeline tagging, injected-context render, transcript path, result viewer |
+| `/install-rules` | Symlink the bundled path-scoped rules into `~/.claude/rules/` |
 
-```
-{agent_root}/{Name}/CLAUDE.md          ← this file existing IS the opt-in (the agent identity)
-{agent_root}/{Name}/{seat}/CLAUDE.md   ← or one seat down, if the workspace keeps no top-level identity
-```
+### Systems that run themselves once installed
 
-End a session inside that agent's tree → the engine resolves the owner and (default `session_end_action: "selfwrite"`) resumes the ended session for one turn so it logs its own seat-tagged timeline entry. Set `session_end_action: "review"` for the legacy fresh multi-phase review (`/jstack:post-session-review`, output machine-validated, retried once on rejection). Engine activity logs to `~/.claude/jstack/review-state/session-review.log` by default.
+- **Timeline** — the running memory. Each session logs a seat-tagged entry
+  (`log_event`); the last few are injected into that seat's next session, so
+  sessions start sighted instead of cold.
+- **Session-end self-write** — when a session ends inside an agent workspace, a
+  hook resumes it for one turn to write its own timeline entry.
+- **Agent inbox** — addressed seat-to-seat messages (`msg send @agent`) that
+  land at the top of the receiver's next session and can't be walked past until
+  answered.
+- **Scheduler** — a daemon that fires one-time and recurring agent sessions on a
+  schedule, with watchdogs on hung turns and catch-up after downtime.
 
-### Timeline
+Under the hood, skills call 18 bundled `bin/` adapters (`acp-agent`,
+`dub-session`, `file-followup`, `file-issue`, `ide-bridge`, `jstack-doctor`,
+`jstack-scheduler`, `log_event`, `msg`, `open-artifact`, `open-terminal-here`,
+`pict`, `place-issue`, `repo-seat`, `schedule-self`, `session-files`,
+`session-review-spawn`, `task-create`) as bare commands. 17 path-scoped rule files
+auto-load by glob once installed with `/install-rules`.
 
-The self-write (and anything else) writes the running memory with the bundled CLI — it's on PATH for engine spawns, or call it via the plugin cache:
+### The host and the app
 
-```bash
-log_event <agent>/<submode> --at HH:MM "headline" [--detail "..."] [--pipeline-task repo#42] [--session <sid>]
-log_event tail <agent>/<submode> -n 10        # a seat's recent history (what injection shows)
-log_event verdict <agent>/<submode> blocked --note "do not repeat: ..."
-```
+The host is a token-authed HTTP/SSE API bound so it's reachable over the tunnel,
+installed as a per-user LaunchAgent (no sudo, nothing outside your home). Its CLI
+is `jstack-host` — `pair`, `status`, `mode`, `open`, `attach`, `doctor`,
+`uninstall`. The menu bar item shows whether it's running and owns the device
+list. The Mac app is the client that connects to it.
 
-Store: `{root}/Logs/Timeline/timeline.db` — `~/Logs/Timeline/timeline.db` until an install declares a root (`JSTACK_TIMELINE_DIR` overrides either way); daily `{YYYY-MM-DD}.md` files are a one-way rendered view — never hand-edit them. Which seats get their history injected on session start, and how many entries, is the `timeline_inject` map in the review config. Format spec + editorial bar: the `timeline` rule (install via `/install-rules`).
+## Reaching your Mac from anywhere
 
-### Machine config (optional — defaults are fully portable)
+A host is one of three shapes, and the only difference between them is how a
+device that is **not on your network** reaches it. Off-network access always
+rides an encrypted WireGuard tunnel — the modes differ only in which end stands
+that tunnel up.
 
-`~/.claude/jstack/review.json` (env override: `JSTACK_REVIEW_CONFIG`). You only need it to change defaults — e.g. point `skill_invocation` at a richer host playbook, extend `required_sections` to that playbook's output contract, add host tool dirs to the spawned PATH, or wire `escalate_cmd` / `tg_classify_cmd` adapters. Full key reference: `plugins/jstack/docs/systems/session-end-engine.md`. Model/budget defaults: opus, 50 turns, 1200s × 2 attempts, 2 concurrent reviews.
+- **local** — the default a fresh install lands in. Reachable only on your own
+  network; nothing off it can get in. Honest: a Mac that's done nothing to be
+  reachable isn't.
+- **open** — this Mac holds its own way in. It publishes a WireGuard endpoint the
+  outside dials.
+- **managed** — this Mac dials *out* to another Mac that's already a hub, and
+  rides its mesh. Every device paired to that hub reaches this one with no setup
+  of its own.
 
-**Single entry point rule:** the plugin's SessionEnd hook is the only review spawner. Don't add a second hook in `settings.json` — and if a host ever has one anyway, the engine's per-session atomic claim still guarantees exactly one review.
+### Making one Mac reachable (open mode)
 
-### Verify it works
+For a single Mac, run **`jstack-host open`**. It walks the whole thing:
 
-```bash
-"$(ls ~/.claude/plugins/cache/jStack/jstack/*/tests/log-event.sh | sort -V | tail -1)"        # timeline CLI contract
-"$(ls ~/.claude/plugins/cache/jStack/jstack/*/tests/session-review.sh | sort -V | tail -1)"   # engine validator/resolution/claims
-```
+1. It finds your Mac's LAN address and your router's public IP (by asking the
+   router directly — nothing phones out to a third party).
+2. It forwards **one UDP port** on the router — automatically where the router
+   supports it, otherwise printing the exact one-line rule to enter by hand. Only
+   that silent tunnel port is ever exposed; the HTTP API is never forwarded, so
+   off-network traffic rides the encrypted tunnel or it doesn't arrive.
+3. It prints the endpoint and the single line to stand up the tunnel:
+   `sudo bash install_hub.sh --endpoint <your-public-ip>:51820`
+   (one sudo, once; prereq `brew install wireguard-go wireguard-tools`).
+4. Pair your phone while both are on the same wifi (the app's *Add a Device*).
 
-Then the live test: `cd` into a reviewable agent dir, run `claude --print -p "test"`, and watch `SPAWN → DONE` appear in the review log within a few minutes.
+Then **prove it**: a WireGuard port is silent, so reachability can't be shown by
+scanning from outside. Instead you produce the proof — take the phone off wifi
+onto cellular and open the app. The moment its handshake lands from the internet,
+`jstack-host open --verify` flips to *verified*. Until then it says "declared,
+not verified" — it won't claim a router in between forwards packets when it can't
+see that.
 
----
+### Joining an existing hub (managed mode)
 
-## Adapters (bundled — usually nothing to do)
+If you already have a Mac acting as a hub, skip all of the above: run
+**`jstack-host attach <code>`** on the new Mac, where `<code>` comes from the
+hub. It dials out, joins the mesh, and every device already paired to that hub
+reaches the new Mac — no router touched.
 
-jStack ships two adapter scripts in the plugin's `bin/`, which Claude Code auto-adds to the Bash `PATH` while the plugin is enabled. Skills call them as bare commands.
-
-### `open-terminal-here` — used by `/handoff`
-
-Opens a new Claude Code terminal at a directory. Self-detects the terminal:
-
-- **macOS:** iTerm if installed, else Terminal.app
-- **Linux:** gnome-terminal → konsole → x-terminal-emulator → xterm
-- **Windows:** Windows Terminal (`wt.exe`)
-
-**Contract:** `open-terminal-here <cwd> [extra-claude-args...]`. To override on a machine, put your own `open-terminal-here` earlier in `PATH`.
-
-### `file-followup` — used by the review skill
-
-Files a follow-up reminder, routed by the `followup_backend` config:
-
-- `none` (default) — silent no-op
-- `todo` — appends `- [ ] <title> — <body>` to `followup_target` (default `<agent_root>/followups.md`)
-- `reminders` — adds to the macOS Reminders list named in `followup_target` (default `Follow-ups`)
-- `slack` — POSTs to the webhook in env var `SLACK_FOLLOWUP_WEBHOOK`
-
-**Contract:** `file-followup <title> <body>`, exit 0 = filed or intentionally skipped.
-
-### `file-issue` — used by `/report`
-
-Files a GitHub issue for a finding the session did not fix, **and places it on the board its owner actually reads**. A bare `gh issue create` leaves `projectItems[]` empty — the issue exists, is numbered, and is invisible. Filing and placing are one act, or the tracker is a no-op with a receipt.
-
-Board routing is read **live from GitHub** (`repository.projectsV2` → the project's `Status` field → the intake column, matched by name: TODO / Todo / Backlog / Triage / Inbox / New). There is no repo→board map to configure, and none to go stale.
-
-**Contract:** `file-issue --repo <owner/name> --title <t> (--body <text> | --body-file <p>) [--label L]... [--project N] [--no-board] [--dry-run]`. Last stdout line is `ISSUE <url> board=<column|none>`.
-
-Degrades rather than blocking: no `gh` → exit 3; repo unreadable or issues disabled → exit 4; repo linked to no project (or to several, without `--project`) → issue filed, board skipped, exit 0. Every non-zero exit means **nothing was filed**, so a caller can never report an issue number it didn't get.
-
----
-
-## How the skills work (so you can predict behavior)
-
-`{root}` below = the configured `agent_root`.
-
-### `/handoff [focus]`
-
-1. Walks this conversation, writes a `handoff-context.md` to the current working directory with Current Work / In Progress / Still To Do / Key Decisions / Context sections.
-2. Shows the summary.
-3. Calls `open-terminal-here "$(pwd)" --append-system-prompt-file handoff-context.md`. If no terminal can be opened, prints instructions for opening the new session manually.
-
-### `/audit [focus] [@agent]`
-
-The inverse of handoff: instead of a continuation briefing, the session writes a **claims document** (`audit-brief.md` — Original Issue / What Was Done / Claimed Verifications / Caution Flags / Blast Radius / Potential Pitfalls) prefixed with a fixed Audit Protocol, then opens a fresh terminal preloaded with it plus a kickoff prompt so the auditor starts immediately. The auditor's cornerstone rule: believe nothing in the brief — verify every claim from source (real diff, real builds, real test runs), verify user-stated "don't break X" constraints first, derive its own blast radius, and report CONFIRMED / REFUTED / UNVERIFIABLE per claim. Report-only: the auditor changes nothing. `@agent` runs the audit under another agent's identity, same workspace resolution as handoff.
-
-### `/install-rules [--copy] [--force]`
-
-Symlinks every `.md` in `${CLAUDE_PLUGIN_ROOT}/rules-stage/` into `~/.claude/rules/`. Default mode is symlink (edits to the source affect the live rule, and updates track automatically). `--copy` makes update-independent local copies. `--force` overwrites existing files.
-
----
-
-## The PreToolUse hook: cross-tree rule injection
-
-Native rules in `~/.claude/rules/*.md` auto-load by `paths:` glob, but only against files **inside the session's launch CWD**. If your editor is launched from one tree (`~/Agents/AgentA/`) and the code you're editing lives in a sibling tree (`~/Some-Project/`), no rule fires — a real gap for agents that span multiple projects.
-
-jStack ships a PreToolUse hook (`plugins/jstack/hooks/inject-path-rules.py`, auto-registered via `plugins/jstack/hooks/hooks.json`) that closes that gap. Whenever Claude Code is about to invoke `Edit`, `Write`, `MultiEdit`, or `NotebookEdit`, the hook:
-
-1. Reads the tool's `tool_input.file_path` (an **absolute** path, so launch CWD doesn't matter).
-2. Walks `~/.claude/rules/*.md`, parses each rule's `paths:` frontmatter, tests every glob against the file path.
-3. For matched rules, returns the rule body as `additionalContext` via the hook's JSON envelope (`permissionDecision: "allow"`). Claude sees the rule before executing the edit.
-
-### Dedup so the same rule doesn't flood context every edit
-
-For each `(session, rule)` pair, the hook writes a marker file containing the transcript's byte offset at injection time. On subsequent matches, it re-injects only if the transcript has grown by **at least `JSTACK_RULE_REINJECT_BYTES` bytes** since the marker (default `400000` ≈ ~100K tokens at ~4 bytes/token). Override per-session by exporting `JSTACK_RULE_REINJECT_BYTES=N`.
-
-### Kill switch
-
-Set `JSTACK_PATH_RULES_DISABLED=1` to make the hook a no-op for a session.
-
-### Defensive guarantees
-
-- Any exception → silent `exit 0`, no output. The hook **never blocks** a tool call.
-- Stdin is JSON via the documented PreToolUse contract; malformed or empty input → silent exit.
-- Default hook timeout: 10s (configured in `hooks.json`). Typical runtime: <100ms.
-
-### Cache location
-
-Per-session marker files live at `/tmp/jstack-rule-cache/<sanitized-session-id>/<rule>.marker`. Reboot-clean; no persistence needed.
-
-### Tuning
-
-The hook is content-agnostic — whatever rules' `paths:` globs are, that's what fires. If you find too many rules matching a single edit (5–7 is possible if your rule globs are broad), tighten the rules' globs rather than the hook. The hook is doing exactly what you tell it via frontmatter.
-
----
+`jstack-host mode` reports which shape a Mac is in at any time.
 
 ## Update
 
@@ -388,135 +156,37 @@ claude plugin marketplace update jStack
 claude plugin update jstack
 ```
 
-Symlinked rules track new content automatically. The plugin install path changes on version bumps (old version cleaned up ~7 days later), so if symlinks ever go stale, re-run `/install-rules --force`.
-
----
+Or just re-run `install.sh` — it's idempotent and upgrades what has drifted.
+Symlinked rules track new content automatically; if one ever goes stale after a
+version bump, `/install-rules --force`.
 
 ## Uninstall
 
+Only jStack's own artifacts come off; dependencies are left alone.
+
 ```bash
+app/install.sh --uninstall          # remove the Mac app (paired hosts stay)
+host/install.sh --uninstall         # remove the host LaunchAgent (state + token stay)
+host/install.sh --purge             # ...and delete state, token and credentials
+jstack-scheduler uninstall          # remove the scheduler daemon
 claude plugin uninstall jstack
 claude plugin marketplace remove jStack
 ```
 
-Remove any rule symlinks still pointing into a jstack install:
+Then drop any rule symlinks still pointing into a jStack checkout:
 
 ```bash
 for f in ~/.claude/rules/*.md; do
-    [ -L "$f" ] && readlink "$f" | grep -q "jstack/rules-stage" && rm "$f"
+  [ -L "$f" ] && readlink "$f" | grep -q jstack/rules-stage && rm "$f"
 done
 ```
 
----
+## Working on jStack itself
 
-## Convention summary
-
-1. **Agent root** — `{agent_root}/{Name}/` (configured, not hardcoded)
-2. **Identity** — `{agent_root}/{Name}/CLAUDE.md` (auto-loaded by walk-up)
-3. **Running memory** — the timeline: each seat's `log_event` entries, injected back on session start (`timeline_inject`)
-4. **Sub-modes** — subdirectories of the agent root, same identity in a different context (walk-up handles inheritance)
-5. **Adapters** — bundled in the plugin's `bin/`, configured via `followup_backend` / `followup_target`
-
-Set `agent_root` to wherever your workspaces live and jStack works out of the box on any machine.
-
----
-
-## Deep docs
-
-- `plugins/jstack/docs/systems/session-end-engine.md` — the review engine: gating table, full config key reference, log-line contract, safety switches.
-- `plugins/jstack/docs/systems/timeline-log.md` — the timeline writer: CLI contract, consolidation semantics, host-parity rule.
-- `plugins/jstack/docs/systems/path-rule-injection.md` — the PreToolUse hook internals.
-- `host/README.md` — the host: install, the `jstack-host` CLI, the two profiles, the state-dir seam, what a host with no agent tree still answers, and the security model.
-- `docs/agents-dashboard.md` — pattern spec for building a local dashboard that surfaces every agent + session (pattern-only — implement against your environment). A host dashboard can federate `plugins/jstack/systems.json` to surface and test the bundled systems alongside its own.
-
----
-
-## Repository layout
-
-```
-jStack/
-├── .claude-plugin/marketplace.json        # marketplace manifest
-├── plugins/jstack/
-│   ├── .claude-plugin/plugin.json         # plugin manifest (declares userConfig)
-│   ├── skills/                            # the 16 slash commands
-│   │   ├── work/SKILL.md
-│   │   ├── handoff/SKILL.md
-│   │   ├── splitoff/SKILL.md
-│   │   ├── audit/SKILL.md
-│   │   ├── day-audit/SKILL.md
-│   │   ├── recall/SKILL.md
-│   │   ├── showme/SKILL.md
-│   │   ├── print/SKILL.md
-│   │   ├── pict/SKILL.md
-│   │   ├── tag/SKILL.md
-│   │   ├── issue/SKILL.md
-│   │   ├── task/SKILL.md
-│   │   ├── push/SKILL.md
-│   │   ├── report/SKILL.md
-│   │   ├── install-rules/SKILL.md
-│   │   └── post-session-review/SKILL.md
-│   ├── commands-stage/                    # bare /name stubs installed via /install-rules
-│   │   ├── tag.md  ├── pict.md  ├── print.md  └── splitoff.md
-│   ├── hooks/
-│   │   ├── hooks.json                     # PreToolUse + SessionStart + UserPromptSubmit + Stop + SessionEnd
-│   │   ├── inject-path-rules.py           # cross-tree rule injection
-│   │   ├── session-start-inject.py        # seat timeline injection
-│   │   ├── tag-command.py                 # /tag, answered without a turn
-│   │   ├── pict-command.py                # /pict, answered without a turn
-│   │   ├── print-command.py               # /print, answered without a turn
-│   │   ├── splitoff-command.py            # /splitoff, answered without a turn
-│   │   ├── stop-inbox-guard.py            # an open inbox message cannot be walked past
-│   │   ├── stop-timeline-remind.py        # timeline write reminder
-│   │   └── session-end-review.sh          # spawns the review engine, detached
-│   ├── bin/                               # the 18 bundled adapters (auto-added to PATH)
-│   │   ├── open-terminal-here             # /handoff, /audit, /splitoff
-│   │   ├── dub-session                    # /splitoff
-│   │   ├── open-artifact                  # /showme, /pict
-│   │   ├── pict                           # injected-context renderer
-│   │   ├── session-files                  # /push stage list
-│   │   ├── file-issue                     # /report issue filing + board placement
-│   │   ├── place-issue                    # /issue board placement
-│   │   ├── task-create                    # /task issue filing
-│   │   ├── file-followup                  # review follow-ups
-│   │   ├── log_event                      # timeline writer
-│   │   ├── msg                            # agent inbox
-│   │   ├── schedule-self                  # one-time wake for this seat
-│   │   ├── jstack-scheduler               # RRULE daemon control
-│   │   ├── jstack-doctor                  # install verification (step 6)
-│   │   ├── repo-seat                      # repo → owning seat resolution
-│   │   ├── ide-bridge                     # editor integration
-│   │   ├── acp-agent                      # agent client protocol
-│   │   └── session-review-spawn           # review engine
-│   ├── scheduler/                         # RRULE daemon (one-time + recurring runs)
-│   ├── rules-stage/                       # rules installed via /install-rules
-│   ├── githooks/                          # hooks for THIS repo's checkout (commit identity gate)
-│   ├── systems.json                       # registry: every bundled system + its test
-│   ├── tests/                             # runnable system tests (*.sh, exit 0 = pass)
-│   └── docs/systems/                      # per-system deep docs
-├── install.sh                             # THE front door — plugin + host + app, then doctor
-├── host/                                  # the host — its own install, no plugin needed
-│   ├── install.sh                         # venv + user LaunchAgent + pairing code
-│   ├── jstack_host/                       # the package (API, CLI, profiles, devices)
-│   ├── menubar/                           # status item, compiled on your machine
-│   ├── tests/                             # host suite (pytest)
-│   └── README.md                          # host contract, profiles, security
-├── app/install.sh                         # install the Mac client from a signed release
-├── docs/                                  # architecture specs (not installed)
-└── README.md                              # this file
-```
-
-**Working on jStack itself?** This repo is public, and `.git/hooks/` does not travel with a clone — restore the commit identity gate first, so a commit under an off-list author email (a work or personal address that must never enter public history) is refused before it exists:
+This repo is public, and `.git/hooks/` doesn't travel with a clone. Restore the
+commit-identity gate first, so a commit under an off-list author email is refused
+before it exists:
 
 ```bash
 ln -s ../../plugins/jstack/githooks/pre-commit .git/hooks/pre-commit
 ```
-
----
-
-## For a model setting this up
-
-If you're a Claude session setting this up on a fresh machine, execute steps 1–6 in order. All steps are mechanical now: there are no adapters to hand-write (they're bundled and self-detecting). The only choices are the `agent_root` path and, optionally, the `followup_backend`. After step 6 returns a successful `/active` listing, jStack is installed and verified.
-
-To activate the self-running systems, add the **Post-session review + timeline** section's one `mkdir` (the `review/` dir per agent), run `/install-rules` (the `timeline` + `agent-state` rules carry the format discipline), and run the two test scripts under **Verify it works**. No config file is required unless you're overriding defaults — read `plugins/jstack/docs/systems/session-end-engine.md` before writing one.
-
-If `/install-rules` would overwrite anything important on the target machine, ask the user first (default behavior skips existing files, so this only matters with `--force`).

@@ -179,6 +179,31 @@ def deny_reason(presented: str) -> str:
     return f"wrong secret for {device_id} ({row['name']}) ({shape})"
 
 
+def cancelled(presented: str) -> bool:
+    """True when this token is a real mint whose only fault is a revoked row.
+
+    The distinction the rate limiter needs. A correct secret for a known row
+    cannot be arrived at by guessing — presenting it proves the holder was
+    minted this token and has not noticed it was cancelled, which is a stale
+    client, not an attacker. Counting it as a failed guess is what let a
+    re-adopted Mac's app arm a fifteen-minute lockout against itself two
+    seconds at a time.
+
+    Deliberately narrower than `deny_reason`'s revoked case: that one answers
+    on the device id alone, and a revoked id would then be a name anyone could
+    borrow to guess the secret for free. The secret must check out.
+    """
+    if not presented:
+        return False
+    device_id, secret = parse(presented)
+    if not device_id:
+        return False
+    row = _store().device(device_id)
+    if row is None or row["revoked_at"] is None:
+        return False
+    return hmac.compare_digest(row["token_hash"], _hash(secret))
+
+
 def authenticate(presented: str) -> str | None:
     """The device id this token proves, or None. The one auth answer.
 

@@ -163,6 +163,23 @@ def _record_failure(client_ip: str, scope: str) -> None:
                          daemon=True).start()
 
 
+def _note_denial(client_ip: str, scope: str, presented: str) -> None:
+    """Count one rejection toward the limiter — unless it was a cancelled
+    credential, which is denied but never counted.
+
+    The limiter exists to stop a caller guessing its way to a token. Someone
+    holding a token we minted and later revoked is not guessing: they already
+    have the secret, and no number of retries moves them closer to a live one.
+    Locking them out denies nothing the 401 had not already denied, and costs
+    the one thing a lockout can cost — the machine's own way back, for fifteen
+    minutes after the row is put right.
+    """
+    from . import devices
+    if devices.cancelled(presented):
+        return
+    _record_failure(client_ip, scope)
+
+
 def lockout_remaining(client_ip: str, scope: str) -> float:
     """Seconds this attempt is locked out for, 0 when clear — the limiter as a
     facility, for gates that are not bearer auth.
@@ -234,7 +251,7 @@ def _gate(client_ip: str, authorization: str) -> str:
     device_id = devices.authenticate(presented)
     if device_id is None:
         _deny_log(client_ip, presented)
-        _record_failure(client_ip, scope)
+        _note_denial(client_ip, scope, presented)
         raise HTTPException(status_code=401,
                             detail="invalid or missing bearer token")
     return device_id
@@ -266,6 +283,6 @@ def authenticate_ws(ws) -> str:
     device_id = devices.authenticate(presented)
     if device_id is None:
         _deny_log(client_ip, presented)
-        _record_failure(client_ip, scope)
+        _note_denial(client_ip, scope, presented)
         return ""
     return device_id

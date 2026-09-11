@@ -454,6 +454,47 @@ def test_spraying_many_device_ids_still_locks_the_address(store, monkeypatch):
     assert e.value.status_code == 429
 
 
+def test_a_revoked_device_presenting_its_own_token_never_locks_out(store):
+    """The live 2026-09-11 failure: a Mac was re-adopted, its old device row
+    stayed revoked, and the app on it went on presenting the token it already
+    held every two seconds. Five rejects armed a fifteen-minute lockout, and
+    every retry after that read 429 — so restoring the row hub-side did not
+    restore service, because the lockout outlived the fix.
+
+    A correct secret for a known row is not a guess. Producing it requires
+    having been minted the token, which is the thing the limiter exists to
+    stop people doing. Cancelling a credential must deny it, not brand its
+    holder a brute-force attacker.
+    """
+    ip = "10.66.0.9"
+    row, token = devices.mint("work-mac")
+    devices.revoke(row["id"])
+    for i in range(12):                           # well past _FAIL_MAX
+        with pytest.raises(Exception) as e:
+            auth._gate(ip, f"Bearer {token}")
+        assert e.value.status_code == 401, f"locked out at attempt {i}"
+    # And the lockout it must not have armed is not holding anything else
+    # from that address either.
+    _, good = devices.mint("my-iphone")
+    assert auth._gate(ip, f"Bearer {good}")
+
+
+def test_a_wrong_secret_for_a_revoked_row_still_locks_out(store, monkeypatch):
+    """The carve-out is the correct secret, not the device id. A revoked row
+    must not become a free-guessing oracle — naming it buys nothing."""
+    monkeypatch.setattr("jstack_host.hostenv.security_alert", lambda _b: None)
+    ip = "203.0.113.11"
+    row, _token = devices.mint("work-mac")
+    devices.revoke(row["id"])
+    for _ in range(5):
+        with pytest.raises(Exception) as e:
+            auth._gate(ip, f"Bearer jr1.{row['id']}.wrongsecret")
+        assert e.value.status_code == 401
+    with pytest.raises(Exception) as e:
+        auth._gate(ip, f"Bearer jr1.{row['id']}.wrongsecret")
+    assert e.value.status_code == 429
+
+
 def test_a_locked_credential_reports_the_longer_of_the_two_lockouts(store,
                                                                     monkeypatch):
     """Retry-After must never under-promise when both tiers hold a lock."""

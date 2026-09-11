@@ -270,7 +270,11 @@ def test_concurrent_callers_converge_on_one_internal_token(store, tmp_path,
         # Force the mismatch that sends every caller down the re-key path —
         # without this they all hit the fast return and nothing races.
         stale = f"{devices.TOKEN_PREFIX}.{devices.INTERNAL_ID}.notthesecret"
-        (hostenv.state_dir() / "internal-token").write_text(stale)
+        # `_credential_dir()`, not `state_dir()`: the plaintext lives beside the
+        # table that validates it, so that redirecting the store takes the file
+        # with it. A test that plants the mismatch in the state dir plants it
+        # somewhere nothing reads, and then races nobody.
+        (devices._credential_dir() / "internal-token").write_text(stale)
         got: list[str] = []
         barrier = threading.Barrier(8)
 
@@ -284,7 +288,7 @@ def test_concurrent_callers_converge_on_one_internal_token(store, tmp_path,
         for t in threads:
             t.join()
 
-        on_disk = (hostenv.state_dir() / "internal-token").read_text().strip()
+        on_disk = (devices._credential_dir() / "internal-token").read_text().strip()
         row = devices._store().device(devices.INTERNAL_ID)
         _, secret = devices.parse(on_disk)
         assert devices._hash(secret) == row["token_hash"], \

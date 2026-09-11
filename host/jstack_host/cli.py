@@ -20,13 +20,16 @@ instruction anyone should be given.
 out, so every `pip install` up to now produced a console script that raised
 ImportError on its first line — the first thing a new host would ever have run.
 
-**Every read command adopts the installed host's environment first.** A host
+**Every read command adopts this Mac's host environment first.** A host
 installed with `--state-dir` keeps its board, its devices and its token
 somewhere this shell knows nothing about; asking about it from a plain
 terminal would otherwise report on a *different*, empty host — "not
 provisioned" for a machine with a token, and a pairing code minted into a
-store nothing is serving. `adopt_installed_environment` reads that back off the
-LaunchAgent, beneath anything the shell set explicitly.
+store nothing is serving. `adopt_host_environment` reads that back, beneath
+anything the shell set explicitly, off the LaunchAgent where there is one and
+off the marker an embedding server leaves (`embed`) where there is not. Both
+are the same fact recorded two ways, and a command asking "what is on this
+Mac" must not have to know which kind of host it is standing on.
 """
 
 from __future__ import annotations
@@ -38,8 +41,13 @@ from . import hostenv, install_host, server
 
 
 def _adopt(args) -> None:
-    """Point this process at the host that is actually installed."""
-    install_host.adopt_installed_environment(install_host.plist_path(args.label))
+    """Point this process at the host this Mac actually has.
+
+    Installed or embedded — `adopt_host_environment` tries the LaunchAgent and
+    falls through to the marker an embedding server leaves, so no command here
+    has to know which kind it is asking about.
+    """
+    install_host.adopt_host_environment(getattr(args, "label", None))
     if getattr(args, "state_dir", None):
         import os
         os.environ["JREMOTE_STATE_DIR"] = args.state_dir
@@ -628,8 +636,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jstack-host",
         description="The jStack host: the API a phone, an iPad or another Mac "
                     "reaches this machine through.")
-    ap.add_argument("--label", default=install_host.LABEL,
-                    help=argparse.SUPPRESS)
+    # No default: read commands resolve it through `install_host.agent_label`
+    # (`--label`, then `JREMOTE_AGENT_LABEL`, then the constant), while
+    # `install` and `uninstall` take the constant and never the variable —
+    # it names another application's job on a machine with an embedded host,
+    # and writing there would clobber it.
+    ap.add_argument("--label", default=None, help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def _serving_args(p, *, bind_default, bind_help):
@@ -647,19 +659,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true",
                    help="install even if something else already answers on the port")
     p.set_defaults(fn=lambda a: install_host.install(
-        port=a.port, bind=a.bind, label=a.label, force=a.force,
-        state_dir=_path(a.state_dir)))
+        port=a.port, bind=a.bind, label=a.label or install_host.LABEL,
+        force=a.force, state_dir=_path(a.state_dir)))
 
     p = sub.add_parser("uninstall", help="remove the LaunchAgent (state and token stay)")
-    p.set_defaults(fn=lambda a: install_host.uninstall(label=a.label))
+    p.set_defaults(fn=lambda a: install_host.uninstall(
+        label=a.label or install_host.LABEL))
 
     p = sub.add_parser("status", help="is the host installed, loaded and answering")
     # No default: the agent's own port is the answer, and a default here is
     # what made `status` report on 9090 for a host installed on 9099.
     p.add_argument("--port", type=int, default=None)
     p.add_argument("--state-dir", default=None)
-    p.set_defaults(fn=lambda a: (_adopt(a),
-                                 install_host.status(port=a.port, label=a.label))[1])
+    p.set_defaults(fn=lambda a: (_adopt(a), install_host.status(
+        port=a.port, label=install_host.agent_label(a.label)))[1])
 
     p = sub.add_parser("doctor", help="grade every dependency this host needs")
     p.add_argument("--state-dir", default=None)

@@ -68,6 +68,30 @@ def plist_path(label: str = LABEL) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
+def agent_label(explicit: str | None = None) -> str:
+    """Which LaunchAgent a *read* command should look at: `--label` if one was
+    given, else `JREMOTE_AGENT_LABEL`, else the constant.
+
+    The label was the one host variable no environment could move. `LABEL` is
+    a literal, `--label` defaulted to it, and nothing on the Python side read
+    the variable the menu bar has documented as the escape hatch since it was
+    written — so on a Mac whose host is embedded in another application, every
+    `jstack-host` adopted a plist that does not exist and then answered about
+    whatever the ambient environment happened to hold.
+
+    **Read commands only, and that is a rule and not an oversight.** `install`
+    and `uninstall` keep the constant unless `--label` overrides it, because
+    this variable names *somebody else's* job: on the machine this was found on
+    it is `com.jarvis.dashboard`. An install that honoured it would render its
+    plist over the dashboard's own LaunchAgent, and an uninstall would bootout
+    and delete it. The variable answers "where is the host on this Mac"; it was
+    never a licence to write there.
+    """
+    if explicit:
+        return explicit
+    return os.environ.get("JREMOTE_AGENT_LABEL", "").strip() or LABEL
+
+
 def log_dir() -> Path:
     """Where the agent's stdout and stderr land.
 
@@ -170,11 +194,21 @@ def installed_port(path: Path | None = None) -> int | None:
     return value if 1 <= value <= 65535 else None
 
 
-def adopt_installed_environment(path: Path | None = None) -> None:
+def adopt_installed_environment(path: Path | None = None) -> bool:
     """Apply `installed_environment()` beneath whatever the shell already
-    set — an explicit export or `--state-dir` still wins — and re-resolve."""
+    set — an explicit export or `--state-dir` still wins — and re-resolve.
+
+    Returns whether that plist is a *host's own* agent, which is the question
+    `adopt_host_environment` needs answered and not the same as whether the
+    file is there. `render_plist` always pins `JREMOTE_STATE_DIR`, even when
+    nobody passed `--state-dir`, so that key is the marker of a job this
+    installer wrote. A plist without it is some other application's — the one
+    an embedded host runs inside, reached through `JREMOTE_AGENT_LABEL` — and
+    it has nothing to say about where the host keeps its things.
+    """
+    env = installed_environment(path)
     adopted = False
-    for k, v in installed_environment(path).items():
+    for k, v in env.items():
         if k not in os.environ:
             os.environ[k] = v
             adopted = True
@@ -189,6 +223,27 @@ def adopt_installed_environment(path: Path | None = None) -> None:
         mod = sys.modules.get(f"{__package__}.tunnel")
         if mod is not None:
             mod.rebind()
+    return bool(env.get("JREMOTE_STATE_DIR"))
+
+
+def adopt_host_environment(label: str | None = None) -> None:
+    """Point this process at whatever this Mac's host actually is.
+
+    Two records, one question. An installed host is described by its
+    LaunchAgent; a host embedded in another server has none, by design, and is
+    described by the marker that server leaves (`embed`). This tries the plist
+    and falls through, so a command never has to know which kind of host it is
+    about — which is the whole point, since the commands that got this wrong
+    were the ones asking *what is on this Mac*.
+
+    The plist wins where there is one: an installed agent is a host somebody
+    put there on purpose, and a stale marker beside it must not redirect a
+    command onto a different host's state.
+    """
+    if adopt_installed_environment(plist_path(agent_label(label))):
+        return
+    from . import embed
+    embed.adopt()
 
 
 def render_plist(*, label: str = LABEL, port: int = DEFAULT_PORT,
@@ -419,6 +474,26 @@ def install(*, port: int = DEFAULT_PORT, bind: str = DEFAULT_BIND,
         served = health(port)
         upgrading = (served or {}).get("service") == "jremote-host" and is_loaded(label)
         if not (upgrading or force):
+            # An embedded host is the case worth naming outright. `/api/health`
+            # there belongs to the surrounding application, so this refusal
+            # used to say "something is already answering" about a live jRemote
+            # host — and that is the sentence somebody reads right before they
+            # install a second host beside the real one, with its own empty
+            # state dir and an empty device roster (#34).
+            from . import embed
+            # Only where `/api/health` was somebody else's. A payload that
+            # names `jremote-host` is a standalone host under another label —
+            # the line below already says so correctly, and calling that
+            # embedded would be a second wrong answer about a second host.
+            if (served or {}).get("service") != "jremote-host" and api_answers(port):
+                where = embed.server() or "another server"
+                print(f"refusing: this Mac's host is already serving on {port}, "
+                      f"embedded in {where}.", file=sys.stderr)
+                print("  A second one would be a second state dir and a second "
+                      "device roster on one machine.\n  Run `jstack-host "
+                      "status` to see it — or --force if you really mean two.",
+                      file=sys.stderr)
+                return 1
             who = (served or {}).get("service") or "something"
             print(f"refusing: {who} is already answering on {port}.", file=sys.stderr)
             print("  A Mac already serving the host API there does not need a "
@@ -542,15 +617,21 @@ def status(*, port: int | None = None, label: str = LABEL, out=None) -> int:
     are fixed here — the port is read off the agent, and something answering is
     only *the host* if it says so.
     """
+    from . import embed
     out = out or sys.stdout
     path = plist_path(label)
-    probed = port if port is not None else (installed_port(path) or DEFAULT_PORT)
-    served = health(probed)
     # A host embedded in another server has no LaunchAgent by design, and
     # `doctor` has always known that while this did not. Printing
     # `not installed` about it is the lie that cost a session: it reads as "the
     # host is gone" on a machine where the host is up and serving.
-    embedded = getattr(hostenv.profile(), "embedded_in", "")
+    embedded = embed.server()
+    # The declared port before the default, for the same reason `installed_port`
+    # comes before it: a default is a guess, and grading the wrong program on a
+    # guessed port is how an embedded host got reported as a stranger once and
+    # as absent the next time.
+    probed = port if port is not None else (installed_port(path)
+                                            or embed.port() or DEFAULT_PORT)
+    served = health(probed)
     if embedded:
         print(f"agent      embedded in {embedded} — no LaunchAgent of its own",
               file=out)
@@ -583,9 +664,21 @@ def status(*, port: int | None = None, label: str = LABEL, out=None) -> int:
     else:
         print(f"serving    nothing answered on {probed}", file=out)
     print(f"state      {hostenv.state_dir()}", file=out)
-    print(f"token      {hostenv.token_path()} "
-          f"({'present' if hostenv.token_path().exists() else 'missing'})",
-          file=out)
+    token = hostenv.token_path()
+    if token.exists():
+        print(f"token      {token} (present)", file=out)
+    else:
+        # An absent file is not an unprovisioned host. The authority has been
+        # the `devices` table since per-device tokens; the shared file is a
+        # spent migration source, and an embedded host commonly never had one
+        # at all while authenticating a roster of devices perfectly well.
+        # `missing` under that reads as "nothing can talk to this host" and is
+        # the same lie as `not installed` above it — so ask what every other
+        # gate in the package asks.
+        from . import devices
+        how = ("no file — devices authenticate from this host's store"
+               if devices.provisioned() else "missing, and no device rows either")
+        print(f"token      {token} ({how})", file=out)
     return 0
 
 
@@ -595,11 +688,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Install this machine as a jRemote host (user LaunchAgent, "
                     "no admin).")
     ap.add_argument("action", choices=["install", "uninstall", "status", "doctor"])
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    # No default. `install` wants DEFAULT_PORT and `status` wants the port the
+    # host is actually on — a default here handed status a guess and made it
+    # grade whatever held 9090, which on the machine this was found on was the
+    # dashboard. One flag, two questions; only the answering side may default.
+    ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--bind", default=DEFAULT_BIND,
                     help="bind address (default 0.0.0.0 — the mesh arrives on "
                          "a tunnel interface, not loopback)")
-    ap.add_argument("--label", default=LABEL)
+    ap.add_argument("--label", default=None)
     ap.add_argument("--state-dir", default=None,
                     help="override where this host keeps its state")
     ap.add_argument("--force", action="store_true",
@@ -607,19 +704,22 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     state = Path(args.state_dir).expanduser() if args.state_dir else None
+    # The two writing actions take the constant unless `--label` says
+    # otherwise — never `JREMOTE_AGENT_LABEL`. See `agent_label`.
     if args.action == "install":
-        return install(port=args.port, bind=args.bind, label=args.label,
-                       state_dir=state, force=args.force)
+        return install(port=args.port or DEFAULT_PORT, bind=args.bind,
+                       label=args.label or LABEL, state_dir=state,
+                       force=args.force)
     if args.action == "uninstall":
-        return uninstall(label=args.label)
-    adopt_installed_environment(plist_path(args.label))
+        return uninstall(label=args.label or LABEL)
+    adopt_host_environment(args.label)
     if state is not None:
         os.environ["JREMOTE_STATE_DIR"] = str(state)
         hostenv.reset_profile()
     if args.action == "doctor":
         from . import doctor
         return doctor.report()
-    return status(port=args.port, label=args.label)
+    return status(port=args.port, label=agent_label(args.label))
 
 
 if __name__ == "__main__":

@@ -231,6 +231,39 @@ def test_wg_iface_empty_when_tunnel_not_up(tmp_path):
     assert open_mode.wg_iface(str(tmp_path / "absent.name")) == ""
 
 
+def test_wg_iface_defaults_to_the_hub_name_file(tmp_path, monkeypatch):
+    # The regression: install_hub.sh writes the hub interface name to
+    # jremote-hub.name, so the default MUST read that — not the leaf's
+    # jremote-wg.name, which on a real hub is absent and reads as "down".
+    monkeypatch.delenv("WG_NAME_FILE", raising=False)
+    hub = tmp_path / "jremote-hub.name"
+    hub.write_text("utun4\n")
+    leaf = tmp_path / "jremote-wg.name"
+    leaf.write_text("utun9\n")
+    monkeypatch.setattr(open_mode, "HUB_NAME_FILE", str(hub))
+    monkeypatch.setattr(open_mode, "LEAF_NAME_FILE", str(leaf))
+    assert open_mode.wg_iface() == "utun4"
+
+
+def test_wg_iface_falls_back_to_the_leaf_name(tmp_path, monkeypatch):
+    # No hub file (unusual, hand-rolled hub on the shared default) → the leaf
+    # name is read rather than the tunnel reported down.
+    monkeypatch.delenv("WG_NAME_FILE", raising=False)
+    leaf = tmp_path / "jremote-wg.name"
+    leaf.write_text("utun7\n")
+    monkeypatch.setattr(open_mode, "HUB_NAME_FILE", str(tmp_path / "absent.name"))
+    monkeypatch.setattr(open_mode, "LEAF_NAME_FILE", str(leaf))
+    assert open_mode.wg_iface() == "utun7"
+
+
+def test_wg_iface_env_overrides_the_default(tmp_path, monkeypatch):
+    named = tmp_path / "custom.name"
+    named.write_text("utun3\n")
+    monkeypatch.setenv("WG_NAME_FILE", str(named))
+    monkeypatch.setattr(open_mode, "HUB_NAME_FILE", str(tmp_path / "hub.name"))
+    assert open_mode.wg_iface() == "utun3"
+
+
 # ── the honest evidence: off_network_handshake ──
 
 def _wg_outputs(peers):
@@ -294,26 +327,94 @@ def test_handshake_none_without_iface_or_binary():
     assert open_mode.off_network_handshake("utun4", "", 0, _runner({})) is None
 
 
-# ── verify(): the four states ──
+# ── _running_iface / _handshake_denied: the unprivileged probes ──
+
+def _wg_proc(field_outputs=None, *, returncode=0, stderr=""):
+    """A subprocess.run stand-in that answers a single `wg …` call with a fixed
+    returncode/stderr and stdout keyed on the last arg (the field)."""
+    field_outputs = field_outputs or {}
+    def run(argv, **_kw):
+        stdout = field_outputs.get(argv[-1], "")
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout,
+                                     stderr=stderr)
+    return run
+
+
+def test_running_iface_reads_wg_show_interfaces():
+    r = _wg_proc({"interfaces": "utun4\n"})
+    assert open_mode._running_iface("wg", r) == "utun4"
+
+
+def test_running_iface_empty_when_none_up():
+    assert open_mode._running_iface("wg", _wg_proc({"interfaces": "\n"})) == ""
+
+
+def test_running_iface_empty_on_nonzero_exit():
+    r = _wg_proc({"interfaces": "utun4"}, returncode=1)
+    assert open_mode._running_iface("wg", r) == ""
+
+
+def test_handshake_denied_true_on_permission_error():
+    r = _wg_proc(returncode=1,
+                 stderr="Unable to access interface: Permission denied")
+    assert open_mode._handshake_denied("utun4", "wg", r) is True
+
+
+def test_handshake_denied_false_when_readable():
+    r = _wg_proc({"latest-handshakes": "kPUB\t123\n"})
+    assert open_mode._handshake_denied("utun4", "wg", r) is False
+
+
+# ── verify(): the five states ──
 
 def test_verify_unverified_when_tunnel_down(monkeypatch):
+    # No name file AND no interface up → genuinely down.
+    monkeypatch.setattr(open_mode, "wg_bin", lambda: "wg")
     monkeypatch.setattr(open_mode, "wg_iface", lambda: "")
+    monkeypatch.setattr(open_mode, "_running_iface", lambda *a, **k: "")
     v = open_mode.verify(now=0)
     assert v["verified"] is False
     assert "not up" in v["note"]
 
 
 def test_verify_unverified_when_wg_missing(monkeypatch):
-    monkeypatch.setattr(open_mode, "wg_iface", lambda: "utun4")
     monkeypatch.setattr(open_mode, "wg_bin", lambda: "")
     v = open_mode.verify(now=0)
     assert v["verified"] is False
     assert "not installed" in v["note"]
 
 
-def test_verify_unverified_when_no_handshake_yet(monkeypatch):
-    monkeypatch.setattr(open_mode, "wg_iface", lambda: "utun4")
+def test_verify_finds_the_running_iface_when_the_name_file_is_unreadable(monkeypatch):
+    # The bug's second half: the root-only name file reads as "" unprivileged,
+    # but the interface is up — so the check must NOT say "not up".
     monkeypatch.setattr(open_mode, "wg_bin", lambda: "wg")
+    monkeypatch.setattr(open_mode, "wg_iface", lambda: "")
+    monkeypatch.setattr(open_mode, "_running_iface", lambda *a, **k: "utun4")
+    monkeypatch.setattr(open_mode, "_handshake_denied", lambda *a, **k: False)
+    monkeypatch.setattr(open_mode, "off_network_handshake", lambda *a, **k: None)
+    v = open_mode.verify(now=0)
+    assert v["verified"] is False
+    assert "not up" not in v["note"]
+    assert "cellular" in v["note"]
+
+
+def test_verify_reports_when_the_handshake_table_needs_root(monkeypatch):
+    # Tunnel up, but the unprivileged reader cannot see the handshakes: the
+    # note must point at sudo, never claim the tunnel is down.
+    monkeypatch.setattr(open_mode, "wg_bin", lambda: "wg")
+    monkeypatch.setattr(open_mode, "wg_iface", lambda: "utun4")
+    monkeypatch.setattr(open_mode, "_handshake_denied", lambda *a, **k: True)
+    v = open_mode.verify(now=0)
+    assert v["verified"] is False
+    assert "root" in v["note"]
+    assert "sudo jstack-host open" in v["note"]
+    assert "not up" not in v["note"]
+
+
+def test_verify_unverified_when_no_handshake_yet(monkeypatch):
+    monkeypatch.setattr(open_mode, "wg_bin", lambda: "wg")
+    monkeypatch.setattr(open_mode, "wg_iface", lambda: "utun4")
+    monkeypatch.setattr(open_mode, "_handshake_denied", lambda *a, **k: False)
     monkeypatch.setattr(open_mode, "off_network_handshake",
                         lambda *a, **k: None)
     v = open_mode.verify(now=0)
@@ -322,8 +423,9 @@ def test_verify_unverified_when_no_handshake_yet(monkeypatch):
 
 
 def test_verify_verified_on_a_public_handshake(monkeypatch):
-    monkeypatch.setattr(open_mode, "wg_iface", lambda: "utun4")
     monkeypatch.setattr(open_mode, "wg_bin", lambda: "wg")
+    monkeypatch.setattr(open_mode, "wg_iface", lambda: "utun4")
+    monkeypatch.setattr(open_mode, "_handshake_denied", lambda *a, **k: False)
     monkeypatch.setattr(open_mode, "off_network_handshake",
                         lambda *a, **k: {"source": "8.8.8.8",
                                          "when": 999, "age": 42})

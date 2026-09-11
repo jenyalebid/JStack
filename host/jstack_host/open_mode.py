@@ -230,15 +230,41 @@ def wg_bin() -> str:
     return ""
 
 
+#: Where the tunnel writes the utun name it landed on. `install_hub.sh` names
+#: the HUB interface file `jremote-hub.name`, deliberately distinct from a
+#: leaf's `jremote-wg.name` so a machine that ran both installers never has the
+#: two collide on one file. Open mode is a hub-only concept — `verify()` runs
+#: only for a hub with an endpoint — so the hub file is the one it reads. The
+#: leaf name is kept as a fallback so a hand-rolled hub left on the shared
+#: default is still observed rather than silently reported down; `WG_NAME_FILE`
+#: overrides both, for tests and custom installs.
+HUB_NAME_FILE = "/var/run/wireguard/jremote-hub.name"
+LEAF_NAME_FILE = "/var/run/wireguard/jremote-wg.name"
+
+
 def wg_iface(name_file: str | None = None) -> str:
-    """The utun name the tunnel is on, read from the runtime name file
-    `wg_up.sh` writes. "" when the tunnel is not up — nothing to observe."""
-    path = Path(name_file or os.environ.get("WG_NAME_FILE",
-                "/var/run/wireguard/jremote-wg.name"))
-    try:
-        return path.read_text().strip()
-    except OSError:
-        return ""
+    """The utun name the hub tunnel is on, read from the runtime name file the
+    hub daemon writes. "" when the tunnel is not up — nothing to observe.
+
+    An explicit `name_file` wins; then `WG_NAME_FILE`; then the hub file, then
+    the leaf file. Reading `jremote-wg.name` unconditionally was the bug this
+    default fixes: `install_hub.sh` writes `jremote-hub.name`, so on a real hub
+    the check read an absent file and reported the tunnel down while it was up.
+    """
+    if name_file:
+        candidates = [name_file]
+    elif os.environ.get("WG_NAME_FILE"):
+        candidates = [os.environ["WG_NAME_FILE"]]
+    else:
+        candidates = [HUB_NAME_FILE, LEAF_NAME_FILE]
+    for cand in candidates:
+        try:
+            name = Path(cand).read_text().strip()
+        except OSError:
+            continue
+        if name:
+            return name
+    return ""
 
 
 def _is_public(addr: str) -> bool:
@@ -261,6 +287,48 @@ def _wg_show(iface: str, field: str, wg: str, runner=subprocess.run) -> str:
                       text=True, timeout=10).stdout
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _run_wg(args: list[str], wg: str, runner=subprocess.run):
+    """Run `wg <args>` and return (returncode, stdout, stderr), tolerant of a
+    stand-in runner that only sets stdout. Any failure to spawn reads as a
+    non-zero exit with no output — the same as `wg` refusing."""
+    try:
+        p = runner([wg, *args], capture_output=True, text=True, timeout=10)
+        return (getattr(p, "returncode", 0),
+                getattr(p, "stdout", "") or "",
+                getattr(p, "stderr", "") or "")
+    except Exception:  # noqa: BLE001
+        return 1, "", ""
+
+
+def _running_iface(wg: str, runner=subprocess.run) -> str:
+    """The wg interface this machine has up, asked of `wg` itself.
+
+    `wg show interfaces` needs no privilege — unlike a per-interface handshake
+    table — so it answers "is the tunnel up" even when the root-only name file
+    the hub daemon writes cannot be read by the unprivileged CLI. That is the
+    difference between reporting "tunnel down" (false) and "cannot read without
+    root" (true) when open mode is checked without privilege."""
+    if not wg:
+        return ""
+    rc, out, _ = _run_wg(["show", "interfaces"], wg, runner)
+    if rc != 0:
+        return ""
+    toks = out.split()
+    return toks[0] if toks else ""
+
+
+def _handshake_denied(iface: str, wg: str, runner=subprocess.run) -> bool:
+    """Whether reading this interface's handshakes was refused for lack of
+    privilege — the wg control socket is root-only, so an unprivileged reader
+    gets "Unable to access interface: Permission denied", not empty output.
+    Distinguishing this from an empty table is what keeps the check honest."""
+    if not iface or not wg:
+        return False
+    rc, _, err = _run_wg(["show", iface, "latest-handshakes"], wg, runner)
+    low = err.lower()
+    return rc != 0 and ("permission denied" in low or "unable to access" in low)
 
 
 def off_network_handshake(iface: str, wg: str, now: int,
@@ -307,15 +375,24 @@ def verify(now: int | None = None, runner=subprocess.run) -> dict:
     handshake table — is read off this machine; nothing is asserted.
     """
     now = int(time.time()) if now is None else now
-    iface, wg = wg_iface(), wg_bin()
-    if not iface:
-        return {"verified": False, "source": "", "age": None,
-                "note": "the WireGuard tunnel is not up, so no off-network "
-                        "connection can be observed"}
+    wg = wg_bin()
     if not wg:
         return {"verified": False, "source": "", "age": None,
                 "note": "the `wg` tool is not installed, so a handshake cannot "
                         "be read"}
+    # The name file is root-only on a real hub; fall back to asking `wg` which
+    # interfaces are up, which needs no privilege, so an unprivileged check can
+    # still tell "tunnel down" from "up but unreadable".
+    iface = wg_iface() or _running_iface(wg, runner)
+    if not iface:
+        return {"verified": False, "source": "", "age": None,
+                "note": "the WireGuard tunnel is not up, so no off-network "
+                        "connection can be observed"}
+    if _handshake_denied(iface, wg, runner):
+        return {"verified": False, "source": "", "age": None,
+                "note": "the tunnel is up, but reading its handshake table needs "
+                        "root — re-run `sudo jstack-host open --verify` to prove "
+                        "the forward works"}
     hs = off_network_handshake(iface, wg, now, runner)
     if not hs:
         return {"verified": False, "source": "", "age": None,

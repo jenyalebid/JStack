@@ -1,0 +1,196 @@
+"""The carried join bundle — `jstack-host adopt --offline`.
+
+The thing under test is an ORDER, not a file. A Mac off the hub's LAN has no
+route to the hub until the tunnel is up, and the enrolment code is redeemed
+over that same tunnel — so a join script that attaches before it installs is a
+join script that cannot ever work, however correct each half looks alone. The
+ordering test below is the one that matters; the rest guard the parts it
+depends on.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from jstack_host import adopt_offline
+
+
+@pytest.fixture
+def bundle(tmp_path, monkeypatch):
+    """A leaf bundle folder as `tunnel.issue(leaf=True)` leaves it."""
+    from jstack_host import tunnel
+
+    clients = tmp_path / "clients"
+    folder = clients / "work-mac-leaf"
+    folder.mkdir(parents=True)
+    for name in tunnel.LEAF_FILES:
+        (folder / name).write_text(f"# {name}\n")
+    monkeypatch.setattr(tunnel, "CLIENTS_DIR", clients)
+    return folder
+
+
+def _run_join(bundle, tmp_path):
+    """Run join.sh for real against fakes, and return what it invoked, in order.
+
+    Asserted by RUNNING it rather than by reading it. The first version of this
+    test compared the text positions of `install_leaf.sh` and `jstack-host
+    attach`, which is not the execution order at all — `install_leaf.sh` is
+    also named in a prerequisite check near the top of the file, so the test
+    went green against a script with the two steps deliberately swapped. A
+    probe that cannot observe the thing it is named for is worse than none.
+    """
+    import os
+    import subprocess
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "calls.log"
+
+    for name, body in (
+        # `sudo <path>/install_leaf.sh` — the tunnel step, logged by what it ran.
+        ("sudo", 'echo "install:$(basename "$1")" >> "$CALLS"'),
+        ("jstack-host", 'echo "jstack-host:$1" >> "$CALLS"'),
+        ("ping", 'echo "ping" >> "$CALLS"'),
+        # Present only so the prereq gate passes; never invoked.
+        ("wireguard-go", "true"),
+        ("wg", "true"),
+    ):
+        p = fake_bin / name
+        p.write_text(f'#!/bin/bash\n{body}\nexit 0\n')
+        p.chmod(0o755)
+
+    env = dict(os.environ, PATH=f"{fake_bin}:/usr/bin:/bin", CALLS=str(calls))
+    subprocess.run(["/bin/bash", str(bundle / "join.sh")],
+                   env=env, capture_output=True, text=True, timeout=60)
+    return calls.read_text().splitlines() if calls.exists() else []
+
+
+def test_the_join_script_installs_the_tunnel_before_it_redeems(bundle, tmp_path):
+    """The whole point, asserted as an order — by running it.
+
+    Reversed, every other assertion in this file still passes and the bundle is
+    still useless: `attach` would be asked to reach a mesh address from a
+    machine that is not yet on the mesh, which is the exact deadlock this
+    feature exists to break.
+    """
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    calls = _run_join(bundle, tmp_path)
+
+    assert "install:install_leaf.sh" in calls, f"the tunnel never installed: {calls}"
+    attach = next(i for i, c in enumerate(calls) if c.startswith("jstack-host:attach"))
+    install = calls.index("install:install_leaf.sh")
+    assert install < attach, f"redeemed before the tunnel was up: {calls}"
+
+
+def test_the_join_script_carries_the_code_and_the_mesh_parent(bundle):
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    script = (bundle / "join.sh").read_text()
+
+    assert 'CODE="PQ4V-LUGA"' in script
+    assert 'PARENT="http://10.66.0.1:9090"' in script
+
+
+def test_the_join_script_is_executable(bundle):
+    """It is handed to a person as `./join.sh`, so it has to run as one."""
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    assert (bundle / "join.sh").stat().st_mode & 0o111
+
+
+def test_an_expired_code_is_reported_as_survivable(bundle):
+    """The tunnel outlives the code, and the script has to say so.
+
+    A bundle carried to another building may well be opened after the code has
+    aged out. Reported as a flat failure, that reads as a wasted trip and the
+    person carries a second folder over. It is not: step one is permanent, and
+    a fresh code can be redeemed from the far Mac itself.
+    """
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    script = (bundle / "join.sh").read_text()
+
+    assert "The tunnel is UP" in script
+    assert "jstack-host adopt work-mac" in script
+
+
+def test_the_hub_owned_readme_is_left_alone(bundle):
+    """`tunnel._read_bundle` reads README.md back as this peer's issued state.
+
+    Writing the join instructions over it would change what every future
+    redeem of this peer hands back — so they go beside it.
+    """
+    before = (bundle / "README.md").read_text()
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+
+    assert (bundle / "README.md").read_text() == before
+    assert "join.sh" in (bundle / "JOIN.md").read_text()
+
+
+def test_emit_refuses_when_the_tunnel_half_was_never_written(tmp_path, monkeypatch):
+    """A join script pointing at an installer that is not there is worse than none."""
+    from jstack_host import tunnel
+
+    monkeypatch.setattr(tunnel, "CLIENTS_DIR", tmp_path / "clients")
+    with pytest.raises(tunnel.TunnelError) as exc:
+        adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    assert "tunnel half" in str(exc.value)
+
+
+def test_relift_rebuilds_a_bundle_without_touching_the_keypair(tmp_path, monkeypatch):
+    """The already-paired case — the one the feature exists for.
+
+    `wg_peer add` refuses a name already in the peer table, so the only code
+    path that writes leaf artefacts is closed to exactly the machines that need
+    them: a Mac paired as a device, or one whose bundle folder was deleted.
+    Re-minting would hand the hub a public key that machine cannot produce, so
+    the keypair has to survive the rebuild.
+    """
+    from jstack_host import tunnel
+
+    clients = tmp_path / "clients"
+    clients.mkdir(parents=True)
+    (clients / "work-mac.conf").write_text(
+        "[Interface]\n"
+        "PrivateKey = cMhvzZeAeoCL/Mnbk7eojex8RYmyB6hxFBUxAZWGyVs=\n"
+        "Address = 10.66.0.7/32\n"
+        "\n"
+        "[Peer]\n"
+        "PublicKey = 20azGn2YM1qDB6s6J1JstrbzyXUGi8LGi0WvlzgDnU4=\n"
+        "AllowedIPs = 10.66.0.0/24\n"
+        "Endpoint = wg.example.com:51820\n"
+        "PersistentKeepalive = 25\n")
+    monkeypatch.setattr(tunnel, "CLIENTS_DIR", clients)
+
+    folder = adopt_offline.relift("work-mac")
+    leaf = (folder / "jrleaf.conf").read_text()
+
+    assert "cMhvzZeAeoCL/Mnbk7eojex8RYmyB6hxFBUxAZWGyVs=" in leaf
+    # `wg setconf` rejects wg-quick syntax: the address has to move out of the
+    # conf and into leaf.env, which is the only difference between the shapes.
+    assert "Address" not in leaf
+    assert "WG_ADDR=10.66.0.7/32" in (folder / "leaf.env").read_text()
+    assert "WG_HUB=10.66.0.1" in (folder / "leaf.env").read_text()
+
+
+def test_relift_refuses_when_the_private_key_is_gone(tmp_path, monkeypatch):
+    """A peer whose conf was deleted cannot be rebuilt, and saying so is the fix.
+
+    The private key lived in two places only — that file and the far machine.
+    Inventing a new one here would produce a bundle that installs cleanly and
+    never handshakes, which is the failure that is hardest to read from the
+    other end.
+    """
+    from jstack_host import tunnel
+
+    clients = tmp_path / "clients"
+    clients.mkdir(parents=True)
+    monkeypatch.setattr(tunnel, "CLIENTS_DIR", clients)
+
+    with pytest.raises(tunnel.TunnelError) as exc:
+        adopt_offline.relift("work-mac")
+    assert "cannot be rebuilt" in str(exc.value)
+
+
+def test_an_offline_code_gets_the_longest_life_the_mint_allows():
+    """A carried code is walked to another building, not typed within the minute."""
+    from jstack_host import enrolment
+
+    assert enrolment.MAX_TTL > enrolment.DEFAULT_TTL

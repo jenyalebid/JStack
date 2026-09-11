@@ -313,3 +313,50 @@ def test_the_cli_passes_this_machines_id_and_reads_the_mode_back(monkeypatch):
     assert seen["parent"] == "http://studio.local:9090"
     assert seen["host_key"] == hostenv.host_id()   # the machine's own id
     assert seen["port"] == 9090
+
+
+# --- a parent only the tunnel can reach ------------------------------------
+
+def test_attach_refuses_a_mesh_parent_when_this_machine_is_not_a_peer(monkeypatch):
+    """The reported bug: `--parent http://10.66.0.1:9090` from a Mac that is not
+    on the mesh. Attaching is what joins the mesh, so that address cannot answer
+    until after the attach it is gating has already worked. Unchecked it spent
+    30s in httpx and returned `could not reach the parent ... timed out`, which
+    reads as a hub that is down — and sends someone to restart a healthy hub."""
+    monkeypatch.setattr(attach_parent.addresses, "_inet_addrs",
+                        lambda: ["192.168.0.44", "127.0.0.1"])
+
+    def _never_called(*a, **k):  # the point is that no request is made
+        raise AssertionError("attach posted to an address it could not reach")
+
+    with pytest.raises(attach_parent.AttachError) as e:
+        attach_parent.attach("ABCD-1234", "http://10.66.0.1:9090",
+                             host_key="work-mac-key", poster=_never_called)
+    msg = str(e.value)
+    assert "not on the mesh yet" in msg
+    assert "studio.local" in msg, "the refusal must name what to use instead"
+
+
+def test_attach_allows_a_mesh_parent_once_this_machine_is_a_peer(monkeypatch):
+    """Re-attaching an existing leaf, or moving it to another parent, is a
+    legitimate in-tunnel conversation. The guard must not break it."""
+    monkeypatch.setattr(attach_parent.addresses, "_inet_addrs",
+                        lambda: ["10.66.0.7", "192.168.0.44"])
+    reached = {}
+
+    def _poster(url, payload):
+        reached["url"] = url
+        raise attach_parent.AttachError("stop here — the guard let it through")
+
+    with pytest.raises(attach_parent.AttachError):
+        attach_parent.attach("ABCD-1234", "http://10.66.0.1:9090",
+                             host_key="work-mac-key", poster=_poster)
+    assert reached.get("url", "").startswith("http://10.66.0.1:9090"), (
+        "a machine already on the mesh was refused its own parent")
+
+
+def test_a_named_parent_is_left_to_dns(monkeypatch):
+    """`studio.local` is not an address this can classify, and refusing names
+    would break the recommended form the refusal itself prints."""
+    monkeypatch.setattr(attach_parent.addresses, "_inet_addrs", lambda: ["192.168.0.44"])
+    attach_parent._refuse_a_parent_only_the_tunnel_can_reach("http://studio.local:9090")

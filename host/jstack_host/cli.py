@@ -104,10 +104,33 @@ def _cmd_pair(args) -> int:
     # beside a blank is half a pairing, and the half that was missing is the
     # half people got stuck on.
     print("\nIn the app on that device: Instances › Add a Mac.")
-    if found:
-        print("\nAddress — use the first one that fits:\n")
-        for a in found:
-            print(f"    {a['url']:<34}  {a['note']}")
+    # The address turns on ONE fact, and it is one the person holding the
+    # device knows and this host cannot: does that device already have the
+    # tunnel?
+    #
+    # "use the first one that fits" printed three addresses and made the reader
+    # guess which, with notes that describe each address rather than tell them
+    # which to pick. A device paired once holds a conf routing 10.66.0.0/24,
+    # and from then on the mesh address is the one that works — from anywhere
+    # in the world. That is the steady state of every device here, and it was
+    # printed LAST, under a note that reads like a footnote. So a device that
+    # could have connected from an office was steered to a LAN address that
+    # only resolves inside this building, and got a timeout.
+    #
+    # Two lines, each under the condition that picks it, mesh first. `.local`
+    # is dropped: it needs the same LAN as the numeric address while resolving
+    # less reliably on it, so it is never the right answer and never the only
+    # one.
+    lan = next((a for a in found if a["kind"] == "lan"), None)
+    mesh = next((a for a in found if a["kind"] == "mesh"), None)
+    if mesh and lan:
+        print(f"\n    {mesh['url']}")
+        print("    if that device already has the tunnel (anywhere in the "
+              "world)")
+        print(f"\n    {lan['url']}")
+        print("    first time on it, while it is on this network")
+    elif mesh or lan:
+        print(f"\nAddress:  {(mesh or lan)['url']}")
     else:
         # Never silence. A host that cannot name an address is a host somebody
         # has to go find one for, and saying so beats printing nothing.
@@ -319,6 +342,66 @@ def _cmd_attach(args) -> int:
     return 0
 
 
+#: What a code is good for when nobody says. Ten minutes suits the case the
+#: printed instructions describe — a person at the other keyboard, typing.
+ADOPT_TTL = 600
+
+
+def _adopt_offline(name: str, row: dict, port: int) -> int:
+    """Adopt a Mac that has no route here yet, by carrying the tunnel to it.
+
+    The printed flow assumes the far Mac can reach this one to redeem. Off the
+    LAN it cannot: this host publishes no public HTTP, the mesh address is
+    unroutable until the tunnel exists, and the tunnel is what redeeming hands
+    back. That is a closed loop, and no wording of the instructions opens it.
+
+    So the bundle goes to the machine instead of the machine coming to the hub.
+    `tunnel.issue(leaf=True)` mints the peer and writes the install folder —
+    the same folder, from the same code path, that has always been the way a
+    machine joins this mesh. `adopt_offline.emit` adds the ordered runner, so
+    what lands on the far Mac is one command rather than a README of steps.
+    """
+    from . import adopt_offline, tunnel
+
+    try:
+        issued = tunnel.issue(name, leaf=True)
+        reused = "" if issued.get("created") else " (its existing peer, reused)"
+    except (tunnel.PairingUnsupported, tunnel.PairingRefused,
+            tunnel.TunnelError) as exc:
+        # "already paired" is not a failure here, it is the common case: a Mac
+        # that was once a device, or whose bundle folder was deleted, still
+        # holds a peer entry. Re-minting would hand the hub a public key that
+        # machine cannot produce, so the bundle is rebuilt off the credentials
+        # the peer already has and the peer table is left alone.
+        if "already paired" not in str(exc):
+            print(f"could not mint the tunnel half for {name}: {exc}",
+                  file=sys.stderr)
+            return 1
+        try:
+            adopt_offline.relift(name)
+        except tunnel.TunnelError as rebuild:
+            print(f"could not rebuild the tunnel half for {name}: {rebuild}",
+                  file=sys.stderr)
+            return 1
+        reused = " (rebuilt from its existing peer — keys unchanged)"
+
+    folder = adopt_offline.emit(name, row["code"], port)
+    mins = row["expires_in"] // 60
+
+    print(f"\nCarry this folder to that Mac{reused}:\n")
+    print(f"    {folder}\n")
+    print(f"Then run `./join.sh` inside it. One command — it brings the tunnel")
+    print("up first and redeems the code second, which is the only order that")
+    print("can work: the code is redeemed over the tunnel it installs.\n")
+    print(f"The code is good for {mins} minute{'' if mins == 1 else 's'}. If "
+          "you get there after it expires,\nthe trip is still not wasted — the "
+          "tunnel is the permanent half, and once it is\nup that Mac can "
+          "redeem a fresh code by itself. join.sh says so if it happens.\n")
+    print("The folder holds that machine's private key. Delete it once the "
+          "join succeeds.")
+    return 0
+
+
 def _cmd_adopt(args) -> int:
     """Mint a host code — the hub's half of assigning a leaf to itself.
 
@@ -367,10 +450,20 @@ def _cmd_adopt(args) -> int:
               "Otherwise run `install_hub.sh` to make this Mac a hub.",
               file=sys.stderr)
         return 1
-    row = enrolment.mint_code(args.name, created_by="", ttl=args.ttl,
+    # An offline code is carried, not typed within the minute — so it gets the
+    # longest life the mint allows unless the caller named one. The default
+    # exists for a person standing at the other Mac; this one is for a person
+    # walking to it.
+    ttl = args.ttl
+    if ttl is None:
+        ttl = enrolment.MAX_TTL if getattr(args, "offline", False) else ADOPT_TTL
+    row = enrolment.mint_code(args.name, created_by="", ttl=ttl,
                               kind=enrolment.KIND_HOST)
     port = getattr(args, "port", None) or addresses.DEFAULT_PORT
     found = addresses.reachable(port)
+
+    if getattr(args, "offline", False):
+        return _adopt_offline(args.name, row, port)
 
     if getattr(args, "json", False):
         import json
@@ -383,20 +476,52 @@ def _cmd_adopt(args) -> int:
     print(f"\n    {row['code']}\n")
     print(f"for the machine you are adopting as {row['name']} — good for "
           f"{mins} minute{'' if mins == 1 else 's'}.")
-    if found:
+    # Two addresses, each under the condition that picks it — and the
+    # condition is the tunnel, never the network.
+    #
+    # This printed the LAN address alone under a flat "it has to be on this
+    # network to redeem". That claim is false, and false in the direction that
+    # costs the most: it is the reader who is NOT on this network who opens
+    # this, and they were handed the one address that cannot answer them plus
+    # a sentence blaming their location.
+    #
+    # Redemption applies no locational rule at all. `tunnel.issue` drops it on
+    # purpose — the code is the authorization that a LAN source address merely
+    # stands in for — so a machine already holding the tunnel redeems from
+    # anywhere on earth, and that is the steady state of every machine after
+    # its first day. Only a machine with nothing on it yet has to be here once,
+    # because the first tunnel is exactly what `attach` hands back.
+    #
+    # `.local` still stays out: it needs the same LAN as the numeric address
+    # while resolving less reliably on it, so it is never right when the
+    # number is available and never available when it is not.
+    lan = next((a for a in found if a["kind"] == "lan"), None)
+    mesh = next((a for a in found if a["kind"] == "mesh"), None)
+    if mesh or lan:
         print("\nOn that Mac, with jStack installed:\n")
-        print(f"    jstack-host attach {row['code']} --parent {found[0]['url']}")
-        if len(found) > 1:
-            print("\nIf that address does not reach this Mac from there, use "
-                  "one of:\n")
-            for a in found[1:]:
-                print(f"    {a['url']:<34}  {a['note']}")
+        print(f"    jstack-host attach {row['code']} "
+              f"--parent {(mesh or lan)['url']}")
+        if mesh:
+            print("\nThat address is this hub on the mesh. It reaches here "
+                  "from anywhere in the world,\nand it is the answer for any "
+                  "Mac that has been on this mesh even once.")
+            if lan:
+                # Named, not printed as a command. A machine that has never
+                # held the tunnel has no route to 10.66 — the tunnel is what
+                # creates that route — so it does need a LAN address once.
+                # But that is a setup-in-person case, and putting its address
+                # beside the real one is what taught the reader to treat the
+                # first line as a guess and work down the list.
+                print("\nOnly a Mac that has NEVER been on this mesh needs a "
+                      "different address, and\nit has to be on this network "
+                      "for it — `jstack-host where` prints that one.")
     else:
-        # Never silence — same rule as `pair`. A host that cannot name its own
-        # address is a host somebody has to go find one for.
-        print("\n  This Mac could not work out its own address — check "
-              "`jstack-host where` and your network, then run:\n")
-        print(f"    jstack-host attach {row['code']} --parent http://<this-mac>:{port}")
+        # Loopback only, and no mesh to fall back to: nothing another machine
+        # can redeem against exists. A real stop, not a prompt to guess.
+        print("\n  This Mac has no address another machine can redeem against "
+              "— only loopback,\n  and it runs no mesh. Put it on a real "
+              "network (check `jstack-host where`),\n  then mint a new code.")
+        return 1
     print("\nThat Mac joins this mesh and hands back a grant, so every device "
           "already paired\nhere gets into it without a second code.")
     return 0
@@ -705,8 +830,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("adopt",
                        help="mint a code that joins another Mac to this hub")
     p.add_argument("name", help="what to call that machine in this hub's grid")
-    p.add_argument("--ttl", type=int, default=600,
-                   help="seconds the code stays good (default 600)")
+    p.add_argument("--offline", action="store_true",
+                   help="write a folder to carry to a Mac that cannot reach "
+                        "this hub yet (off-LAN, never on the mesh)")
+    p.add_argument("--ttl", type=int, default=None,
+                   help="seconds the code stays good (default 600, or the "
+                        "maximum with --offline)")
     p.add_argument("--port", type=int, default=None,
                    help="the port THIS Mac serves on, for the address printed")
     p.add_argument("--json", action="store_true",

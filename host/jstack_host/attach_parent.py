@@ -47,13 +47,14 @@ under `LEAF_DEST`, with nothing brought up and no root required.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import stat
 import subprocess
 from pathlib import Path
 
-from . import hostenv, tunnel
+from . import addresses, hostenv, tunnel
 from .enrolment import HOST_KEY_RE
 
 #: The parent route this redeems against — the unauthenticated leaf/host
@@ -84,6 +85,60 @@ _MODE = {
     "wg_leaf_watch.sh": 0o755,
     "README.md": 0o644,
 }
+
+
+def _refuse_a_parent_only_the_tunnel_can_reach(parent_url: str) -> None:
+    """Refuse a parent address that lives inside the mesh this attach creates.
+
+    Attaching is what puts this machine on the parent's mesh: it redeems a code
+    over the ordinary network, receives a leaf bundle, and only then brings a
+    tunnel up. So a `--parent` inside `MESH_SUBNET` is circular on a machine
+    that is not already a peer — the address becomes reachable as a *result* of
+    the thing that cannot start without it.
+
+    Unchecked, that circularity spent thirty seconds in `httpx` and came back as
+    `could not reach the parent at http://10.66.0.1:9090/...: timed out`, which
+    reads as a hub that is down. It is not down; it was never addressable from
+    here. Someone acting on that message goes and restarts a healthy hub.
+
+    Same defect as the one fixed for phones in jRemote `ceb527a` — a device
+    pinned to an address only the tunnel has. That fix never reached this path.
+
+    Not refused when this machine already holds a mesh address: re-attaching an
+    existing leaf, or moving it to a new parent, legitimately talks in-tunnel.
+    """
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(parent_url).hostname or "").strip()
+    try:
+        parent_ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # a name, not an address — DNS decides, and it may well resolve
+    if parent_ip not in addresses.MESH_SUBNET:
+        return
+    if any(_in_mesh(a) for a in addresses._inet_addrs()):
+        return  # already a peer; in-tunnel is a legitimate way to talk
+    raise AttachError(
+        f"{host} is a mesh address, and this machine is not on the mesh yet — "
+        "attaching is what puts it there, so that address cannot answer until "
+        "after this has already succeeded.\n\n"
+        "If this Mac is on the parent's network, use its LAN name or address "
+        "instead: e.g. http://studio.local:9090 (`jstack-host status` on the "
+        "parent prints what it publishes).\n\n"
+        "If it is NOT — and that is the case this refusal usually means — no "
+        "address works from here, because a hub publishes no public HTTP. On "
+        "the parent, run:\n\n"
+        "    jstack-host adopt <name-for-this-mac> --offline\n\n"
+        "and carry the folder it names to this Mac. Running `./join.sh` in it "
+        "brings the tunnel up first and redeems second, which is the only "
+        "order that can work.")
+
+
+def _in_mesh(addr: str) -> bool:
+    try:
+        return ipaddress.ip_address(addr) in addresses.MESH_SUBNET
+    except ValueError:
+        return False
 
 
 class AttachError(Exception):
@@ -215,6 +270,7 @@ def attach(code: str, parent_url: str, *, host_key: str,
         raise AttachError(
             f"the parent address must be an http(s) URL, not {parent_url!r} — "
             "e.g. http://studio.local:9090")
+    _refuse_a_parent_only_the_tunnel_can_reach(parent_url)
 
     state = hostenv.state_dir()
     payload = {"code": code, "host_key": host_key, "port": int(port)}

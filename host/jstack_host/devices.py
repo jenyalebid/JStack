@@ -486,7 +486,7 @@ def _internal_token_locked() -> str:
     row = store.device(INTERNAL_ID)
     if row is not None and row["revoked_at"] is not None:
         return ""
-    path = hostenv.state_dir() / "internal-token"
+    path = _credential_dir() / "internal-token"
     try:
         token = path.read_text().strip()
     except OSError:
@@ -506,7 +506,7 @@ def _internal_token_locked() -> str:
     elif not store.set_device_hash(INTERNAL_ID, _hash(secret)):
         return ""  # revoked between the check and the re-key
     token = f"{TOKEN_PREFIX}.{INTERNAL_ID}.{secret}"
-    hostenv.ensure_state_dir()
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(token)
     os.chmod(path, 0o600)
     return token

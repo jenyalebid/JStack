@@ -403,6 +403,23 @@ def redeem(raw_code: str, client_ip: str, host_key: str = "",
                     f"the machine's delegation grant could not be stored "
                     f"({type(exc).__name__}) — devices will have to pair with "
                     f"it directly")
+        else:
+            # No grant at all, which is not a choice anyone made: every build
+            # that knows to send one sends one. The machine is running a
+            # `jstack-host` older than delegated minting, and it just completed
+            # an adoption that looks identical to a working one from both ends.
+            #
+            # Said here because this is the only moment anything knows. The
+            # machine prints what it is told and moves on; the hub's menu shows
+            # the *result* as "pair-by-hand", which reads as a setting rather
+            # than a Mac that silently arrived half-attached. Without this the
+            # next surface to mention it is `mint_on` refusing, weeks later,
+            # with an error about a grant nobody knew was missing.
+            note = (note + "; " if note else "") + (
+                "this machine sent no delegation grant — its jstack-host "
+                "predates delegated minting, so devices will have to pair "
+                "with it by hand. Upgrade the host there and re-attach to "
+                "fix it")
     _announce(row, device_row, client_ip, kind, rekeyed is not None)
     return {"device": device_row, "token": token,
             "tunnel": peer, "tunnel_note": note,

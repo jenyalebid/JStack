@@ -397,6 +397,29 @@ def test_a_host_with_no_mesh_still_hands_over_the_token(store):
     assert "does not run the tunnel" in out["tunnel_note"]
 
 
+def test_a_machine_that_sent_no_grant_is_told_why_it_is_not_delegated(store,
+                                                                      monkeypatch):
+    """The live 2026-09-11 adoption: the Mac ran a `jstack-host` older than the
+    build that sends `grant_token`, so `attach` succeeded, the tunnel came up
+    and the row landed — with no grant behind it. The hub could never mint onto
+    that machine again, and nothing anywhere said so. It surfaced days later as
+    `pair-by-hand` in a menu, which reads as a setting somebody chose.
+
+    `delegated: False` is already returned. The missing half is the reason.
+    """
+    monkeypatch.setattr(tunnel, "can_pair", lambda: True)
+    monkeypatch.setattr(tunnel, "issue",
+                        lambda d, leaf=False: {"device": d, "config": "[I]",
+                                               "created": True})
+    out = enrolment.mint_code("work-mac", "", 600, kind=enrolment.KIND_HOST)
+    code = enrolment.normalize(out["code"])
+    result = enrolment.redeem(code, "198.51.100.4", host_key="work-key",
+                              port=9090)            # no grant_token — old build
+    assert result["delegated"] is False
+    assert "grant" in (result["tunnel_note"] or ""), (
+        f"no reason given for a half-adoption: {result['tunnel_note']!r}")
+
+
 def test_a_pairing_that_blows_up_never_costs_the_caller_its_token(store,
                                                                   monkeypatch):
     monkeypatch.setattr(tunnel, "can_pair", lambda: True)

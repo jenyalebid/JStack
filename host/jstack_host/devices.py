@@ -286,6 +286,34 @@ def _note_seen(device_id: str) -> None:
     _store().touch_device(device_id)
 
 
+# client_build is written on change, not on request — it moves once per app
+# update. The cache seeds lazily from the row so a restart doesn't buy one
+# redundant write per device.
+_build_seen: dict[str, str] = {}
+_build_lock = threading.Lock()
+
+
+def note_build(device_id: str, build: str) -> None:
+    """Record the build string an authenticated request carried.
+
+    This column is why "is the fix on the phone" is answerable from the host:
+    before it, a build's arrival could only be inferred from behaviour, and a
+    fix whose failure mode is silence is indistinguishable from a fix that
+    never installed.
+    """
+    build = build.strip()[:64]
+    if not build:
+        return
+    with _build_lock:
+        if _build_seen.get(device_id) == build:
+            return
+        _build_seen[device_id] = build
+    row = _store().device(device_id)
+    if row is None or row.get("client_build") == build:
+        return
+    _store().note_device_build(device_id, build)
+
+
 # ── minting ──
 
 def mint(name: str, identity: str | None = None) -> tuple[dict, str]:
@@ -562,3 +590,5 @@ def reset_for_tests() -> None:
         _seen_at.clear()
     with _watch_lock:
         _watchers.clear()
+    with _build_lock:
+        _build_seen.clear()

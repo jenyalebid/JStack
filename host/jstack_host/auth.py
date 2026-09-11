@@ -257,17 +257,37 @@ def _gate(client_ip: str, authorization: str) -> str:
     return device_id
 
 
+BUILD_HEADER = "x-jremote-build"
+
+
+def _note_build(device_id: str, build: str) -> None:
+    """Record what build the authenticated caller says it is. Best-effort by
+    law: version bookkeeping must never cost a request that already proved
+    itself."""
+    if not build:
+        return
+    try:
+        from . import devices
+        devices.note_build(device_id, build)
+    except Exception as e:  # noqa: BLE001
+        print(f"jremote auth: build note failed ({type(e).__name__}: {e})",
+              flush=True)
+
+
 async def require_token(request: Request,
                         authorization: str = Header(default="")) -> None:
     """FastAPI dependency. Raises 401 unless a live device's token is present."""
-    _gate(_client_ip(request), authorization)
+    device_id = _gate(_client_ip(request), authorization)
+    _note_build(device_id, request.headers.get(BUILD_HEADER, ""))
 
 
 async def current_device(request: Request,
                          authorization: str = Header(default="")) -> str:
     """The authenticated caller's device id — for routes that need to know
     *which* device this is (the device list, the streams' revocation checks)."""
-    return _gate(_client_ip(request), authorization)
+    device_id = _gate(_client_ip(request), authorization)
+    _note_build(device_id, request.headers.get(BUILD_HEADER, ""))
+    return device_id
 
 
 def authenticate_ws(ws) -> str:
@@ -285,4 +305,5 @@ def authenticate_ws(ws) -> str:
         _deny_log(client_ip, presented)
         _note_denial(client_ip, scope, presented)
         return ""
+    _note_build(device_id, ws.headers.get(BUILD_HEADER, ""))
     return device_id

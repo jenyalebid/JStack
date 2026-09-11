@@ -617,3 +617,61 @@ def test_api_answers_reads_a_401_as_proof_the_router_is_mounted(monkeypatch):
 
     monkeypatch.setattr(install_host.urllib.request, "urlopen", _raise_404)
     assert install_host.api_answers(9090) is False
+
+
+def test_adopt_falls_through_to_the_embedded_marker(tmp_path, monkeypatch):
+    """A host embedded in another server has no plist, so the marker is the
+    only record of it — and before this was wired, `adopt` read the plist,
+    found nothing, and left every command resolving package defaults against a
+    host that was up and serving (#34)."""
+    import json
+
+    marker = tmp_path / "embedded.json"
+    marker.write_text(json.dumps({
+        "server": "the dashboard", "port": 9090, "root": "",
+        "profile_module": "jstack_host_no_such_profile", "profile": "jj",
+        "state_dir": str(tmp_path / "live"),
+        "token_path": str(tmp_path / "live" / "api-token")}))
+    # The whole environment, swapped for a copy this test owns. `adopt` calls
+    # `os.environ.setdefault`, and `delenv(raising=False)` on a variable that is
+    # not currently set records nothing to restore — so the value `adopt` then
+    # creates survives teardown. It leaked `JREMOTE_STATE_DIR` and
+    # `JREMOTE_TOKEN_PATH` at a tmp_path that pytest deletes, every later test
+    # that shells out inherited them, and six subprocess tests in
+    # test_jremote_standalone.py failed against a state dir that no longer
+    # existed — naming neither this test nor the variable. Replacing the mapping
+    # is what makes a setdefault this test cannot see in advance still die here.
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    monkeypatch.setenv("JREMOTE_EMBED_MARKER", str(marker))
+    monkeypatch.setenv("JREMOTE_PROFILE_MODULE", "jstack_host_no_such_profile")
+    monkeypatch.delenv("JREMOTE_STATE_DIR", raising=False)
+    monkeypatch.delenv("JREMOTE_TOKEN_PATH", raising=False)
+
+    install_host.adopt_installed_environment(tmp_path / "no-such.plist")
+
+    assert hostenv.state_dir() == tmp_path / "live"
+    assert hostenv.token_path() == tmp_path / "live" / "api-token"
+
+
+def test_the_plist_outranks_the_marker_and_an_export_outranks_both(tmp_path, monkeypatch):
+    """Precedence, in one place. A machine carrying both records has an agent
+    of its own, and the agent is the installed host; the marker answers for the
+    machine that has no plist. An explicit export still beats the pair."""
+    import json
+
+    marker = tmp_path / "embedded.json"
+    marker.write_text(json.dumps({"server": "s", "port": 9090,
+                                  "state_dir": str(tmp_path / "marked")}))
+    monkeypatch.setenv("JREMOTE_EMBED_MARKER", str(marker))
+    monkeypatch.setenv("JREMOTE_PROFILE_MODULE", "jstack_host_no_such_profile")
+    monkeypatch.delenv("JREMOTE_STATE_DIR", raising=False)
+
+    plist = tmp_path / "com.jremote.host.plist"
+    plist.write_bytes(install_host.render_plist(state_dir=tmp_path / "installed"))
+    install_host.adopt_installed_environment(plist)
+    assert hostenv.state_dir() == tmp_path / "installed", "the plist outranks the marker"
+
+    monkeypatch.setenv("JREMOTE_STATE_DIR", str(tmp_path / "exported"))
+    hostenv.reset_profile()
+    install_host.adopt_installed_environment(plist)
+    assert hostenv.state_dir() == tmp_path / "exported", "the export outranks both"

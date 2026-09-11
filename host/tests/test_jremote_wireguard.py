@@ -10,11 +10,21 @@ was permanently False and every host was local-only whatever mode it claimed.
 
 Two things are pinned here that a fake cannot pin:
   1. the real script and its leaf templates ship at the path the package names;
-  2. the *one* directory the hub keeps its keys in has three independent readers
-     — `install_hub.sh` (writes it, under sudo), `wg_peer.py` (the tool that
-     edits the peer table), and `tunnel.py` (the server that shells out to it) —
+  2. the *one* directory the hub keeps its keys in has four independent readers
+     — `install_hub.sh` (mints it, under sudo), `wg_peer.py` (the tool that edits
+     the peer table), `tunnel.py` (the server that shells out to it), and
+     `wg_up.sh`/`wg_sync.sh` (the root daemons that load and re-apply the conf) —
      and a default that drifts between them is a hub that pairs into a directory
      its own server never reads.
+
+Point 2 was asserted for three of those four by comparing *defaults*, which is
+the configuration in which nothing can go wrong. The relocation case — set
+`WG_PEER_DIR`, the documented way to move the mesh — was covered by a test that
+asserted `install_hub.sh` still contained a literal derivation that cannot honour
+it, and by three more that skipped themselves whenever the variable was set. The
+suite was green and the mesh split in half: peers appended to one conf, the
+tunnel loaded from another, no error at either end. Section 2b runs the scripts
+instead of reading them, and nothing in this file skips on `WG_PEER_DIR` now.
 
 Everything runs against a fake `wg` binary and a temp state dir; nothing here
 brings up an interface or touches the network.
@@ -72,10 +82,7 @@ def _tunnel_default_dir() -> Path:
     return hostenv.wireguard_dir()
 
 
-@pytest.mark.skipif("WG_PEER_DIR" in os.environ,
-                    reason="WG_PEER_DIR is set, so both readers are honouring "
-                           "it and the defaults are not what is in play")
-def test_the_tool_and_the_server_default_to_the_same_directory():
+def test_the_tool_and_the_server_default_to_the_same_directory(monkeypatch):
     """The reconciliation this file exists for: `wg_peer.py` writing one
     directory while `tunnel.py` reads another is a hub that pairs a device and
     then reports it cannot pair, because `can_pair()` looks at the wrong conf.
@@ -88,7 +95,14 @@ def test_the_tool_and_the_server_default_to_the_same_directory():
     holding `10.66.0.1` and five peers reporting itself `local`, with
     `/tunnel/pair` answering 503 on the one machine that owns the mesh. The
     relationship, not the literal, is what has to hold on every profile.
+
+    `WG_PEER_DIR` is cleared rather than skipped over. This test used to skip
+    itself whenever that variable was set, which is to say it ran only in the
+    configuration where nothing could go wrong and stood down in the one where
+    the readers actually split. A check that switches off in the failing case
+    reports the same green as a check that passed.
     """
+    monkeypatch.delenv("WG_PEER_DIR", raising=False)
     assert _wg_peer_default_dir() == _tunnel_default_dir()
 
 
@@ -164,23 +178,187 @@ def test_the_env_wins_over_the_profile(monkeypatch):
     assert hostenv.wireguard_dir() == Path("/tmp/somewhere-else")
 
 
-def test_install_hub_writes_into_that_same_directory():
-    """`install_hub.sh` derives `WG_DIR` from `$SRC/../../Credentials/wireguard`.
-    With the scripts at `scripts/wireguard/`, that is the package root — the
-    same place the other two readers resolve to. Pinned by reading the script,
-    so a relocation that breaks the chain fails here, not on a customer's Mac."""
-    src = (hostenv.peer_script().read_text(), (WG_ROOT / "install_hub.sh").read_text())
-    hub = src[1]
-    assert 'WG_DIR="$(cd "$SRC/../.." && pwd)/Credentials/wireguard"' in hub, (
-        "install_hub.sh no longer roots WG_DIR at <package>/Credentials/wireguard "
-        "— reconcile it with tunnel.WG_DIR or the hub pairs where nothing reads")
-
-
-@pytest.mark.skipif("WG_PEER_DIR" in os.environ,
-                    reason="WG_PEER_DIR is set, so the module is honouring it, "
-                           "not the default this asserts")
-def test_the_server_uses_that_default_when_nothing_relocates_it():
+def test_the_server_uses_that_default_when_nothing_relocates_it(monkeypatch):
+    """Same reason as above for clearing rather than skipping: the module
+    constants are bound at import, so the environment has to be cleared *and*
+    `rebind()` called, which is exactly what the one legitimate late-adopter
+    (`adopt_installed_environment`) does."""
+    monkeypatch.delenv("WG_PEER_DIR", raising=False)
+    monkeypatch.setattr(tunnel, "WG_DIR", tunnel.WG_DIR)
+    monkeypatch.setattr(tunnel, "CLIENTS_DIR", tunnel.CLIENTS_DIR)
+    monkeypatch.setattr(tunnel, "HUB_CONF", tunnel.HUB_CONF)
+    monkeypatch.setattr(tunnel, "PEER_SCRIPT", tunnel.PEER_SCRIPT)
+    tunnel.rebind()
     assert tunnel.WG_DIR == _tunnel_default_dir()
+
+
+# --- 2b. the shell half moves with the rest ---------------------------------
+#
+# `WG_PEER_DIR` is the documented way to relocate the mesh, and until this block
+# existed only the Python half honoured it. `install_hub.sh` minted the keys and
+# the conf by deriving from its own location, then wrote *that* path into both
+# LaunchDaemons, while `wg_peer.py` appended peers to the relocated directory.
+# The device got a working config; the hub never got the peer; the sync daemon
+# watched a file nobody wrote. Nothing errored on either side.
+#
+# It survived a full suite because the test that covered it asserted the literal
+# derivation was still present in the script — pinning the defect in place and
+# calling it agreement — while the three tests that could have caught the split
+# skipped themselves whenever `WG_PEER_DIR` was set. These run the scripts.
+
+def _fake_wg(tmp_path: Path) -> Path:
+    """A `wg` that mints deterministic keys and shrugs at everything else."""
+    binary = tmp_path / "fake-wg"
+    binary.write_text(
+        "#!/bin/bash\n"
+        'case "$1" in\n'
+        '  genkey) echo "SERVER-PRIVATE-KEY" ;;\n'
+        '  pubkey) cat >/dev/null; echo "SERVER-PUBLIC-KEY" ;;\n'
+        "  *) exit 0 ;;\n"
+        "esac\n")
+    binary.chmod(0o755)
+    return binary
+
+
+def _fake_launchctl(tmp_path: Path) -> Path:
+    """`install_hub.sh` bootstraps two system LaunchDaemons. Under `HUB_DEST`
+    it writes the plists into a temp tree, but the `launchctl` calls are not
+    gated by it — unmocked, this test would try to load a real root daemon."""
+    binary = tmp_path / "fake-launchctl"
+    binary.write_text("#!/bin/bash\nexit 0\n")
+    binary.chmod(0o755)
+    return binary
+
+
+def _run_sh(script: str, env: dict, *args) -> subprocess.CompletedProcess:
+    return subprocess.run(["/bin/bash", str(WG_ROOT / script), *args],
+                          capture_output=True, text=True, env=env, timeout=60)
+
+
+def _sh_env(tmp_path: Path, **extra) -> dict:
+    """The environment every shell probe here runs under.
+
+    `WG_CONF` is stripped because the probes are about what these scripts
+    resolve when nothing pins them, and an ambient one would mask the answer.
+
+    `WG_GO` and `WG` are pinned to the fake unconditionally. `wg_up.sh` only
+    names its conf in the refusal it gives when that file is absent — so the
+    moment a regression makes it resolve a conf that *does* exist, it walks
+    straight past the refusal and into `wireguard-go -f utun`, which asks the
+    kernel for a TUN device. The red-check for this block did exactly that.
+    A suite that can spawn a tunnel daemon is a suite that can take down the
+    mesh of whoever runs it.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "WG_CONF"}
+    fake = str(_fake_wg(tmp_path))
+    env.update({"WG_GO": fake, "WG": fake, **extra})
+    return env
+
+
+def test_the_installer_mints_into_the_relocated_directory(tmp_path):
+    """The load-bearing one. `install_hub.sh` is what creates the conf every
+    other reader then argues about, so if it ignores `WG_PEER_DIR` the mesh is
+    split before anything else gets a say."""
+    mesh = tmp_path / "elsewhere" / "wireguard"
+    env = _sh_env(tmp_path, WG_PEER_DIR=str(mesh),
+                  HUB_DEST=str(tmp_path / "root"),
+                  LAUNCHCTL=str(_fake_launchctl(tmp_path)))
+    r = _run_sh("install_hub.sh", env, "--endpoint", "hub.example.com:51820")
+    assert r.returncode == 0, r.stderr
+
+    assert (mesh / "server.key").is_file(), (
+        f"install_hub.sh ignored WG_PEER_DIR and minted somewhere else: {r.stdout}")
+    assert (mesh / "wg0.conf").is_file()
+    assert (mesh / "endpoint").read_text().strip() == "hub.example.com:51820"
+
+    # And it must write that same conf into the daemons it installs, or the
+    # tunnel comes up from one file while pairing edits another.
+    daemons = tmp_path / "root" / "Library" / "LaunchDaemons"
+    for name in ("com.jremote.hub.plist", "com.jremote.hub-sync.plist"):
+        assert str(mesh / "wg0.conf") in (daemons / name).read_text(), (
+            f"{name} names a conf the pairing tool does not write to")
+
+
+def test_the_tunnel_script_follows_the_relocated_mesh(tmp_path):
+    """`wg_up.sh` resolves its conf before it touches the network, and says so
+    on the way out — which is the observation point that needs no root and no
+    interface. An absent conf under the relocated dir proves it looked there."""
+    mesh = tmp_path / "elsewhere" / "wireguard"
+    r = _run_sh("wg_up.sh", _sh_env(tmp_path, WG_PEER_DIR=str(mesh)))
+    assert r.returncode != 0
+    assert f"missing conf {mesh / 'wg0.conf'}" in r.stderr, (
+        f"wg_up.sh resolved its conf somewhere other than WG_PEER_DIR: {r.stderr}")
+
+
+def test_an_explicit_conf_still_outranks_the_relocated_mesh(tmp_path):
+    """The rung order matters as much as the new rung: both installers write an
+    explicit `WG_CONF` into the LaunchDaemon they make, and an installed copy
+    that started preferring `WG_PEER_DIR` over it would move every running
+    tunnel the first time anyone exported the variable in a shell."""
+    mesh = tmp_path / "elsewhere" / "wireguard"
+    pinned = tmp_path / "pinned" / "wg0.conf"
+    r = _run_sh("wg_up.sh", _sh_env(tmp_path, WG_PEER_DIR=str(mesh),
+                                    WG_CONF=str(pinned)))
+    assert f"missing conf {pinned}" in r.stderr, (
+        f"WG_CONF stopped winning — an installed tunnel would relocate: {r.stderr}")
+
+
+def test_the_sync_daemon_follows_the_relocated_mesh(tmp_path):
+    """The other hub-side reader. It is the one `WatchPaths` fires, so a sync
+    script reading the tree's conf is a hub that never applies a new peer."""
+    mesh = tmp_path / "elsewhere" / "wireguard"
+    name_file = tmp_path / "iface.name"
+    name_file.write_text("utun9\n")
+    r = _run_sh("wg_sync.sh", _sh_env(tmp_path, WG_PEER_DIR=str(mesh),
+                                      WG_NAME_FILE=str(name_file)))
+    assert r.returncode == 0, r.stderr
+    assert f"wg_sync: {mesh / 'wg0.conf'} -> utun9" in r.stdout, (
+        f"wg_sync.sh synced a conf the pairing tool does not write to: {r.stdout}")
+
+
+def test_every_reader_of_the_mesh_lands_on_one_directory(tmp_path):
+    """The whole point, stated once. Four independent programs in three
+    languages answer 'where is this hub's mesh state'; under a relocation they
+    have to give one answer, and the count is asserted so a fifth reader added
+    without being wired in fails here rather than in the field."""
+    mesh = tmp_path / "elsewhere" / "wireguard"
+    fake = _fake_wg(tmp_path)
+    base = _sh_env(tmp_path, WG_PEER_DIR=str(mesh))
+
+    answers = {}
+
+    # 1. the tunnel daemon (bash, as root). First, deliberately: it names its
+    # conf only in the refusal it gives when that file is absent, so probing it
+    # after the installer has minted one observes nothing at all.
+    r = _run_sh("wg_up.sh", base)
+    assert "missing conf " in r.stderr, (
+        f"wg_up.sh no longer names the conf it could not find: {r.stderr}")
+    answers["wg_up.sh"] = Path(
+        r.stderr.split("missing conf ", 1)[1].strip()).parent
+
+    # 2. the server (Python, in-process)
+    os.environ["WG_PEER_DIR"] = str(mesh)
+    try:
+        answers["tunnel.py"] = hostenv.wireguard_dir()
+    finally:
+        os.environ.pop("WG_PEER_DIR", None)
+
+    # 3. the installer (bash, under sudo in real life)
+    env = {**base, "HUB_DEST": str(tmp_path / "root"),
+           "LAUNCHCTL": str(_fake_launchctl(tmp_path))}
+    assert _run_sh("install_hub.sh", env, "--endpoint", "h:51820").returncode == 0
+    assert (mesh / "wg0.conf").is_file()
+    answers["install_hub.sh"] = (mesh / "wg0.conf").parent
+
+    # 4. the pairing tool (python, subprocess, unprivileged)
+    (mesh / "clients").mkdir(exist_ok=True)
+    peer_env = {**base, "WG_BIN": str(fake), "WG_ENDPOINT": "h:51820"}
+    assert _run_peer(peer_env, "add", "a-device").returncode == 0
+    assert "# device: a-device" in (mesh / "wg0.conf").read_text()
+    answers["wg_peer.py"] = mesh
+
+    assert len(answers) == 4, "a reader was added without being asserted here"
+    assert set(answers.values()) == {mesh}, f"the mesh split: {answers}"
 
 
 def test_the_server_reads_the_subnet_out_of_the_real_script(monkeypatch):

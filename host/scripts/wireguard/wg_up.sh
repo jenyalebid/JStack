@@ -14,13 +14,16 @@ WG="${WG:-/opt/homebrew/bin/wg}"
 IFCONFIG="${IFCONFIG:-/sbin/ifconfig}"
 ROUTE="${ROUTE:-/sbin/route}"
 SYSCTL="${SYSCTL:-/usr/sbin/sysctl}"
-# The conf default is derived from this script's own location — in the hub
-# checkout scripts/wireguard/ sits beside Credentials/, so this resolves to
-# the same wg0.conf as before with no username or home layout baked into a
-# file that ships in leaf bundles. Installed copies never hit the default:
-# install_leaf.sh writes an explicit WG_CONF into the LaunchDaemon it makes.
+# Three rungs. `WG_CONF` wins — install_hub.sh and install_leaf.sh both write an
+# explicit one into the LaunchDaemon they make, so an installed copy never falls
+# past it. Then `WG_PEER_DIR`, the variable `wg_peer.py` honours: a mesh that has
+# been relocated has to bring the daemon that loads it along, or this brings up
+# an interface from the tree's stale conf while every peer is added elsewhere.
+# Then the derivation from this script's own location, which is what a hub
+# checkout run by hand resolves, with no username or home layout baked into a
+# file that ships in leaf bundles.
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONF="${WG_CONF:-$SELF_DIR/../../Credentials/wireguard/wg0.conf}"
+CONF="${WG_CONF:-${WG_PEER_DIR:-$SELF_DIR/../../Credentials/wireguard}/wg0.conf}"
 RUN_DIR="${WG_RUN_DIR:-/var/run/wireguard}"
 ADDR="${WG_ADDR:-10.66.0.1/24}"
 SUBNET="${WG_SUBNET:-10.66.0.0/24}"

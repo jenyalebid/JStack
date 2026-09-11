@@ -771,7 +771,13 @@ def wireguard_dir() -> Path:
 
     `WG_PEER_DIR` overrides, first and outright, because that is the variable
     `wg_peer.py` itself honours — the tool and its readers move together or the
-    split comes back under a different name.
+    split comes back under a different name. That sentence was true of this
+    module and false of the mesh: `install_hub.sh`, `wg_up.sh` and `wg_sync.sh`
+    each derived the directory from their own location and ignored the variable
+    entirely, so a relocated mesh had the pairing tool writing peers into one
+    conf while the installer minted — and both root daemons loaded — another.
+    All four honour it now, and `test_jremote_wireguard.py` proves it by running
+    them rather than by reading them.
 
     Read through `getattr` so a profile written before this existed keeps
     working: an external profile is somebody else's file, and a package upgrade

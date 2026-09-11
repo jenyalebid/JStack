@@ -74,9 +74,18 @@ if [ -z "$WG_GO" ] || [ -z "$WG_BIN" ]; then
 fi
 
 # ── the hub's own credentials, in the user's tree ──
-# Under sudo, $HOME is root's. The tree is derived from this script instead, so
-# the keys land beside the host code that reads them whoever ran the installer.
-WG_DIR="$(cd "$SRC/../.." && pwd)/Credentials/wireguard"
+# `WG_PEER_DIR` first, then the derivation. That order is not a convenience: it
+# is the variable `wg_peer.py` honours, and this script mints the keys and the
+# wg0.conf that `wg_peer.py` later appends peers to. Deriving only — which this
+# did — meant that setting `WG_PEER_DIR`, the documented way to relocate the
+# mesh, pointed the pairing tool at one directory while the installer minted the
+# conf in another and wrote *that* path into both LaunchDaemons. Pairing then
+# succeeded into a file nothing loaded and nothing watched: a device handed a
+# working config, a hub that never got the peer, and no error on either side.
+#
+# The derivation stays as the default because under sudo $HOME is root's, so the
+# keys must land beside the host code that reads them whoever ran the installer.
+WG_DIR="${WG_PEER_DIR:-$(cd "$SRC/../.." && pwd)/Credentials/wireguard}"
 OWNER="${SUDO_USER:-$(id -un)}"
 
 install -d -m 0700 "$WG_DIR"

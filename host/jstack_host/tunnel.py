@@ -184,11 +184,33 @@ def leaf_bundle_dir(device: str) -> Path:
     return CLIENTS_DIR / f"{device}-leaf"
 
 
+#: The three files in a bundle that belong to the hub rather than to the peer —
+#: `wg_peer.py` copies them verbatim out of its own directory, and nothing in
+#: them is per-machine. Everything else (the conf, leaf.env, the README) is the
+#: peer's own issued state and must come back exactly as it was written.
+HUB_OWNED = ("install_leaf.sh", "wg_up.sh", "wg_leaf_watch.sh")
+
+
 def _read_bundle(device: str) -> dict[str, str]:
+    """The bundle to hand a leaf — its own credentials, the hub's current code.
+
+    A name that is already paired gets its existing config back, and for the
+    keys and the address that is the whole point. The scripts are the opposite
+    case: a machine re-attaching after the hub fixed one of them would receive
+    the copy frozen into its client folder the first time it ever attached, and
+    keep receiving it forever. That is how a leaf ends up running an installer
+    whose bug was fixed on the hub weeks earlier, with nothing anywhere saying
+    so. So the hub-owned three are read from where `wg_peer.py` copies them
+    from, and only fall back to the issued copy on a hub whose script directory
+    this package cannot see.
+    """
     folder = leaf_bundle_dir(device)
+    source = PEER_SCRIPT.parent
     files = {}
     for name in LEAF_FILES:
         path = folder / name
+        if name in HUB_OWNED and (source / name).is_file():
+            path = source / name
         if not path.exists():
             raise TunnelError(
                 f"the leaf bundle for {device} is missing {name} — it would "

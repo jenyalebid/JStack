@@ -155,7 +155,15 @@ done
 
 HS=""
 for _ in $(seq 1 20); do
-    HS="$("$WG_BIN" show "$IFACE" latest-handshakes 2>/dev/null | awk 'NR==1 {print $2}')"
+    # `|| true` is load-bearing, not habit: under `set -e` with `pipefail` an
+    # assignment takes the status of its command substitution, so the one
+    # second where `wg show` has no interface yet — exactly what this loop is
+    # here to wait out — kills the script instead. Silently, and with wg's
+    # stderr already sent to /dev/null, so the caller gets a bare exit 1 and
+    # `attach` reports "the leaf installer failed" about a tunnel that came up
+    # a moment later.
+    HS="$("$WG_BIN" show "$IFACE" latest-handshakes 2>/dev/null \
+          | awk 'NR==1 {print $2}' || true)"
     if [ -n "$HS" ] && [ "$HS" -gt 0 ]; then break; fi
     sleep 1
 done

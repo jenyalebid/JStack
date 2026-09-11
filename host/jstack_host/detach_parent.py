@@ -159,8 +159,14 @@ def _remove_tunnel(runner, sudo: bool, root: Path) -> list[dict]:
         booted.append((label, proc.returncode in (0, 3),
                        (proc.stderr or "").strip()))
     for label, ok, err in booted:
+        # Named, because there are two of these and they are the only steps
+        # whose notes would otherwise be identical. A report with two lines
+        # reading "unloaded" and nothing to tell them apart looks like the same
+        # step printed twice — and the one a person has to go fix by hand is
+        # whichever of the two failed.
         steps.append({"step": f"bootout:{label}", "ok": ok,
-                      "note": "unloaded" if ok else f"launchctl refused: {err}"})
+                      "note": (f"unloaded {label}" if ok
+                               else f"launchctl refused {label}: {err}")})
 
     removed, failed = [], []
     for raw in LEAF_PATHS:

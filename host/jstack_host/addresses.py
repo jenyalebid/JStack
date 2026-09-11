@@ -11,10 +11,11 @@ the receiving one, which is the worst shape a setup step can have.
 So the host answers for itself, off its own interfaces, in the order a reader
 should try them:
 
-  · **lan** — this network's private IPv4. True while both machines are on
-    the same network, which is where pairing happens: the device being
-    enrolled is, by definition, not on the mesh yet. First because it is the
-    one address a new device can act on *now*.
+  · **lan** — this network's private IPv4, on an interface that actually
+    faces the network. True while both machines are on the same network,
+    which is where pairing happens: the device being enrolled is, by
+    definition, not on the mesh yet. First because it is the one address a
+    new device can act on *now*.
   · **local** — the Bonjour name. Survives a DHCP move, which the numeric LAN
     address does not; second because `.local` resolution is flakier than a
     number on a guest network.
@@ -29,6 +30,14 @@ and an address list whose first entry cannot work teaches the reader to
 distrust the rest of it. The app pairing a host to ITSELF already has
 loopback without being told (`LanProbe.localHost`), and that path does not
 come through here.
+
+**So are host-only interfaces**, for the same reason. A Mac running VMs holds
+something like `192.168.64.1` on `bridge100`: private, routable, and visible
+to nothing but the guests on that bridge. Reading the address alone cannot
+tell it apart from the real LAN — both are RFC1918 — so the address alone is
+not enough to classify on, and a list built that way hands a phone an entry
+captioned "works while both machines are on this network" that no phone can
+ever reach. The interface it sits on is the signal that separates them.
 
 Nothing here claims reachability. These are addresses this machine *holds* —
 whether a packet from somewhere else arrives on one is a fact about the
@@ -54,18 +63,60 @@ MESH_SUBNET = ipaddress.ip_network("10.66.0.0/24")
 #: inventing an address.
 _INET_RE = re.compile(r"^\s*inet\s+(\d+\.\d+\.\d+\.\d+)", re.M)
 
+#: `ifconfig` starts an interface's block at column zero: `en1: flags=...`.
+_IFACE_RE = re.compile(r"^(\w+):", re.M)
+
+#: Interface families that hold a private address nothing off this Mac can
+#: route to. `bridge` is macOS virtualisation (the VM host-only network),
+#: `vmenet`/`vnic` the guest-side members of it, `awdl`/`llw` Apple's
+#: peer-to-peer radios. Matched as prefixes because the kernel numbers them —
+#: `bridge100`, `bridge101` — and a new number must not quietly reopen this.
+#:
+#: `utun` is deliberately NOT here. The mesh lives on one, and it is excluded
+#: from `lan` by subnet already, then re-added as its own `mesh` kind. Listing
+#: it would delete the mesh address instead of reclassifying it.
+_HOST_ONLY_IFACES = ("bridge", "vmenet", "vnic", "awdl", "llw")
+
 DEFAULT_PORT = 9090
 
 
 def _inet_addrs() -> list[str]:
     """Every IPv4 this machine holds. A seam, so the tests drive the
-    classifier against fixed interface sets instead of the host's own."""
+    classifier against fixed interface sets instead of the host's own.
+
+    Deliberately unfiltered: `mode` reads this to ask whether this machine
+    holds the mesh gateway, and that question is about every interface, not
+    the ones a pairing screen should advertise.
+    """
+    return list(_inet_ifaces())
+
+
+def _inet_ifaces() -> dict[str, str]:
+    """Each IPv4 this machine holds, mapped to the interface holding it.
+
+    A second seam rather than a change to `_inet_addrs`, because its callers
+    want different things: `mode` wants the addresses, this module wants to
+    know which ones face the network. Unparseable output degrades to `{}`,
+    and `classify` treats an address it has no interface for as a real LAN
+    address — the pre-existing behaviour, so a parse failure narrows what we
+    can exclude without silently emptying the list.
+    """
     try:
         out = subprocess.run(["/sbin/ifconfig"], capture_output=True,
                              text=True, timeout=10).stdout
     except Exception:  # noqa: BLE001 — no interfaces readable is an empty list
-        return []
-    return _INET_RE.findall(out)
+        return {}
+    found: dict[str, str] = {}
+    iface = ""
+    for line in out.splitlines():
+        head = _IFACE_RE.match(line)
+        if head:
+            iface = head.group(1)
+            continue
+        addr = _INET_RE.match(line)
+        if addr:
+            found[addr.group(1)] = iface
+    return found
 
 
 def _hostname() -> str:
@@ -76,9 +127,21 @@ def _hostname() -> str:
         return ""
 
 
-def classify(inets: list[str], hostname: str, port: int) -> list[dict]:
+def _is_host_only(iface: str) -> bool:
+    """Whether an interface faces only this Mac and its guests."""
+    return iface.startswith(_HOST_ONLY_IFACES)
+
+
+def classify(inets: list[str], hostname: str, port: int,
+             ifaces: dict[str, str] | None = None) -> list[dict]:
     """The address list, ordered mesh → lan → local. Pure, so the ordering
-    and the exclusions are what the tests actually pin."""
+    and the exclusions are what the tests actually pin.
+
+    `ifaces` maps address → the interface holding it, and is what lets a VM
+    bridge be told apart from the real LAN. Omitted, every address is treated
+    as network-facing: an interface map is extra evidence for dropping an
+    entry, never a precondition for keeping one.
+    """
     out: list[dict] = []
     mesh, lan = [], []
     for raw in inets:
@@ -88,7 +151,10 @@ def classify(inets: list[str], hostname: str, port: int) -> list[dict]:
             continue
         if ip.is_loopback or ip.is_link_local or not ip.is_private:
             continue
-        (mesh if ip in MESH_SUBNET else lan).append(str(ip))
+        if ip in MESH_SUBNET:
+            mesh.append(str(ip))
+        elif not _is_host_only((ifaces or {}).get(raw, "")):
+            lan.append(str(ip))
 
     for addr in lan:
         out.append({"kind": "lan", "host": addr,
@@ -113,4 +179,5 @@ def classify(inets: list[str], hostname: str, port: int) -> list[dict]:
 
 def reachable(port: int = DEFAULT_PORT) -> list[dict]:
     """Where a second machine could try to reach this one."""
-    return classify(_inet_addrs(), _hostname(), port)
+    held = _inet_ifaces()
+    return classify(list(held), _hostname(), port, held)

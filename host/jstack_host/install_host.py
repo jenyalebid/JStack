@@ -470,19 +470,36 @@ def uninstall(*, label: str = LABEL, out=None) -> int:
     return 0
 
 
-def status(*, port: int = DEFAULT_PORT, label: str = LABEL, out=None) -> int:
+def status(*, port: int | None = None, label: str = LABEL, out=None) -> int:
+    """What this machine's host is, checked on the port it was installed with.
+
+    `port=None` means "ask the agent" — `installed_port` exists for exactly
+    this, and status used to take `DEFAULT_PORT` and never call it. A host
+    installed with `--port 9099` was therefore reported on 9090, where on this
+    machine the dashboard answers: a 401 from an unrelated program was printed
+    as `serving 9090` while the real host went unmentioned. Both halves of that
+    are fixed here — the port is read off the agent, and something answering is
+    only *the host* if it says so.
+    """
     out = out or sys.stdout
     path = plist_path(label)
-    served = health(port)
+    probed = port if port is not None else (installed_port(path) or DEFAULT_PORT)
+    served = health(probed)
     print(f"agent      {'installed' if path.exists() else 'not installed'} "
           f"({path})", file=out)
     print(f"loaded     {'yes' if is_loaded(label) else 'no'}", file=out)
-    if served:
-        print(f"serving    {port} — profile {served.get('profile')}, "
+    if served and served.get("service") == "jremote-host":
+        print(f"serving    {probed} — profile {served.get('profile')}, "
               f"{'provisioned' if served.get('provisioned') else 'NO TOKEN'}",
               file=out)
+    elif served:
+        # Answering, but not ours. Naming it as the host is the failure this
+        # line exists to prevent: a port is a default, and some other program
+        # holding it is the ordinary case, not the exotic one.
+        print(f"serving    NOT THIS HOST — something else answers on {probed}",
+              file=out)
     else:
-        print(f"serving    nothing answered on {port}", file=out)
+        print(f"serving    nothing answered on {probed}", file=out)
     print(f"state      {hostenv.state_dir()}", file=out)
     print(f"token      {hostenv.token_path()} "
           f"({'present' if hostenv.token_path().exists() else 'missing'})",

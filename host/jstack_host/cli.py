@@ -493,7 +493,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=lambda a: install_host.uninstall(label=a.label))
 
     p = sub.add_parser("status", help="is the host installed, loaded and answering")
-    p.add_argument("--port", type=int, default=install_host.DEFAULT_PORT)
+    # No default: the agent's own port is the answer, and a default here is
+    # what made `status` report on 9090 for a host installed on 9099.
+    p.add_argument("--port", type=int, default=None)
     p.add_argument("--state-dir", default=None)
     p.set_defaults(fn=lambda a: (_adopt(a),
                                  install_host.status(port=a.port, label=a.label))[1])

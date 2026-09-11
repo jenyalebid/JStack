@@ -221,13 +221,23 @@ def check_service() -> dict:
         return _check("service", OK, f"embedded in {embedded}")
     if not install_host.plist_path().exists():
         return _check("service", WARN, "LaunchAgent not installed")
-    served = install_host.health(install_host.DEFAULT_PORT)
+    # The agent's own port, never the default. Probing DEFAULT_PORT graded a
+    # host installed on 9099 by whatever held 9090 — on this machine the
+    # dashboard — and passed it as `answering on 9090`. A check that grades the
+    # wrong program is worse than no check: it reported every check passed on a
+    # machine whose host it had never contacted.
+    port = install_host.installed_port() or install_host.DEFAULT_PORT
+    served = install_host.health(port)
     if not served:
-        return _check("service", FAIL, "installed but nothing answers on "
-                      f"{install_host.DEFAULT_PORT}",
+        return _check("service", FAIL, f"installed but nothing answers on {port}",
                       "launchctl kickstart -k gui/$(id -u)/com.jremote.host; "
                       "then read logs/host.err in the state dir")
-    return _check("service", OK, f"answering on {install_host.DEFAULT_PORT}, "
+    if served.get("service") != "jremote-host":
+        return _check("service", FAIL,
+                      f"something that is not this host answers on {port}",
+                      f"another program holds {port} — reinstall on a free port: "
+                      "jstack-host install --port <port>")
+    return _check("service", OK, f"answering on {port}, "
                   f"profile {served.get('profile')}")
 
 

@@ -479,11 +479,55 @@ def test_status_says_when_a_host_is_serving_without_a_token(
     the phone, and that sends anyone debugging it to the wrong machine.
     """
     monkeypatch.setattr(install_host, "health",
-                        lambda *a, **k: {"profile": "default", "provisioned": False})
+                        lambda *a, **k: {"service": "jremote-host",
+                                         "profile": "default",
+                                         "provisioned": False})
     monkeypatch.setattr(install_host, "is_loaded", lambda *a, **k: True)
 
     install_host.status(port=9191)
     assert "NO TOKEN" in capsys.readouterr().out
+
+
+def test_status_refuses_to_call_a_stranger_on_the_port_this_host(
+        home, standalone, monkeypatch, capsys):
+    """Something answering is not the same as our host answering.
+
+    The port is a default, so an unrelated program holding it is ordinary. On
+    the machine this was found on, the dashboard answered 9090 and `status`
+    printed `serving 9090` — sending the reader looking for a fault in a host
+    that was not there at all.
+    """
+    monkeypatch.setattr(install_host, "health",
+                        lambda *a, **k: {"error": "unauthorized"})
+    monkeypatch.setattr(install_host, "is_loaded", lambda *a, **k: True)
+
+    install_host.status(port=9090)
+    out = capsys.readouterr().out
+    assert "NOT THIS HOST" in out
+    assert "9090" in out
+
+
+def test_status_reports_on_the_port_the_agent_was_installed_with(
+        home, standalone, monkeypatch, capsys):
+    """`--port 9099` at install time means status probes 9099, not the default.
+
+    `installed_port` was written for this and `status` never called it, so a
+    host on a non-default port was graded by whatever held the default one.
+    """
+    install_host.plist_path().write_bytes(install_host.render_plist(port=9099))
+    probed: list[int] = []
+
+    def _health(port, *a, **k):
+        probed.append(port)
+        return {"service": "jremote-host", "profile": "default",
+                "provisioned": True}
+
+    monkeypatch.setattr(install_host, "health", _health)
+    monkeypatch.setattr(install_host, "is_loaded", lambda *a, **k: True)
+
+    install_host.status()
+    assert probed == [9099]
+    assert "serving    9099" in capsys.readouterr().out
 
 
 # ── the command line ──

@@ -251,6 +251,51 @@ def test_internal_token_mints_once_and_is_stable(store, tmp_path, monkeypatch):
         hostenv.reset_profile()
 
 
+def test_concurrent_callers_converge_on_one_internal_token(store, tmp_path,
+                                                          monkeypatch):
+    """The regression this exists for: the re-key is read-compare-write, and
+    two callers racing it left the row on one secret and the file on another —
+    a mismatch that made every later caller re-key again, so the host's own
+    credential invalidated itself in a loop and /host answered 401 minutes
+    after a verified 200.
+
+    Whatever order they run in, the file and the row must agree afterwards and
+    the token on disk must authenticate."""
+    import threading
+    monkeypatch.setenv("JREMOTE_STATE_DIR", str(tmp_path / "state"))
+    from jstack_host import hostenv
+    hostenv.reset_profile()
+    try:
+        devices.internal_token()  # the row exists
+        # Force the mismatch that sends every caller down the re-key path —
+        # without this they all hit the fast return and nothing races.
+        stale = f"{devices.TOKEN_PREFIX}.{devices.INTERNAL_ID}.notthesecret"
+        (hostenv.state_dir() / "internal-token").write_text(stale)
+        got: list[str] = []
+        barrier = threading.Barrier(8)
+
+        def race():
+            barrier.wait()
+            got.append(devices.internal_token())
+
+        threads = [threading.Thread(target=race) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        on_disk = (hostenv.state_dir() / "internal-token").read_text().strip()
+        row = devices._store().device(devices.INTERNAL_ID)
+        _, secret = devices.parse(on_disk)
+        assert devices._hash(secret) == row["token_hash"], \
+            "the file and the row disagree — the race corrupted the credential"
+        assert devices.authenticate(on_disk) == devices.INTERNAL_ID
+        assert set(got) == {on_disk}, "callers got tokens the host will reject"
+    finally:
+        monkeypatch.delenv("JREMOTE_STATE_DIR")
+        hostenv.reset_profile()
+
+
 def test_a_revoked_internal_row_stays_revoked(store, tmp_path, monkeypatch):
     """The host may re-key itself, never resurrect itself — a revoke the user
     made must not be quietly undone by the next spawn routing call."""

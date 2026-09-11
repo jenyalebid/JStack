@@ -51,6 +51,7 @@ This table NEVER syncs. See the schema comment in store.py.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import hmac
 import ipaddress
@@ -409,7 +410,30 @@ def internal_token() -> str:
     honored, and every caller already has a no-token fallback. A live row
     whose plaintext file was lost is re-keyed in place; that is the host
     re-minting itself, not a resurrection.
+
+    **Serialized, because the re-key is read-compare-write and the losers of
+    that race corrupt each other.** Two callers re-keying at once interleave as
+    `set_hash(H1) · set_hash(H2) · write(T2) · write(T1)`, which leaves the row
+    on H2 and the file on T1 — a mismatch no subsequent read can resolve, and
+    every later caller sees that mismatch and re-keys again, restarting the
+    race. Observed live on 2026-09-10: the host's own credential invalidated
+    itself repeatedly, each /host call answering 401 minutes after a verified
+    200. The flock makes the whole sequence one writer at a time, and the
+    re-read inside it means a caller that arrives second takes the winner's
+    token instead of minting a third.
     """
+    hostenv.ensure_state_dir()
+    lock = hostenv.state_dir() / ".internal-token.lock"
+    with open(lock, "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            return _internal_token_locked()
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
+def _internal_token_locked() -> str:
+    """`internal_token()`'s body, with the state-dir lock already held."""
     store = _store()
     row = store.device(INTERNAL_ID)
     if row is not None and row["revoked_at"] is not None:

@@ -28,7 +28,14 @@ BUNDLE_ID="com.jremote.menubar"
 LABEL="com.jremote.menubar"
 SOURCE="JStackHostBar.swift"
 
-APPS_DIR="${JSTACK_APPS_DIR:-$HOME/Applications}"
+# Not ~/Applications. The bundle is `LSUIElement: 1` — it never appears in the
+# Dock, the app switcher or Spotlight, and there is nothing to launch: the
+# LaunchAgent runs it and the only thing it does is put an icon on the menu
+# bar. A background agent in the folder you browse your apps in is litter, and
+# it reads as a whole app shipped for one menu. Application Support is where a
+# support binary belongs. --apps-dir still overrides for anyone who wants it
+# somewhere else.
+APPS_DIR="${JSTACK_APPS_DIR:-$HOME/Library/Application Support/jStack}"
 BIN_DIR="${JSTACK_BIN_DIR:-$HOME/.local/bin}"
 
 DRY_RUN=0
@@ -40,7 +47,7 @@ usage: menubar/install.sh [options]
 
   --dry-run          print what would happen and change nothing
   --uninstall        unload the agent and remove the app
-  --apps-dir DIR     where to install the app (default ~/Applications)
+  --apps-dir DIR     where the bundle goes (default ~/Library/Application Support/jStack)
   --state-dir DIR    the host's state dir, if it is not the default
   --token-path FILE  the bearer token to read, if it is not inside the state dir
   --help, -h         this

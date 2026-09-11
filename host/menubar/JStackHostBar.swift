@@ -1897,21 +1897,49 @@ final class StatusController: NSObject {
             return
         }
 
-        // One action, not a menu of addresses. The QR carries the address and
-        // the code together — the exact link the app already answers — so the
-        // person points a camera instead of choosing which of three URLs
-        // "fits". The typed path stays underneath as the fallback, with ONE
-        // address in it: the first one, which the host orders reachable-first.
+        // The address depends on ONE fact, and it is a fact the person holding
+        // the device knows and this hub cannot: does that device already have
+        // the tunnel?
+        //
+        // This showed `firstAddress` — the LAN one — as though that were the
+        // answer. It is the answer for exactly one case: a device being set up
+        // for the first time, standing on this network. Every device that has
+        // been paired once holds a WireGuard conf routing 10.66.0.0/24, and
+        // from that moment the mesh address is the one that works, from
+        // anywhere in the world — which is the steady state of every device
+        // here and the whole reason the mesh exists. Handing those a LAN
+        // address that only resolves inside this building is how a device that
+        // could have connected from an office got a timeout instead.
+        //
+        // So: both, each under the condition that picks it, mesh first because
+        // it is the common case after day one. Never `.local` — it needs the
+        // same LAN as the numeric address and resolves less reliably on it, so
+        // it is never the right answer and never the only one.
+        let byHand: String
+        if let mesh = minted.meshAddress, let lan = minted.lanAddress {
+            byHand = "By hand instead — in the app, Instances › Add a Mac:"
+                + "\n\n    \(mesh)\n    if that device already has the tunnel "
+                + "(anywhere in the world)"
+                + "\n\n    \(lan)\n    first time on it, while it is on this "
+                + "network"
+                + "\n\nThen the code. Good for \(minted.validFor)."
+        } else if let only = minted.meshAddress ?? minted.lanAddress {
+            byHand = "By hand instead: in the app, Instances › Add a Mac — "
+                + "address \(only), then the code. Good for "
+                + "\(minted.validFor)."
+        } else {
+            byHand = ""
+        }
         let shown = NSAlert()
         shown.messageText = "Pair \(minted.name)"
-        shown.informativeText = minted.link != nil
+        shown.informativeText = minted.link != nil && !byHand.isEmpty
             ? "Point that device's camera at the code — it opens the app and "
-            + "connects on its own.\n\nBy hand instead: in the app, "
-            + "Instances › Add a Mac — address \(minted.firstAddress ?? "?"), "
-            + "then the code. Good for \(minted.validFor)."
-            : "This Mac could not work out an address a second device can "
+            + "connects on its own.\n\n" + byHand
+            : byHand.isEmpty
+            ? "This Mac could not work out an address a second device can "
             + "reach — connect both machines to the same network and mint a "
             + "new code. This one is good for \(minted.validFor)."
+            : byHand
         shown.accessoryView = pairAccessory(minted)
         shown.addButton(withTitle: "Done")
         shown.addButton(withTitle: "Copy Code")
@@ -1987,14 +2015,26 @@ final class StatusController: NSObject {
         ask.messageText = "Adopt a Mac"
         ask.informativeText = "What should this hub call it?"
         ask.addButton(withTitle: "Get a Code")
+        // The second way in, and the only one that works for a Mac off this
+        // network. A code is redeemed over HTTP, and a hub publishes none
+        // publicly — so a machine that has never held the tunnel has no
+        // address to redeem against and "get a code" cannot help it. That case
+        // gets a file instead: the tunnel travels to the machine.
+        ask.addButton(withTitle: "Save a Joiner File…")
         ask.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = "New Mac"
         ask.accessoryView = field
         ask.window.initialFirstResponder = field
-        guard ask.runModal() == .alertFirstButtonReturn else { return }
+        let choice = ask.runModal()
+        guard choice == .alertFirstButtonReturn
+                || choice == .alertSecondButtonReturn else { return }
 
         let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if choice == .alertSecondButtonReturn {
+            doAdoptOffline(binary, name.isEmpty ? "New Mac" : name)
+            return
+        }
         let result = HostControl.run(
             binary, ["adopt", name.isEmpty ? "New Mac" : name, "--json"])
 
@@ -2029,6 +2069,79 @@ final class StatusController: NSObject {
         if shown.runModal() == .alertSecondButtonReturn {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(minted.attachCommand, forType: .string)
+        }
+        refresh()
+    }
+
+    /// Adopt a Mac this hub cannot reach — by handing over a file, not a code.
+    ///
+    /// A code is redeemed over HTTP, and a hub publishes no public HTTP. So a
+    /// Mac that is off this network and has never held the tunnel has no
+    /// address to redeem against: joining needs the tunnel, and the tunnel is
+    /// what joining was supposed to install. "Get a Code" cannot reach that
+    /// machine however the dialog is worded.
+    ///
+    /// `adopt --offline` writes one executable file carrying the tunnel keys,
+    /// the bringup scripts and the code. It is saved wherever the person says
+    /// — a USB stick, a folder they are about to AirDrop — because the whole
+    /// premise is that they are carrying it themselves.
+    @objc private func doAdoptOffline(_ binary: String, _ name: String) {
+        let result = HostControl.run(binary, ["adopt", name, "--offline", "--json"])
+        guard result.code == 0,
+              let data = result.out.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let made = obj["file"] as? String else {
+            let failed = NSAlert()
+            failed.alertStyle = .warning
+            failed.messageText = "Could not make a joiner file"
+            // Verbatim: `adopt` names the directory it looked in when a Mac
+            // cannot mint a mesh peer, and that name is the whole repair.
+            failed.informativeText = result.out
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            failed.runModal()
+            return
+        }
+        let mins = ((obj["expires_in"] as? Int) ?? 600) / 60
+
+        let save = NSSavePanel()
+        save.title = "Save Joiner File"
+        save.nameFieldStringValue = URL(fileURLWithPath: made).lastPathComponent
+        save.message = "Carry this to \(name) and run it there. It carries that "
+            + "machine's private key — delete it once the join succeeds."
+        guard save.runModal() == .OK, let dest = save.url else { return }
+
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: made), to: dest)
+            // Copied, not moved: the source lives in the hub's credentials
+            // directory beside the peer it belongs to, and a save panel
+            // pointed at a USB stick should not be what removes it from there.
+            try FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                                  ofItemAtPath: dest.path)
+        } catch {
+            let failed = NSAlert()
+            failed.alertStyle = .warning
+            failed.messageText = "Could not save the joiner file"
+            failed.informativeText = error.localizedDescription
+            failed.runModal()
+            return
+        }
+
+        let done = NSAlert()
+        done.messageText = "Joiner file for \(name)"
+        done.informativeText =
+            "Run it on that Mac. Everything is inside it — the tunnel keys, the "
+            + "installer and the code — so nothing is typed and nothing is "
+            + "downloaded.\n\nThe code inside is good for \(mins) minutes. If you "
+            + "get there after it expires the trip is not wasted: the tunnel is "
+            + "the permanent half, and once it is up that Mac can redeem a fresh "
+            + "code by itself. The file says so if it happens."
+        done.addButton(withTitle: "Done")
+        done.addButton(withTitle: "Show in Finder")
+        if done.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([dest])
         }
         refresh()
     }

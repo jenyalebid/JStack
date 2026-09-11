@@ -347,7 +347,7 @@ def _cmd_attach(args) -> int:
 ADOPT_TTL = 600
 
 
-def _adopt_offline(name: str, row: dict, port: int) -> int:
+def _adopt_offline(name: str, row: dict, port: int, as_json: bool = False) -> int:
     """Adopt a Mac that has no route here yet, by carrying the tunnel to it.
 
     The printed flow assumes the far Mac can reach this one to redeem. Off the
@@ -385,20 +385,29 @@ def _adopt_offline(name: str, row: dict, port: int) -> int:
             return 1
         reused = " (rebuilt from its existing peer — keys unchanged)"
 
-    folder = adopt_offline.emit(name, row["code"], port)
+    adopt_offline.emit(name, row["code"], port)
+    joiner = adopt_offline.pack(name, row["code"], port)
     mins = row["expires_in"] // 60
 
-    print(f"\nCarry this folder to that Mac{reused}:\n")
-    print(f"    {folder}\n")
-    print(f"Then run `./join.sh` inside it. One command — it brings the tunnel")
-    print("up first and redeems the code second, which is the only order that")
-    print("can work: the code is redeemed over the tunnel it installs.\n")
+    if as_json:
+        import json
+        print(json.dumps({"name": row["name"], "code": row["code"],
+                          "kind": row["kind"], "expires_in": row["expires_in"],
+                          "port": port, "offline": True, "file": str(joiner)}))
+        return 0
+
+    print(f"\nCarry this one file to that Mac{reused}:\n")
+    print(f"    {joiner}\n")
+    print("Run it there. Everything is inside it — the tunnel keys, the")
+    print("installer and the code. It brings the tunnel up first and redeems")
+    print("second, which is the only order that can work: the code is redeemed")
+    print("over the tunnel it installs.\n")
     print(f"The code is good for {mins} minute{'' if mins == 1 else 's'}. If "
           "you get there after it expires,\nthe trip is still not wasted — the "
           "tunnel is the permanent half, and once it is\nup that Mac can "
-          "redeem a fresh code by itself. join.sh says so if it happens.\n")
-    print("The folder holds that machine's private key. Delete it once the "
-          "join succeeds.")
+          "redeem a fresh code by itself. The file says so if it happens.\n")
+    print("That file IS a credential — it carries that machine's private key. "
+          "Delete it\nonce the join succeeds.")
     return 0
 
 
@@ -450,20 +459,15 @@ def _cmd_adopt(args) -> int:
               "Otherwise run `install_hub.sh` to make this Mac a hub.",
               file=sys.stderr)
         return 1
-    # An offline code is carried, not typed within the minute — so it gets the
-    # longest life the mint allows unless the caller named one. The default
-    # exists for a person standing at the other Mac; this one is for a person
-    # walking to it.
-    ttl = args.ttl
-    if ttl is None:
-        ttl = enrolment.MAX_TTL if getattr(args, "offline", False) else ADOPT_TTL
+    ttl = args.ttl if args.ttl is not None else ADOPT_TTL
     row = enrolment.mint_code(args.name, created_by="", ttl=ttl,
                               kind=enrolment.KIND_HOST)
     port = getattr(args, "port", None) or addresses.DEFAULT_PORT
     found = addresses.reachable(port)
 
     if getattr(args, "offline", False):
-        return _adopt_offline(args.name, row, port)
+        return _adopt_offline(args.name, row, port,
+                              as_json=getattr(args, "json", False))
 
     if getattr(args, "json", False):
         import json
@@ -834,8 +838,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="write a folder to carry to a Mac that cannot reach "
                         "this hub yet (off-LAN, never on the mesh)")
     p.add_argument("--ttl", type=int, default=None,
-                   help="seconds the code stays good (default 600, or the "
-                        "maximum with --offline)")
+                   help="seconds the code stays good (default 600)")
     p.add_argument("--port", type=int, default=None,
                    help="the port THIS Mac serves on, for the address printed")
     p.add_argument("--json", action="store_true",

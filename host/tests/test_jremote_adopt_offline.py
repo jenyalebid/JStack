@@ -134,6 +134,78 @@ def test_emit_refuses_when_the_tunnel_half_was_never_written(tmp_path, monkeypat
     assert "tunnel half" in str(exc.value)
 
 
+def test_the_packed_file_is_one_executable_that_carries_everything(bundle, tmp_path):
+    """What a person actually carries — one file, not a folder of eight.
+
+    A folder is eight things, and the one that has to be run is not obviously
+    the one to run. Asserted by unpacking and running the packed file, because
+    a payload that base64-decodes but does not contain the installer is a file
+    that fails on the machine you travelled to.
+    """
+    import os
+    import subprocess
+
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    packed = adopt_offline.pack("work-mac", "PQ4V-LUGA", 9090)
+
+    assert packed.name == "join-work-mac.sh"
+    assert packed.stat().st_mode & 0o111, "it has to run as ./join-work-mac.sh"
+    # It carries a private key and a live code: not group- or world-readable.
+    assert not packed.stat().st_mode & 0o077, oct(packed.stat().st_mode)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "packed-calls.log"
+    for name, body in (
+        ("sudo", 'echo "install:$(basename "$1")" >> "$CALLS"'),
+        ("jstack-host", 'echo "jstack-host:$1" >> "$CALLS"'),
+        ("ping", 'echo "ping" >> "$CALLS"'),
+        ("wireguard-go", "true"),
+        ("wg", "true"),
+    ):
+        p = fake_bin / name
+        p.write_text(f'#!/bin/bash\n{body}\nexit 0\n')
+        p.chmod(0o755)
+
+    env = dict(os.environ, PATH=f"{fake_bin}:/usr/bin:/bin", CALLS=str(calls))
+    proc = subprocess.run(["/bin/bash", str(packed)], env=env,
+                          capture_output=True, text=True, timeout=60)
+    done = calls.read_text().splitlines() if calls.exists() else []
+
+    assert "install:install_leaf.sh" in done, (proc.stdout, proc.stderr, done)
+    attach = next(i for i, c in enumerate(done) if c.startswith("jstack-host:attach"))
+    assert done.index("install:install_leaf.sh") < attach, done
+
+
+def test_the_packed_file_leaves_nothing_unpacked_behind(bundle, tmp_path):
+    """It unpacks a private key to run. That directory does not outlive the run."""
+    import os
+    import re
+    import subprocess
+    from pathlib import Path
+
+    adopt_offline.emit("work-mac", "PQ4V-LUGA", 9090)
+    packed = adopt_offline.pack("work-mac", "PQ4V-LUGA", 9090)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("sudo", "jstack-host", "ping", "wireguard-go", "wg"):
+        p = fake_bin / name
+        # `sudo` echoes where it was told to run from, which is the temp dir.
+        p.write_text('#!/bin/bash\necho "RAN:$1"\nexit 0\n')
+        p.chmod(0o755)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = dict(os.environ, PATH=f"{fake_bin}:/usr/bin:/bin", TMPDIR=str(scratch))
+    proc = subprocess.run(["/bin/bash", str(packed)], env=env,
+                          capture_output=True, text=True, timeout=60)
+
+    unpacked = re.search(r"RAN:(\S+)/install_leaf\.sh", proc.stdout)
+    assert unpacked, proc.stdout
+    assert not Path(unpacked.group(1)).exists(), "the unpacked key outlived the run"
+
+
 def test_relift_rebuilds_a_bundle_without_touching_the_keypair(tmp_path, monkeypatch):
     """The already-paired case — the one the feature exists for.
 

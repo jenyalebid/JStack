@@ -47,26 +47,32 @@ JOIN_SCRIPT = "join.sh"
 
 
 def _join_script(name: str, code: str, port: int, hub: str) -> str:
-    parent = f"http://{hub}:{port}"
-    return f'''#!/bin/bash
-# Join this Mac to the jRemote hub as "{name}" — run from inside this folder:
-#
-#     ./{JOIN_SCRIPT}
-#
-# Brings up the mesh tunnel first and redeems the enrolment code second,
-# because the code can only be redeemed over the tunnel the first step
-# creates. You will be asked for your password once, by the tunnel installer.
-set -uo pipefail
+    """The folder form — `join.sh` sitting beside the files it installs."""
+    return (f'#!/bin/bash\n'
+            f'# Join this Mac to the jRemote hub as "{name}" — run from inside\n'
+            f'# this folder:\n#\n#     ./{JOIN_SCRIPT}\n#\n'
+            f'set -uo pipefail\n'
+            f'SRC="$(cd "$(dirname "$0")" && pwd)"\n'
+            + _join_body(name, code, port, hub))
 
+
+def _join_body(name: str, code: str, port: int, hub: str) -> str:
+    """Everything after `$SRC` is known — shared by the folder and the packed file.
+
+    One body, two wrappers. The ordering this encodes is the whole feature, and
+    a second copy of it is a second chance to get the order wrong in only one
+    of them.
+    """
+    parent = f"http://{hub}:{port}"
+    return f'''
 CODE="{code}"
 PARENT="{parent}"
 HUB="{hub}"
-SRC="$(cd "$(dirname "$0")" && pwd)"
 
 say() {{ printf '\\n== %s\\n' "$1"; }}
 die() {{ printf '\\n!! %s\\n' "$1" >&2; exit 1; }}
 
-[ -f "$SRC/install_leaf.sh" ] || die "run this from inside the bundle folder — install_leaf.sh is not here."
+[ -f "$SRC/install_leaf.sh" ] || die "the tunnel installer is missing — this file is incomplete."
 
 # ---------------------------------------------------------------- prereqs
 # Checked before anything is installed rather than discovered halfway: the
@@ -149,6 +155,84 @@ cat <<ENDFAIL
 ENDFAIL
 exit 1
 '''
+
+
+#: Where the payload starts inside a packed file. Read by the script itself,
+#: so it is a contract between the packer and the thing it packs.
+PAYLOAD_MARKER = "__JREMOTE_PAYLOAD__"
+
+
+def pack(name: str, code: str, port: int, hub: str = HUB_MESH_IP,
+         dest: Path | None = None) -> Path:
+    """One executable file that carries the whole join — keys, code and scripts.
+
+    A folder is not a thing a person carries to another machine; it is eight
+    things, and the one that has to be run is not obviously the one to run. So
+    the folder is packed into a single self-extracting script: it unpacks
+    itself into a private temp directory, runs the same ordered join, and
+    deletes what it unpacked on the way out.
+
+    The file is a credential. It carries this machine's WireGuard private key
+    and a live enrolment code, so it is written 0600 and says so — anyone
+    holding it can join the mesh as this machine until it is deleted.
+    """
+    import base64
+    import io
+    import tarfile
+
+    from . import tunnel
+
+    folder = tunnel.leaf_bundle_dir(name)
+    if not folder.is_dir():
+        raise tunnel.TunnelError(
+            f"no leaf bundle for {name} at {folder} — there is nothing to pack")
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for item in sorted(folder.iterdir()):
+            # The packed file is not packed into itself, and neither is the
+            # folder form of the same script — one runner per artefact.
+            if item.name == JOIN_SCRIPT or item.name.startswith("join-"):
+                continue
+            if item.is_file():
+                tar.add(item, arcname=item.name)
+    payload = base64.b64encode(buf.getvalue()).decode()
+
+    body = _join_body(name, code, port, hub)
+    script = f'''#!/bin/bash
+# Join this Mac to the jRemote hub as "{name}".
+#
+#     ./{_packed_name(name)}
+#
+# Self-contained: the tunnel keys, the bringup scripts and a one-time
+# enrolment code are all inside this file. Nothing is downloaded and nothing
+# is typed. You are asked for your password once, by the tunnel installer.
+#
+# This file IS a credential. Delete it once the join succeeds.
+set -uo pipefail
+
+SRC="$(mktemp -d "${{TMPDIR:-/tmp}}/jremote-join.XXXXXX")"
+chmod 700 "$SRC"
+trap 'rm -rf "$SRC"' EXIT INT TERM
+
+# The payload is everything after the marker. `sed` finds it by name rather
+# than by a line number the file would have to keep true through every edit.
+sed -n "/^{PAYLOAD_MARKER}$/,\\$p" "$0" | tail -n +2 | base64 -d | tar xzf - -C "$SRC" || {{
+    printf '\\n!! this file is damaged — its payload did not unpack.\\n' >&2
+    exit 1
+}}
+{body}
+{PAYLOAD_MARKER}
+{payload}
+'''
+    out = Path(dest) if dest else folder.parent / _packed_name(name)
+    out.write_text(script)
+    out.chmod(0o700)
+    return out
+
+
+def _packed_name(name: str) -> str:
+    return f"join-{name}.sh"
 
 
 def _join_readme(name: str, code: str, port: int, hub: str) -> str:

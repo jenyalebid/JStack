@@ -223,13 +223,24 @@ CREATE INDEX IF NOT EXISTS hosts_seq ON hosts(seq);
 -- (docs/multi-host-access.md). `changes_since` must never learn this table.
 -- token_hash is a digest, never the token: the plaintext exists only on the
 -- device that was handed it at mint. revoked_at NULL = live.
+--
+-- `identity` is a stable, app-generated id for the PHYSICAL device (the iOS
+-- app persists a UUID in the Keychain and presents it at pair time). NULL for
+-- any row minted without one — the legacy token, host-internal plumbing, and
+-- every device paired by an app that predates the field. When present it keys
+-- the row: re-pairing the same device rotates its one row in place instead of
+-- minting a second beside it (the duplicate "Laptop"/"iPad" rows this
+-- column exists to stop). One row per identity is enforced by the partial
+-- unique index `devices_identity`, created after the migration that adds the
+-- column — see `_ensure_device_identity_index`.
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   token_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   last_seen_at INTEGER,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  identity TEXT
 );
 -- One-time enrolment codes (docs/multi-host-access.md, P3). Host-only, and it
 -- never syncs for the same reason `devices` never does — a code is a
@@ -351,6 +362,7 @@ class SessionStore:
         with self._conn() as db:
             db.executescript(_SCHEMA)
             self._add_missing_columns(db)
+            self._ensure_device_identity_index(db)
             self._unmachine_prompts(db)
             self._canonicalise_shortcut_ids(db)
         # {path: (mtime_ns, size)} — what the index already reflects, so a
@@ -448,6 +460,23 @@ class SessionStore:
                     db.execute(ddl)
         finally:
             ref.close()
+
+    @staticmethod
+    def _ensure_device_identity_index(db: sqlite3.Connection) -> None:
+        """One device row per physical-device `identity`.
+
+        Deliberately NOT in `_SCHEMA` beside the other indexes: it is partial on
+        a column `_add_missing_columns` may have only just added, and
+        `executescript(_SCHEMA)` runs before that ALTER — a `CREATE INDEX`
+        naming `identity` in the schema string would fail on every store that
+        predates the column, taking the whole open down. Created here, after the
+        column is guaranteed present, and `IF NOT EXISTS` so a converged DB pays
+        one no-op. Partial (`WHERE identity IS NOT NULL`) because the legacy,
+        host-internal and pre-field rows all carry NULL and must not collide
+        with each other — only a real device identity is unique."""
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS devices_identity "
+            "ON devices(identity) WHERE identity IS NOT NULL")
 
     @staticmethod
     def _unmachine_prompts(db: sqlite3.Connection) -> None:
@@ -995,6 +1024,42 @@ class SessionStore:
                 "VALUES (?,?,?,?)",
                 (device_id, name, token_hash, int(time.time())))
             return cur.rowcount > 0
+
+    def upsert_device_identity(self, device_id: str, name: str,
+                               token_hash: str, identity: str) -> str | None:
+        """Rotate the row already keyed to `identity`, or mint a fresh one under
+        it — the re-pairing path.
+
+        Returns the id of the row that now carries `identity`: the EXISTING
+        row's id when one was found (same physical device pairing again — new
+        `token_hash`, `name` refreshed, `revoked_at` cleared so a revoked device
+        that re-pairs is revived in place, never a second row), or the supplied
+        `device_id` when a new row was inserted. None means `device_id` collided
+        with a live primary key on the insert path, and the caller retries with
+        a fresh id exactly as the no-identity mint loop does.
+
+        Unlike `add_device` this is an UPDATE-or-INSERT, not an INSERT-or-ignore:
+        re-keying the matched row in place is the whole point. The SELECT and the
+        write share one transaction under `_write_lock`, and the partial unique
+        index `devices_identity` is the cross-process backstop, so two pairings
+        of one device racing here cannot leave two rows behind."""
+        with self._write_lock, self._conn() as db:
+            row = db.execute(
+                "SELECT id FROM devices WHERE identity=?", (identity,)).fetchone()
+            if row is not None:
+                db.execute(
+                    "UPDATE devices SET token_hash=?, name=?, revoked_at=NULL "
+                    "WHERE id=?", (token_hash, name, row["id"]))
+                return row["id"]
+            try:
+                db.execute(
+                    "INSERT INTO devices "
+                    "(id, name, token_hash, created_at, identity) "
+                    "VALUES (?,?,?,?,?)",
+                    (device_id, name, token_hash, int(time.time()), identity))
+            except sqlite3.IntegrityError:
+                return None  # id collision — the caller mints a new id
+            return device_id
 
     def set_device_hash(self, device_id: str, token_hash: str) -> bool:
         """Re-key a LIVE device (the host re-minting its own internal

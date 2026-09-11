@@ -263,9 +263,28 @@ def _note_seen(device_id: str) -> None:
 
 # ── minting ──
 
-def mint(name: str) -> tuple[dict, str]:
+def mint(name: str, identity: str | None = None) -> tuple[dict, str]:
     """A new device: returns (row, token). The token exists only in this
-    return value — hand it to exactly one device."""
+    return value — hand it to exactly one device.
+
+    `identity` is the app-generated, Keychain-persisted id of the PHYSICAL
+    device, presented at pair time (optional — an app that predates it sends
+    none). When present, re-pairing the same device ROTATES its one row in
+    place — same id, new secret, name refreshed, revocation cleared — instead
+    of minting a second credential beside the first; that accumulation is the
+    duplicate "Laptop"/"iPad" rows this keying exists to stop. Absent,
+    every call mints a fresh random row under a NULL identity, exactly as
+    before — the backward-compatible path."""
+    if identity:
+        for _ in range(3):
+            device_id = uuid.uuid4().hex[:12]
+            secret = secrets.token_urlsafe(32)
+            settled = _store().upsert_device_identity(
+                device_id, name, _hash(secret), identity)
+            if settled is not None:
+                return (_store().device(settled),
+                        f"{TOKEN_PREFIX}.{settled}.{secret}")
+        raise RuntimeError("could not mint a device id")  # 3 uuid collisions
     for _ in range(3):
         device_id = uuid.uuid4().hex[:12]
         secret = secrets.token_urlsafe(32)

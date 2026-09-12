@@ -101,11 +101,25 @@ else
     say "copying this working tree into the guest (without build artifacts)"
     STAGE="$(mktemp -d)"
     trap 'rm -rf "$STAGE"' EXIT
+    # Credentials never ride along, in either direction. Outbound, this
+    # Mac's own keys have no business in a guest. And the guest's copy is
+    # its mesh identity: a hub set up in there (install_hub.sh) keeps its
+    # server keys and peer table under host/Credentials, and regenerating
+    # those revokes every device that ever paired — so the refresh moves
+    # them aside and puts them back rather than rebuilding them away.
     rsync -a --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
-          --exclude '.git' --exclude '*.egg-info' \
+          --exclude '.git' --exclude '*.egg-info' --exclude 'Credentials' \
           "$HOST_DIR/" "$STAGE/host/" || die "could not stage the tree"
-    vssh 'rm -rf ~/jStack && mkdir -p ~/jStack'
+    vssh 'if [ -d ~/jStack/host/Credentials ]; then
+              rm -rf /tmp/jr-keep-credentials
+              mv ~/jStack/host/Credentials /tmp/jr-keep-credentials
+          fi
+          rm -rf ~/jStack && mkdir -p ~/jStack'
     "$VM_SH" cp "$VM_NAME" "$STAGE/host" '~/jStack/host' || die "copy failed"
+    vssh 'if [ -d /tmp/jr-keep-credentials ]; then
+              rm -rf ~/jStack/host/Credentials
+              mv /tmp/jr-keep-credentials ~/jStack/host/Credentials
+          fi'
 fi
 
 # ── install the host ──

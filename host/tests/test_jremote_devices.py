@@ -466,15 +466,23 @@ def test_startup_reconciles_a_credential_that_drifted_from_its_row(store):
     already worked before this bug, it was simply never reached.
     """
     from fastapi.testclient import TestClient
-    from jstack_host import server
+    from jstack_host import hostenv, server
 
     devices.internal_token()                       # row + file agree
     path = devices._credential_dir() / "internal-token"
     path.write_text(f"{devices.TOKEN_PREFIX}.{devices.INTERNAL_ID}.drifted")
     assert devices.authenticate(path.read_text().strip()) is None
 
-    with TestClient(server.create_app()):          # runs the lifespan
-        pass
+    try:
+        with TestClient(server.create_app()):      # runs the lifespan
+            pass
+    finally:
+        # The lifespan resolves the host profile, and `profile()` caches. Left
+        # populated, it is read by any later test that blocks the `lib` import
+        # to assert a demanded profile RAISES — which it then does not, because
+        # nothing imports anything. Booting a real app in a unit test is the
+        # only thing here that reaches that cache, so it cleans up after itself.
+        hostenv.reset_profile()
 
     assert devices.authenticate(path.read_text().strip()) == devices.INTERNAL_ID
 

@@ -1,96 +1,128 @@
-# jStack
+# JStack
 
-One Mac runs your AI coding sessions. Every device you own can see them and
-drive them.
+## The problem
 
-## What it is
+A Mac running coding agents is only useful while you are sitting at it. The
+sessions live in terminals on that desk — you cannot see what one said,
+answer it, or start new work from anywhere else. Owning a second Mac does not
+help. It is a second desk with the same problem.
 
-The stack is the **host**: the `jstack-host` process plus its menu-bar app.
-Sessions, the scheduler, the integrations, the base commands — that is
-jStack, and all of it must work on its own. **jRemote** (iOS/macOS) is a
-client for it, not the product: use it, use iTerm, or build your own UI
-against the same host.
+## The offering
 
-## The three modes
+JStack turns a Mac into a hub. One script installs it, and from then on every
+session that machine runs is visible and drivable from any device you own —
+on your own network by default, off-network when you choose it, and other
+Macs can attach to a hub to be reachable through the same door. The hub owns
+everything real and serves it through one interface every app uses alike: the
+app we ship is one client, not the product.
 
-A freshly installed hub works on its local network. From there its owner
-picks how far it reaches:
+## The functionality
 
-- **Local** — same-wifi only. The default; nothing to set up beyond install.
-- **Open** — an independent hub reachable off-network on its own. Requires a
-  port forward; the product's job is to make that setup guided and obvious,
-  not to hide it.
-- **Managed** — a hub attached to a parent hub (a *leaf* is exactly this: a
-  managed hub). Every device connected to the parent reaches the managed
-  machine with no extra setup. A managed machine trades independence for
-  being managed.
+### Sessions
+**Live sessions**
+- Watch any running session work, from any device, as it happens.
+- Type into it as if seated at the Mac — interrupting included.
+- Leaving does not end a session. It ends because someone ended it, never
+  because nobody was watching.
 
-The mode must be visible, and attaching to a parent must be an action that
-exists in the UI — not archaeology.
+**Starting work**
+- Open a new session from anywhere: pick the agent, the provider it runs on,
+  and the model.
+- A session can be split into a copy, handed off to continue fresh, or closed
+  for good.
 
-## Installation
+**History**
+- Every past session kept and searchable, per agent.
+- Read back clean: the conversation, not the machinery around it.
 
-Run the script → specify the root → it downloads the app → the app
-auto-connects locally → a working session is on screen. That chain is the
-product's first impression and it is the bar, end to end.
+**The vocabulary**
+- A set of commands every session understands, the same on every machine.
+- Prepare on an area, land finished work, account for what a task produced,
+  recall a day, put the work itself on screen.
+- Hand a unit of work to another agent and keep your own conversation.
 
-## Pairing
+### Reach
+**Modes**
+- Local: your own network only. What a fresh install is; nothing to set up.
+- Open: reachable from anywhere on its own. A deliberate step, guided rather
+  than hidden.
+- Managed: attached to a parent hub. Every device paired with the parent
+  reaches this machine with nothing added on either side.
+- The mode shows wherever the hub appears, and changing it is an action in
+  the interface.
 
-- The menu bar owns devices: the list of paired devices, with remove, lives
-  in the menu-bar app — not in jRemote.
-- Pair a Device shows **one address** and a QR code. Phone side: open the
-  app, tap the QR button, scan, connected. Nothing else.
-- Manual fallback stays: that one address plus the code, typed by hand, for
-  a device with no camera.
+**Devices**
+- A device pairs by scanning a code shown at the Mac — single use, short
+  lived.
+- Each device carries its own key. Revoking a lost phone cuts off that phone
+  only, and immediately.
+- The list of what may connect lives on the Mac that owns it: name, rename,
+  remove.
 
-## Use cases
+### Working unattended
+**Scheduling**
+- One-time and recurring runs the hub starts on its own, whether or not
+  anyone is watching.
+- A scheduled run is a real session, opened with its instructions as the
+  first message.
+- Runs missed while the machine slept catch up. Runs that hang are ended,
+  not left holding a place.
+- A job a person set can be locked so nothing automated may move it.
 
-- Watch and answer a session from the couch, phone in hand.
-- Kick off work, leave the house, keep driving it (open or managed hub).
-- Pair a new phone in one scan at the menu bar.
-- Attach a new Mac as a managed hub; every device already paired to the
-  parent just sees it.
-- Hand the install command to a friend; they get a working stack on their
-  own Mac with zero help from us.
+**Memory**
+- Every session writes what it did into one running record for the machine.
+- A new session starts already told what its predecessors did, instead of
+  starting blind.
+- Answerable after the fact: what happened that day, on that subject, by
+  that agent.
+- A session can be opened on a subject, inheriting everything every agent
+  has done on it.
 
-## Featureset
+**Messaging**
+- Addressed messages between agents: news, or a task whose answer returns to
+  whoever asked.
+- A task cannot be quietly ignored — the receiver cannot finish while one is
+  waiting.
+- Every exchange leaves a record of what came of it.
 
-**Host** (`jstack-host`)
-- Sessions, board, scheduler, integrations, base commands.
-- Enrolment: single-use short-lived codes; one address + QR.
-- Mode: local / open / managed — visible, switchable.
-- `doctor` self-checks; `where` paths; relocatable root; `--purge` removal.
+**Notifications**
+- A ping on your phone when a session finishes or waits on you.
+- Quiet when you are already looking at it. Silenceable per agent.
 
-**Menu bar** (JStack Host app)
-- Host start/stop, run-at-login, settings.
-- Pair a Device (one address + QR), the device list, device removal.
-- Shows the hub's mode.
+### General
+**The host API**
+- One versioned interface, the same for every app that connects.
+- The app we ship holds no special access — a client someone else writes is
+  a supported case.
+- A client asks a hub what it can do, and draws only what is really there.
 
-**jRemote** (iOS + macOS, optional client)
-- Sessions, board, multiple hubs; tap-QR-to-scan pairing; passcode lock.
-- Mac build self-updates; iOS ships through TestFlight.
+**Files**
+- A folder per agent that you and the agent both read and write, from any
+  device.
+- What you put there is yours: an agent may tidy its own mess, never your
+  things.
 
-**Install**
-- One script: root specified, app downloaded, local auto-connect, session
-  launched.
-- Versioned GitHub releases; a release gate blocks pushes that would leave
-  installs running stale code.
+**Usage**
+- Two numbers, kept apart: how close the account is to its limit, and what
+  today actually cost.
 
-## The bar — what "works" means
+**The day feed**
+- Everything the machine did today — sessions, commits, scheduled runs,
+  messages — one stream, in the order it happened.
 
-- Clean macOS, one script: stack installed, app connected, and the launched
-  session is a live working session — never a blank thread.
-- A phone pairs by one QR scan on the first try, in under a minute.
-- An open hub is reachable off-network after following its guided setup.
-- A managed hub is reachable by all of its parent's devices with zero
-  per-device setup.
-- `--purge` leaves nothing behind.
-- Every released fix provably reaches every install on its next update.
-- An outside install meets all of the above with nobody from the project in
-  the loop.
+### On the Mac
+**The menu bar**
+- The hub run from the machine it lives on: start, stop, start at login.
+- Pairing lives here: the code to scan, the device list, removal.
+- Attaching this Mac to a parent — or taking another Mac under this one —
+  starts here too.
+- Shows what is true right now: the mode, the sessions running, the machines
+  attached.
 
----
-
-Requirements and defects are GitHub issues; a release is a milestone that
-closes them. Status lives in issues and `jstack-host doctor`, never here.
-This file changes only in the PR that changes the product.
+**Install and updates**
+- One command on a clean machine ends with a working session on screen.
+- Running the same command again is the update. Every step is safe to
+  repeat.
+- The install checks itself and ends with a verdict, not an assumption.
+- Removal takes only what install wrote; a deeper option takes the stored
+  data too.

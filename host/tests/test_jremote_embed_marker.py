@@ -29,8 +29,8 @@ def test_the_marker_records_the_launchd_job_the_host_runs_under(tmp_path, monkey
     Down act on. Without it the menu bar resolves the package default
     `com.jremote.host`, finds no plist, reads the hub as not installed, and
     hides both controls on the Mac that runs the hub."""
-    record = _declare(monkeypatch, tmp_path, "com.jarvis.dashboard")
-    assert record["agent_label"] == "com.jarvis.dashboard"
+    record = _declare(monkeypatch, tmp_path, "com.acme.dashboard")
+    assert record["agent_label"] == "com.acme.dashboard"
 
 
 def test_a_hand_started_server_offers_no_agent_rather_than_a_placeholder(
@@ -57,7 +57,7 @@ def test_the_menubar_installer_backfills_only_keys_the_marker_carries(
     keys = re.findall(r'"JREMOTE_[A-Z_]+:([a-z_]+)"', loop.group(1))
     assert keys, "the loop names no marker keys"
 
-    record = _declare(monkeypatch, tmp_path, "com.jarvis.dashboard")
+    record = _declare(monkeypatch, tmp_path, "com.acme.dashboard")
     missing = [k for k in keys if k not in record]
     assert not missing, f"install.sh backfills keys declare() never writes: {missing}"
 
